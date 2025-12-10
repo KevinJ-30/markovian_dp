@@ -89,15 +89,13 @@ def main():
     print(f"  Train nodes: {data.train_mask.sum()}")
     print(f"  Test nodes: {data.test_mask.sum()}")
     
-    # Create NeighborLoader (following Jan's suggestion)
     print("\nCreating NeighborLoader...")
     train_loader = NeighborLoader(
         data,
-        num_neighbors=[10, 5],  # 2-hop sampling: 10 neighbors in layer 1, 5 in layer 2
+        num_neighbors=[10, 5],
         batch_size=32,
-        input_nodes=data.train_mask,  # Only sample from training nodes
+        input_nodes=data.train_mask,
         shuffle=True,
-        #disjoint=True,
     )
     print(f"  Sampling: 2-hop neighborhoods")
     print(f"  num_neighbors: [10, 5]")
@@ -132,8 +130,6 @@ def main():
     # Optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     
-    # Baseline accuracy (before training) - shows random initialization performance
-    # Useful for debugging but can be removed if desired
     print("\n" + "=" * 70)
     print("Before Training (Random Initialization)")
     print("=" * 70)
