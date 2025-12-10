@@ -1,3 +1,7 @@
+"""
+DP-SGD for Graph Neural Networks using torch.func approach.
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -47,14 +51,6 @@ class DPSGD_GNN:
         """
         Stack batched PyG graph into separate tensors for vmap.
         
-        Converts:
-            batch.x: [total_nodes, features]
-            batch.batch: [total_nodes] (which seed each node belongs to)
-        
-        To:
-            x_stacked: [batch_size, max_nodes, features]
-            edge_index_stacked: [batch_size, 2, max_edges]
-        
         Args:
             batch: PyG Batch from NeighborLoader
             max_nodes: Maximum nodes to pad to
@@ -67,7 +63,6 @@ class DPSGD_GNN:
         num_features = batch.x.size(1)
         device = batch.x.device
         
-        # Initialize stacked tensors
         x_stacked = torch.zeros(
             (batch_size, max_nodes, num_features), 
             device=device
@@ -79,30 +74,41 @@ class DPSGD_GNN:
         )
         num_nodes_per_graph = torch.zeros(batch_size, dtype=torch.long, device=device)
         
+        total_nodes = batch.num_nodes
+        nodes_per_seed = total_nodes // batch_size
+        
         for i in range(batch_size):
-            mask = (batch.batch == i)
-            nodes_in_subgraph = mask.nonzero().squeeze(-1)
+            start_idx = i * nodes_per_seed
+            end_idx = min((i + 1) * nodes_per_seed, total_nodes) if i < batch_size - 1 else total_nodes
+            
+            nodes_in_subgraph = torch.arange(start_idx, end_idx, device=device)
             num_nodes = len(nodes_in_subgraph)
+            
+            if num_nodes > max_nodes:
+                nodes_in_subgraph = nodes_in_subgraph[:max_nodes]
+                num_nodes = max_nodes
+            
             num_nodes_per_graph[i] = num_nodes
             
             if num_nodes > 0:
                 x_stacked[i, :num_nodes] = batch.x[nodes_in_subgraph]
             
-            edge_index = batch.edge_index
-            src_in = torch.isin(edge_index[0], nodes_in_subgraph)
-            dst_in = torch.isin(edge_index[1], nodes_in_subgraph)
-            edge_mask = src_in & dst_in
-            edges_in_subgraph = edge_index[:, edge_mask]
-            
-            if edges_in_subgraph.numel() > 0:
-                mapping = torch.full((batch.num_nodes,), -1, dtype=torch.long, device=device)
-                mapping[nodes_in_subgraph] = torch.arange(num_nodes, device=device)
-                edges_remapped = mapping[edges_in_subgraph]
+            if num_nodes > 0:
+                edge_index = batch.edge_index
+                src_in = (edge_index[0] >= start_idx) & (edge_index[0] < end_idx)
+                dst_in = (edge_index[1] >= start_idx) & (edge_index[1] < end_idx)
+                edge_mask = src_in & dst_in
+                edges_in_subgraph = edge_index[:, edge_mask]
                 
-                num_edges = min(edges_remapped.size(1), max_edges)
-                edge_index_stacked[i, :, :num_edges] = edges_remapped[:, :num_edges]
+                if edges_in_subgraph.numel() > 0:
+                    edges_remapped = edges_in_subgraph - start_idx
+                    num_edges = min(edges_remapped.size(1), max_edges)
+                    edge_index_stacked[i, :, :num_edges] = edges_remapped[:, :num_edges]
         
-        targets = batch.y[:batch_size] if hasattr(batch, 'y') else None
+        if hasattr(batch, 'y') and batch.y is not None:
+            targets = batch.y[:batch_size]
+        else:
+            targets = torch.zeros(batch_size, dtype=torch.long, device=device)
         
         return x_stacked, edge_index_stacked, num_nodes_per_graph, targets
     
@@ -125,18 +131,17 @@ class DPSGD_GNN:
             buffers: Model buffers
             x_single: [max_nodes, features] - node features (padded)
             edge_index_single: [2, max_edges] - edges (padded)
-            num_nodes: scalar - actual number of nodes
+            num_nodes: scalar tensor - actual number of nodes
             target: scalar - label
             
         Returns:
             loss: scalar
         """
-        x = x_single[:num_nodes]
+        x = x_single
+        edge_index = edge_index_single
         
-        valid_mask = (edge_index_single[0] < num_nodes) & (edge_index_single[1] < num_nodes)
-        edge_index = edge_index_single[:, valid_mask]
-        
-        batch = torch.zeros(num_nodes, dtype=torch.long, device=x.device)
+        max_nodes = x.size(0)
+        batch = torch.zeros(max_nodes, dtype=torch.long, device=x.device)
         
         output = functional_call(
             self.model,
