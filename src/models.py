@@ -13,7 +13,6 @@ class NodeGCN(nn.Module):
     Simple 2-layer GCN for node classification.
     
     Designed for node-level privacy with NeighborLoader.
-    Returns node-level predictions (one per node).
     """
     
     def __init__(self, in_channels: int, hidden_channels: int, out_channels: int):

@@ -66,30 +66,13 @@ def test(data, model):
 
 
 def main():
-    """
-    Main training loop.
-    """
-    print("=" * 70)
-    print("DP-SGD for GNNs - Node-Level Privacy")
-    print("=" * 70)
-    
-    # Configuration
+    """Main training loop."""
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"\nDevice: {device}")
+    print(f"Device: {device}")
     
-    # Load dataset (Cora - standard citation network)
-    print("\nLoading Cora dataset...")
     dataset = Planetoid(root='/tmp/Cora', name='Cora')
     data = dataset[0].to(device)
     
-    print(f"  Nodes: {data.num_nodes}")
-    print(f"  Edges: {data.num_edges}")
-    print(f"  Features: {dataset.num_features}")
-    print(f"  Classes: {dataset.num_classes}")
-    print(f"  Train nodes: {data.train_mask.sum()}")
-    print(f"  Test nodes: {data.test_mask.sum()}")
-    
-    print("\nCreating NeighborLoader...")
     train_loader = NeighborLoader(
         data,
         num_neighbors=[10, 5],
@@ -97,29 +80,17 @@ def main():
         input_nodes=data.train_mask,
         shuffle=True,
     )
-    print(f"  Sampling: 2-hop neighborhoods")
-    print(f"  num_neighbors: [10, 5]")
-    print(f"  Batch size: 32")
     
-    # Create model
-    print("\nInitializing model...")
     model = NodeGCN(
         in_channels=dataset.num_features,
         hidden_channels=64,
         out_channels=dataset.num_classes
     ).to(device)
     
-    # DP-SGD parameters
     max_grad_norm = 1.0
     noise_multiplier = 1.0
     learning_rate = 0.01
     
-    print("\nDP-SGD configuration:")
-    print(f"  Clipping norm (C): {max_grad_norm}")
-    print(f"  Noise multiplier (σ): {noise_multiplier}")
-    print(f"  Learning rate: {learning_rate}")
-    
-    # Create DP trainer
     dp_trainer = DPSGD_GNN(
         model=model,
         max_grad_norm=max_grad_norm,
@@ -127,19 +98,12 @@ def main():
         device=device
     )
     
-    # Optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     
-    print("\n" + "=" * 70)
-    print("Before Training (Random Initialization)")
-    print("=" * 70)
+    print("Before Training:")
     train_acc, test_acc = test(data, model)
     print(f"Train Acc: {train_acc:.4f}, Test Acc: {test_acc:.4f}")
     
-    # Train with DP-SGD
-    print("\n" + "=" * 70)
-    print("Training with DP-SGD")
-    print("=" * 70)
     train_dp(
         data=data,
         model=model,
@@ -149,21 +113,9 @@ def main():
         num_epochs=10
     )
     
-    # Final accuracy
-    print("\n" + "=" * 70)
-    print("After Training")
-    print("=" * 70)
+    print("\nAfter Training:")
     train_acc, test_acc = test(data, model)
     print(f"Train Acc: {train_acc:.4f}, Test Acc: {test_acc:.4f}")
-    
-    print("\n" + "=" * 70)
-    print("Training Complete!")
-    print("=" * 70)
-    print("\nNext steps:")
-    print("  1. Implement privacy accounting (compute ε, δ)")
-    print("  2. Compare DP vs non-DP baseline")
-    print("  3. Experiment with different C and σ")
-    print("  4. Test on other datasets")
 
 
 if __name__ == "__main__":
