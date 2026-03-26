@@ -3,8 +3,8 @@ import torch.nn.functional as F
 from torch_geometric.datasets import Planetoid
 from torch_geometric.loader import NeighborLoader
 
-from src.models import NodeGCN
-from src.dp_sgd import DPSGD_GNN
+from src.models.dp_gcn import NodeGCN
+from src.trainers.dp_trainer import DPSGD_GNN
 
 
 def train_dp(

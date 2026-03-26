@@ -1,0 +1,1 @@
+{"timestamp": "20260325_230240", "dataset": "cora", "model": "gcn", "algorithm": 3, "num_bins": 4, "epochs": 3, "lr": 0.01, "weight_decay": 0.0005, "hidden_channels": 64, "seed": 42, "steps_per_epoch": 10, "coverage": false, "epoch_assignment": false, "is_baseline": false, "train_acc": 0.44285714626312256, "test_acc": 0.1979999989271164, "subsample_prob": 0.3}

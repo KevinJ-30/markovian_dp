@@ -1,0 +1,140 @@
+{"dataset": "cora", "method": "MLP", "algorithm": null, "num_bins": null, "seed": 42, "train_acc": 1.0, "test_acc": 0.5849999785423279, "epochs": 200}
+{"dataset": "cora", "method": "GCN", "algorithm": null, "num_bins": null, "seed": 42, "train_acc": 1.0, "test_acc": 0.7799999713897705, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 2, "seed": 42, "train_acc": 1.0, "test_acc": 0.7480000257492065, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 4, "seed": 42, "train_acc": 1.0, "test_acc": 0.7620000243186951, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 8, "seed": 42, "train_acc": 1.0, "test_acc": 0.7699999809265137, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 16, "seed": 42, "train_acc": 1.0, "test_acc": 0.7590000033378601, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 2, "seed": 42, "train_acc": 1.0, "test_acc": 0.7480000257492065, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 4, "seed": 42, "train_acc": 1.0, "test_acc": 0.7620000243186951, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 8, "seed": 42, "train_acc": 1.0, "test_acc": 0.7699999809265137, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 16, "seed": 42, "train_acc": 1.0, "test_acc": 0.7590000033378601, "epochs": 200}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 2, "seed": 42, "train_acc": 1.0, "test_acc": 0.7699999809265137, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 4, "seed": 42, "train_acc": 1.0, "test_acc": 0.7760000228881836, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 8, "seed": 42, "train_acc": 1.0, "test_acc": 0.7749999761581421, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 16, "seed": 42, "train_acc": 1.0, "test_acc": 0.7559999823570251, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "MLP", "algorithm": null, "num_bins": null, "seed": 123, "train_acc": 1.0, "test_acc": 0.5730000138282776, "epochs": 200}
+{"dataset": "cora", "method": "GCN", "algorithm": null, "num_bins": null, "seed": 123, "train_acc": 1.0, "test_acc": 0.7870000004768372, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 2, "seed": 123, "train_acc": 1.0, "test_acc": 0.7519999742507935, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 4, "seed": 123, "train_acc": 1.0, "test_acc": 0.781000018119812, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 8, "seed": 123, "train_acc": 1.0, "test_acc": 0.7730000019073486, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 16, "seed": 123, "train_acc": 0.9928571581840515, "test_acc": 0.765999972820282, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 2, "seed": 123, "train_acc": 1.0, "test_acc": 0.7519999742507935, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 4, "seed": 123, "train_acc": 1.0, "test_acc": 0.781000018119812, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 8, "seed": 123, "train_acc": 1.0, "test_acc": 0.7730000019073486, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 16, "seed": 123, "train_acc": 0.9928571581840515, "test_acc": 0.765999972820282, "epochs": 200}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 2, "seed": 123, "train_acc": 0.9928571581840515, "test_acc": 0.753000020980835, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 4, "seed": 123, "train_acc": 1.0, "test_acc": 0.781000018119812, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 8, "seed": 123, "train_acc": 1.0, "test_acc": 0.7250000238418579, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 16, "seed": 123, "train_acc": 1.0, "test_acc": 0.7570000290870667, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "MLP", "algorithm": null, "num_bins": null, "seed": 456, "train_acc": 1.0, "test_acc": 0.5830000042915344, "epochs": 200}
+{"dataset": "cora", "method": "GCN", "algorithm": null, "num_bins": null, "seed": 456, "train_acc": 1.0, "test_acc": 0.7829999923706055, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 2, "seed": 456, "train_acc": 1.0, "test_acc": 0.7509999871253967, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 4, "seed": 456, "train_acc": 1.0, "test_acc": 0.765999972820282, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 8, "seed": 456, "train_acc": 1.0, "test_acc": 0.7609999775886536, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 16, "seed": 456, "train_acc": 1.0, "test_acc": 0.7400000095367432, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 2, "seed": 456, "train_acc": 1.0, "test_acc": 0.7509999871253967, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 4, "seed": 456, "train_acc": 1.0, "test_acc": 0.765999972820282, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 8, "seed": 456, "train_acc": 1.0, "test_acc": 0.7609999775886536, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 16, "seed": 456, "train_acc": 1.0, "test_acc": 0.7400000095367432, "epochs": 200}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 2, "seed": 456, "train_acc": 1.0, "test_acc": 0.7450000047683716, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 4, "seed": 456, "train_acc": 1.0, "test_acc": 0.7400000095367432, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 8, "seed": 456, "train_acc": 0.9928571581840515, "test_acc": 0.7630000114440918, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 16, "seed": 456, "train_acc": 0.9928571581840515, "test_acc": 0.7559999823570251, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "MLP", "algorithm": null, "num_bins": null, "seed": 789, "train_acc": 1.0, "test_acc": 0.5889999866485596, "epochs": 200}
+{"dataset": "cora", "method": "GCN", "algorithm": null, "num_bins": null, "seed": 789, "train_acc": 1.0, "test_acc": 0.7889999747276306, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 2, "seed": 789, "train_acc": 1.0, "test_acc": 0.746999979019165, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 4, "seed": 789, "train_acc": 1.0, "test_acc": 0.7710000276565552, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 8, "seed": 789, "train_acc": 1.0, "test_acc": 0.765999972820282, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 16, "seed": 789, "train_acc": 1.0, "test_acc": 0.7580000162124634, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 2, "seed": 789, "train_acc": 1.0, "test_acc": 0.746999979019165, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 4, "seed": 789, "train_acc": 1.0, "test_acc": 0.7710000276565552, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 8, "seed": 789, "train_acc": 1.0, "test_acc": 0.765999972820282, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 16, "seed": 789, "train_acc": 1.0, "test_acc": 0.7580000162124634, "epochs": 200}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 2, "seed": 789, "train_acc": 1.0, "test_acc": 0.7639999985694885, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 4, "seed": 789, "train_acc": 1.0, "test_acc": 0.7699999809265137, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 8, "seed": 789, "train_acc": 0.9928571581840515, "test_acc": 0.7250000238418579, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 16, "seed": 789, "train_acc": 0.9857142567634583, "test_acc": 0.7540000081062317, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "MLP", "algorithm": null, "num_bins": null, "seed": 1024, "train_acc": 1.0, "test_acc": 0.5730000138282776, "epochs": 200}
+{"dataset": "cora", "method": "GCN", "algorithm": null, "num_bins": null, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7820000052452087, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 2, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7730000019073486, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 4, "seed": 1024, "train_acc": 0.9928571581840515, "test_acc": 0.7549999952316284, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 8, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7680000066757202, "epochs": 200}
+{"dataset": "cora", "method": "Algo 1", "algorithm": 1, "num_bins": 16, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7720000147819519, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 2, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7730000019073486, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 4, "seed": 1024, "train_acc": 0.9928571581840515, "test_acc": 0.7549999952316284, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 8, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7680000066757202, "epochs": 200}
+{"dataset": "cora", "method": "Algo 2", "algorithm": 2, "num_bins": 16, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7720000147819519, "epochs": 200}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 2, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7390000224113464, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 4, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7149999737739563, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 8, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7509999871253967, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "cora", "method": "Algo 3", "algorithm": 3, "num_bins": 16, "seed": 1024, "train_acc": 0.9928571581840515, "test_acc": 0.7820000052452087, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "MLP", "algorithm": null, "num_bins": null, "seed": 42, "train_acc": 1.0, "test_acc": 0.7350000143051147, "epochs": 200}
+{"dataset": "pubmed", "method": "GCN", "algorithm": null, "num_bins": null, "seed": 42, "train_acc": 1.0, "test_acc": 0.7730000019073486, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 2, "seed": 42, "train_acc": 1.0, "test_acc": 0.7609999775886536, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 4, "seed": 42, "train_acc": 1.0, "test_acc": 0.765999972820282, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 8, "seed": 42, "train_acc": 0.9833333492279053, "test_acc": 0.7639999985694885, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 16, "seed": 42, "train_acc": 0.9666666388511658, "test_acc": 0.75, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 2, "seed": 42, "train_acc": 1.0, "test_acc": 0.7609999775886536, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 4, "seed": 42, "train_acc": 1.0, "test_acc": 0.765999972820282, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 8, "seed": 42, "train_acc": 0.9833333492279053, "test_acc": 0.7639999985694885, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 16, "seed": 42, "train_acc": 0.9666666388511658, "test_acc": 0.75, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 2, "seed": 42, "train_acc": 1.0, "test_acc": 0.7599999904632568, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 4, "seed": 42, "train_acc": 1.0, "test_acc": 0.7540000081062317, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 8, "seed": 42, "train_acc": 0.9666666388511658, "test_acc": 0.7639999985694885, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 16, "seed": 42, "train_acc": 0.9333333373069763, "test_acc": 0.7390000224113464, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "MLP", "algorithm": null, "num_bins": null, "seed": 123, "train_acc": 1.0, "test_acc": 0.7300000190734863, "epochs": 200}
+{"dataset": "pubmed", "method": "GCN", "algorithm": null, "num_bins": null, "seed": 123, "train_acc": 1.0, "test_acc": 0.7770000100135803, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 2, "seed": 123, "train_acc": 1.0, "test_acc": 0.7599999904632568, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 4, "seed": 123, "train_acc": 1.0, "test_acc": 0.7670000195503235, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 8, "seed": 123, "train_acc": 0.9833333492279053, "test_acc": 0.7549999952316284, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 16, "seed": 123, "train_acc": 0.949999988079071, "test_acc": 0.7570000290870667, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 2, "seed": 123, "train_acc": 1.0, "test_acc": 0.7599999904632568, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 4, "seed": 123, "train_acc": 1.0, "test_acc": 0.7670000195503235, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 8, "seed": 123, "train_acc": 0.9833333492279053, "test_acc": 0.7549999952316284, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 16, "seed": 123, "train_acc": 0.949999988079071, "test_acc": 0.7570000290870667, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 2, "seed": 123, "train_acc": 1.0, "test_acc": 0.7620000243186951, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 4, "seed": 123, "train_acc": 1.0, "test_acc": 0.7580000162124634, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 8, "seed": 123, "train_acc": 0.949999988079071, "test_acc": 0.7590000033378601, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 16, "seed": 123, "train_acc": 0.949999988079071, "test_acc": 0.7480000257492065, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "MLP", "algorithm": null, "num_bins": null, "seed": 456, "train_acc": 1.0, "test_acc": 0.7289999723434448, "epochs": 200}
+{"dataset": "pubmed", "method": "GCN", "algorithm": null, "num_bins": null, "seed": 456, "train_acc": 1.0, "test_acc": 0.7739999890327454, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 2, "seed": 456, "train_acc": 1.0, "test_acc": 0.7609999775886536, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 4, "seed": 456, "train_acc": 1.0, "test_acc": 0.7559999823570251, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 8, "seed": 456, "train_acc": 0.9833333492279053, "test_acc": 0.7689999938011169, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 16, "seed": 456, "train_acc": 0.8999999761581421, "test_acc": 0.718999981880188, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 2, "seed": 456, "train_acc": 1.0, "test_acc": 0.7609999775886536, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 4, "seed": 456, "train_acc": 1.0, "test_acc": 0.7559999823570251, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 8, "seed": 456, "train_acc": 0.9833333492279053, "test_acc": 0.7689999938011169, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 16, "seed": 456, "train_acc": 0.8999999761581421, "test_acc": 0.718999981880188, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 2, "seed": 456, "train_acc": 1.0, "test_acc": 0.7620000243186951, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 4, "seed": 456, "train_acc": 1.0, "test_acc": 0.75, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 8, "seed": 456, "train_acc": 0.9666666388511658, "test_acc": 0.7590000033378601, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 16, "seed": 456, "train_acc": 0.9333333373069763, "test_acc": 0.7519999742507935, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "MLP", "algorithm": null, "num_bins": null, "seed": 789, "train_acc": 1.0, "test_acc": 0.7239999771118164, "epochs": 200}
+{"dataset": "pubmed", "method": "GCN", "algorithm": null, "num_bins": null, "seed": 789, "train_acc": 1.0, "test_acc": 0.7710000276565552, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 2, "seed": 789, "train_acc": 1.0, "test_acc": 0.7609999775886536, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 4, "seed": 789, "train_acc": 1.0, "test_acc": 0.7570000290870667, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 8, "seed": 789, "train_acc": 1.0, "test_acc": 0.7689999938011169, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 16, "seed": 789, "train_acc": 0.9333333373069763, "test_acc": 0.7590000033378601, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 2, "seed": 789, "train_acc": 1.0, "test_acc": 0.7609999775886536, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 4, "seed": 789, "train_acc": 1.0, "test_acc": 0.7570000290870667, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 8, "seed": 789, "train_acc": 1.0, "test_acc": 0.7689999938011169, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 16, "seed": 789, "train_acc": 0.9333333373069763, "test_acc": 0.7590000033378601, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 2, "seed": 789, "train_acc": 1.0, "test_acc": 0.75, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 4, "seed": 789, "train_acc": 1.0, "test_acc": 0.7670000195503235, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 8, "seed": 789, "train_acc": 0.9666666388511658, "test_acc": 0.75, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 16, "seed": 789, "train_acc": 0.9333333373069763, "test_acc": 0.753000020980835, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "MLP", "algorithm": null, "num_bins": null, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7329999804496765, "epochs": 200}
+{"dataset": "pubmed", "method": "GCN", "algorithm": null, "num_bins": null, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7730000019073486, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 2, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7599999904632568, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 4, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7570000290870667, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 8, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7580000162124634, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 1", "algorithm": 1, "num_bins": 16, "seed": 1024, "train_acc": 0.949999988079071, "test_acc": 0.7599999904632568, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 2, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7599999904632568, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 4, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7570000290870667, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 8, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7580000162124634, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 2", "algorithm": 2, "num_bins": 16, "seed": 1024, "train_acc": 0.949999988079071, "test_acc": 0.7599999904632568, "epochs": 200}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 2, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7549999952316284, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 4, "seed": 1024, "train_acc": 1.0, "test_acc": 0.7509999871253967, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 8, "seed": 1024, "train_acc": 0.9333333373069763, "test_acc": 0.7549999952316284, "epochs": 200, "subsample_prob": 0.3}
+{"dataset": "pubmed", "method": "Algo 3", "algorithm": 3, "num_bins": 16, "seed": 1024, "train_acc": 0.949999988079071, "test_acc": 0.7630000114440918, "epochs": 200, "subsample_prob": 0.3}

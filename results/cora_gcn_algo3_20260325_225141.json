@@ -1,0 +1,51 @@
+{
+  "timestamp": "20260325_225141",
+  "config": {
+    "dataset": "cora",
+    "model": "gcn",
+    "algorithm": 3,
+    "num_bins": [
+      4
+    ],
+    "epochs": 3,
+    "lr": 0.01,
+    "weight_decay": 0.0005,
+    "hidden_channels": 64,
+    "seed": 42,
+    "steps_per_epoch": 10,
+    "no_coverage": true,
+    "subsample_prob": 0.3
+  },
+  "results": [
+    {
+      "name": "Baseline GCN",
+      "algorithm": "-",
+      "bins": "-",
+      "coverage": "-",
+      "epoch_assign": "-",
+      "epochs": 3,
+      "train_acc": 0.9571428298950195,
+      "test_acc": 0.7170000076293945
+    },
+    {
+      "name": "Algo3 N=4 cov=off ea=off p=0.3",
+      "algorithm": 3,
+      "bins": 4,
+      "coverage": "off",
+      "epoch_assign": "off",
+      "epochs": 3,
+      "train_acc": 0.44285714626312256,
+      "test_acc": 0.1979999989271164
+    },
+    {
+      "name": "Algo3 N=4 cov=off ea=on p=0.3",
+      "algorithm": 3,
+      "bins": 4,
+      "coverage": "off",
+      "epoch_assign": "on",
+      "epochs": 1,
+      "train_acc": 0.4571428596973419,
+      "test_acc": 0.34200000762939453
+    }
+  ]
+}

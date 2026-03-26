@@ -21,11 +21,3 @@ class SubgraphGCN(nn.Module):
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = self.conv2(x, edge_index)
         return F.log_softmax(x, dim=1)
-
-
-def make_model(dataset, hidden_channels=64) -> SubgraphGCN:
-    return SubgraphGCN(
-        in_channels=dataset.num_features,
-        hidden_channels=hidden_channels,
-        out_channels=dataset.num_classes,
-    )

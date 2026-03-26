@@ -12,8 +12,10 @@ import torch
 import torch.optim as optim
 from torch_geometric.datasets import Planetoid
 
-from src.subgraph_model import make_model
-from src.subgraph_trainer import BaselineTrainer, SubgraphTrainer
+from src.models import make_model
+from src.trainers.baseline_trainer import BaselineTrainer
+from src.trainers.subgraph_trainer import SubgraphTrainer
+from src.algorithms.balls_and_bins import BallsAndBins
 
 CONFIG = {
     'num_epochs': 200,
@@ -35,7 +37,7 @@ def load_cora(device):
 
 def run_baseline(dataset, data, device, num_epochs):
     torch.manual_seed(CONFIG['seed'])
-    model = make_model(dataset, CONFIG['hidden_channels']).to(device)
+    model = make_model(dataset, hidden_channels=CONFIG['hidden_channels']).to(device)
     optimizer = optim.Adam(model.parameters(), lr=CONFIG['lr'], weight_decay=CONFIG['weight_decay'])
     trainer = BaselineTrainer(model, optimizer, device=device)
 
@@ -48,11 +50,12 @@ def run_baseline(dataset, data, device, num_epochs):
 
 def run_subgraph(dataset, data, device, num_bins, use_coverage, use_epoch_assignment, num_epochs):
     torch.manual_seed(CONFIG['seed'])
-    model = make_model(dataset, CONFIG['hidden_channels']).to(device)
+    model = make_model(dataset, hidden_channels=CONFIG['hidden_channels']).to(device)
     optimizer = optim.Adam(model.parameters(), lr=CONFIG['lr'], weight_decay=CONFIG['weight_decay'])
     trainer = SubgraphTrainer(
         model, optimizer,
         num_bins=num_bins,
+        algorithm=BallsAndBins(),
         use_coverage_correction=use_coverage,
         use_epoch_assignment=use_epoch_assignment,
         steps_per_epoch=CONFIG['steps_per_epoch'],
