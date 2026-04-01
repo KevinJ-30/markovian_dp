@@ -3,6 +3,8 @@ Subgraph trainer — trains on random subgraph partitions with optional coverage
 Accepts a pluggable SubgraphAlgorithm for partitioning.
 """
 
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -14,7 +16,11 @@ class SubgraphTrainer:
                  use_coverage_correction=True,
                  use_epoch_assignment=False,
                  steps_per_epoch=10,
-                 device='cpu'):
+                 device='cpu',
+                 dp=False,
+                 max_grad_norm=1.0,
+                 epsilon=None,
+                 delta=1e-5):
         self.model = model
         self.optimizer = optimizer
         self.num_bins = num_bins
@@ -23,6 +29,18 @@ class SubgraphTrainer:
         self.use_epoch_assignment = use_epoch_assignment
         self.steps_per_epoch = steps_per_epoch
         self.device = device
+        self.dp = dp
+        self.max_grad_norm = max_grad_norm
+        self.epsilon = epsilon
+        self.delta = delta
+
+        if self.dp:
+            if self.epsilon is None:
+                raise ValueError("epsilon must be provided when dp=True")
+            # Noise std: sigma = (2C / N) * sqrt(2 * ln(1.25 / delta)) / epsilon
+            C = self.max_grad_norm
+            N = self.num_bins
+            self.noise_std = (2 * C / N) * math.sqrt(2 * math.log(1.25 / self.delta)) / self.epsilon
 
     def train_epoch(self, data) -> list:
         """
@@ -57,10 +75,16 @@ class SubgraphTrainer:
         active_mask = torch.zeros(num_nodes, dtype=torch.bool, device=self.device)
         active_mask[active_train_nodes] = True
 
+        partitions = self.algorithm.partition(edge_index, num_nodes, N, self.device)
+
+        if self.dp:
+            return self._train_step_dp(data, partitions, active_mask, edge_index, y, num_nodes, N)
+        else:
+            return self._train_step_standard(data, partitions, active_mask, edge_index, y, num_nodes, N)
+
+    def _train_step_standard(self, data, partitions, active_mask, edge_index, y, num_nodes, N) -> float:
         if self.use_coverage_correction:
             full_degree = compute_full_degrees(edge_index, num_nodes)
-
-        partitions = self.algorithm.partition(edge_index, num_nodes, N, self.device)
 
         total_loss = torch.tensor(0.0, device=self.device)
         any_loss = False
@@ -88,6 +112,71 @@ class SubgraphTrainer:
         total_loss.backward()
         self.optimizer.step()
         return total_loss.item()
+
+    def _train_step_dp(self, data, partitions, active_mask, edge_index, y, num_nodes, N) -> float:
+        if self.use_coverage_correction:
+            full_degree = compute_full_degrees(edge_index, num_nodes)
+
+        bin_grads = []
+        total_loss_val = 0.0
+
+        for bin_mask, directed_ei in partitions:
+            out = self.model(data.x, directed_ei)
+
+            active_in_bin = bin_mask & active_mask
+            if not active_in_bin.any():
+                continue
+
+            loss_i = F.nll_loss(out[active_in_bin], y[active_in_bin], reduction='sum')
+
+            if self.use_coverage_correction:
+                c_i = self._compute_coverage_correction(bin_mask, edge_index, full_degree, num_nodes)
+            else:
+                c_i = 1.0
+
+            scaled_loss = c_i * loss_i / N
+            total_loss_val += scaled_loss.item()
+
+            self.optimizer.zero_grad()
+            scaled_loss.backward()
+
+            # Save a copy of gradients for this bin
+            grads = []
+            for p in self.model.parameters():
+                if p.grad is not None:
+                    grads.append(p.grad.detach().clone())
+                else:
+                    grads.append(torch.zeros_like(p))
+            bin_grads.append(grads)
+
+        if not bin_grads:
+            return None
+
+        # Clip each bin's gradient vector
+        for grads in bin_grads:
+            total_norm = torch.sqrt(sum(g.pow(2).sum() for g in grads))
+            clip_coef = min(1.0, self.max_grad_norm / (total_norm.item() + 1e-8))
+            if clip_coef < 1.0:
+                for g in grads:
+                    g.mul_(clip_coef)
+
+        # Average clipped gradients
+        avg_grads = []
+        for param_idx in range(len(bin_grads[0])):
+            stacked = torch.stack([bg[param_idx] for bg in bin_grads])
+            avg_grads.append(stacked.mean(dim=0))
+
+        # Add Gaussian noise
+        for avg_g in avg_grads:
+            avg_g.add_(torch.randn_like(avg_g) * self.noise_std)
+
+        # Set gradients and step
+        self.optimizer.zero_grad()
+        for p, avg_g in zip(self.model.parameters(), avg_grads):
+            p.grad = avg_g
+        self.optimizer.step()
+
+        return total_loss_val
 
     def _compute_coverage_correction(self, bin_mask, edge_index, full_degree, num_nodes) -> float:
         """

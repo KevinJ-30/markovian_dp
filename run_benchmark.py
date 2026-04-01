@@ -29,7 +29,7 @@ from src.trainers.subgraph_trainer import SubgraphTrainer
 
 SEEDS = [42, 123, 456, 789, 1024]
 NUM_BINS = [2, 4, 8, 16]
-DATASETS = ['cora', 'pubmed']
+DATASETS = ['cora', 'pubmed', 'ogbn-products']
 HIDDEN_CHANNELS = 64
 LR = 0.01
 WEIGHT_DECAY = 5e-4

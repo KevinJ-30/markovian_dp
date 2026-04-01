@@ -23,7 +23,7 @@ from src.trainers.subgraph_trainer import SubgraphTrainer
 
 def parse_args():
     p = argparse.ArgumentParser(description="Subgraph GCN utility experiments")
-    p.add_argument('--dataset', choices=['cora', 'citeseer', 'pubmed'], default='cora')
+    p.add_argument('--dataset', choices=['cora', 'citeseer', 'pubmed', 'ogbn-products'], default='cora')
     p.add_argument('--algorithm', type=int, choices=[1, 2, 3], default=1)
     p.add_argument('--model', choices=['gcn', 'mlp'], default='gcn')
     p.add_argument('--num-bins', type=int, nargs='+', default=[2, 4, 8])
@@ -39,6 +39,10 @@ def parse_args():
     p.add_argument('--epoch-assignment', action='store_true')
     p.add_argument('--baseline', action='store_true', help='Run baseline (no subgraph)')
     p.add_argument('--no-plot', action='store_true')
+    p.add_argument('--dp', action='store_true', help='Enable DP noise and clipping')
+    p.add_argument('--eps', type=float, default=None, help='Privacy budget epsilon (required with --dp)')
+    p.add_argument('--clip-norm', type=float, default=1.0, help='Max gradient norm for DP clipping')
+    p.add_argument('--delta', type=float, default=1e-5, help='Privacy parameter delta')
     return p.parse_args()
 
 
@@ -71,6 +75,10 @@ def run_subgraph(dataset, data, device, num_bins, use_coverage, use_epoch_assign
         use_epoch_assignment=use_epoch_assignment,
         steps_per_epoch=args.steps_per_epoch,
         device=device,
+        dp=args.dp,
+        max_grad_norm=args.clip_norm,
+        epsilon=args.eps,
+        delta=args.delta,
     )
 
     if use_epoch_assignment:
@@ -87,6 +95,9 @@ def run_subgraph(dataset, data, device, num_bins, use_coverage, use_epoch_assign
 
 def main():
     args = parse_args()
+
+    if args.dp and args.eps is None:
+        raise SystemExit("Error: --eps is required when --dp is set")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
@@ -119,6 +130,9 @@ def main():
             'coverage': coverage,
             'epoch_assignment': epoch_assignment,
             'is_baseline': is_baseline,
+            'dp': args.dp,
+            'epsilon': args.eps,
+            'clip_norm': args.clip_norm,
             'train_acc': train_acc,
             'test_acc': test_acc,
         }
