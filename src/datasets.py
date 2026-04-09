@@ -31,7 +31,14 @@ def load_dataset(name, device='cpu'):
 
     if key == 'ogbn-products':
         from ogb.nodeproppred import PygNodePropPredDataset
-        dataset = PygNodePropPredDataset(name='ogbn-products', root='/tmp/ogbn-products')
+        # PyTorch 2.6+ defaults torch.load to weights_only=True, which breaks
+        # OGB's internal loading of PyG objects. Allow unsafe load for OGB.
+        _orig_load = torch.load
+        torch.load = lambda *a, **kw: _orig_load(*a, **{**kw, 'weights_only': False})
+        try:
+            dataset = PygNodePropPredDataset(name='ogbn-products', root='/tmp/ogbn-products')
+        finally:
+            torch.load = _orig_load
         data = dataset[0]
         # ogbn-products labels are (N, 1) — squeeze to (N,)
         data.y = data.y.squeeze(-1)
