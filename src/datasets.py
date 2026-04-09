@@ -30,13 +30,16 @@ def load_dataset(name, device='cpu'):
         raise ValueError(f"Unknown dataset '{name}'. Supported: {list(SUPPORTED_DATASETS.keys())}")
 
     if key == 'ogbn-products':
+        import os
         from ogb.nodeproppred import PygNodePropPredDataset
         # PyTorch 2.6+ defaults torch.load to weights_only=True, which breaks
         # OGB's internal loading of PyG objects. Allow unsafe load for OGB.
         _orig_load = torch.load
         torch.load = lambda *a, **kw: _orig_load(*a, **{**kw, 'weights_only': False})
+        # Allow override via env var (so cluster runs can use scratch space)
+        root = os.environ.get('OGB_DATA_ROOT', 'data/ogbn-products')
         try:
-            dataset = PygNodePropPredDataset(name='ogbn-products', root='/tmp/ogbn-products')
+            dataset = PygNodePropPredDataset(name='ogbn-products', root=root)
         finally:
             torch.load = _orig_load
         data = dataset[0]
