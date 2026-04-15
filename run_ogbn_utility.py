@@ -38,6 +38,8 @@ BATCH_SIZE = 1024
 NUM_NEIGHBORS = [15, 10]       # per-layer neighbor sampling (2-layer GCN)
 STEPS_PER_EPOCH = 20
 SUBSAMPLE_PROB = 0.3           # Algo 3 only
+POISSON_Q_EPOCH = 0.1          # Poisson subsampling: epoch-level inclusion rate
+POISSON_Q_STEP = 0.3           # Poisson subsampling: step-level inclusion rate
 
 
 # ── Mini-batch baseline training ───────────────────────────────────────────
@@ -145,7 +147,8 @@ def run_baseline(dataset, data, device, *, model_type, seed, **loop_kwargs):
     return train_acc, test_acc, actual_epochs
 
 
-def run_subgraph(dataset, data, device, *, algorithm_id, num_bins, seed, **loop_kwargs):
+def run_subgraph(dataset, data, device, *, algorithm_id, num_bins, seed,
+                 poisson_subsampling=False, **loop_kwargs):
     torch.manual_seed(seed)
     algo_kwargs = {}
     if algorithm_id == 3:
@@ -160,6 +163,9 @@ def run_subgraph(dataset, data, device, *, algorithm_id, num_bins, seed, **loop_
         algorithm=algorithm,
         use_coverage_correction=False,
         use_epoch_assignment=False,
+        poisson_subsampling=poisson_subsampling,
+        q_epoch=POISSON_Q_EPOCH if poisson_subsampling else 1.0,
+        q_step=POISSON_Q_STEP if poisson_subsampling else 1.0,
         steps_per_epoch=STEPS_PER_EPOCH,
         device=device,
     )
@@ -171,7 +177,7 @@ def run_subgraph(dataset, data, device, *, algorithm_id, num_bins, seed, **loop_
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
-def run_ogbn_utility(epochs, *, seeds, converge, max_epochs, patience, delta):
+def run_ogbn_utility(epochs, *, seeds, converge, max_epochs, patience, delta, poisson=False):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
@@ -233,6 +239,29 @@ def run_ogbn_utility(epochs, *, seeds, converge, max_epochs, patience, delta):
                     epochs=actual_epochs,
                     **(dict(subsample_prob=SUBSAMPLE_PROB) if algo_id == 3 else {}),
                 ))
+
+        # ── Subgraph algorithms + Poisson subsampling ──
+        if poisson:
+            for algo_id in [2, 3]:
+                for nb in NUM_BINS:
+                    label = f"Algo {algo_id}, bins={nb}, poisson(q_e={POISSON_Q_EPOCH}, q_s={POISSON_Q_STEP})"
+                    if algo_id == 3:
+                        label += f", p={SUBSAMPLE_PROB}"
+                    print(f"  [seed={seed}] {label} ...", end=' ', flush=True)
+                    train_acc, test_acc, actual_epochs = run_subgraph(
+                        dataset, data, device,
+                        algorithm_id=algo_id, num_bins=nb, seed=seed,
+                        poisson_subsampling=True, **loop_kwargs,
+                    )
+                    print(f"train={train_acc:.4f}  test={test_acc:.4f}  epochs={actual_epochs}")
+                    all_results.append(dict(
+                        method=f'Algo {algo_id} + Poisson', algorithm=algo_id, num_bins=nb,
+                        seed=seed, train_acc=train_acc, test_acc=test_acc,
+                        epochs=actual_epochs,
+                        poisson_subsampling=True,
+                        q_epoch=POISSON_Q_EPOCH, q_step=POISSON_Q_STEP,
+                        **(dict(subsample_prob=SUBSAMPLE_PROB) if algo_id == 3 else {}),
+                    ))
 
         # Flush after each seed
         with open(jsonl_path, 'w') as f:
@@ -315,7 +344,19 @@ def main():
                         help='Epochs with no improvement before stopping (default: 10)')
     parser.add_argument('--delta', type=float, default=1e-4,
                         help='Minimum loss decrease to count as improvement (default: 1e-4)')
+    parser.add_argument('--poisson', action='store_true',
+                        help='Also run subgraph algos with Poisson subsampling')
+    parser.add_argument('--q-epoch', type=float, default=None,
+                        help=f'Override POISSON_Q_EPOCH (default: {POISSON_Q_EPOCH})')
+    parser.add_argument('--q-step', type=float, default=None,
+                        help=f'Override POISSON_Q_STEP (default: {POISSON_Q_STEP})')
     args = parser.parse_args()
+
+    global POISSON_Q_EPOCH, POISSON_Q_STEP
+    if args.q_epoch is not None:
+        POISSON_Q_EPOCH = args.q_epoch
+    if args.q_step is not None:
+        POISSON_Q_STEP = args.q_step
 
     seeds = ALL_SEEDS[:args.seeds]
 
@@ -326,6 +367,7 @@ def main():
         max_epochs=args.max_epochs,
         patience=args.patience,
         delta=args.delta,
+        poisson=args.poisson,
     )
     plot_results(all_results, timestamp)
 

@@ -15,42 +15,89 @@ class SubgraphTrainer:
     def __init__(self, model, optimizer, num_bins, algorithm,
                  use_coverage_correction=True,
                  use_epoch_assignment=False,
+                 poisson_subsampling=False,
+                 q_epoch=1.0,
+                 q_step=1.0,
                  steps_per_epoch=10,
                  device='cpu',
                  dp=False,
                  max_grad_norm=1.0,
                  epsilon=None,
-                 delta=1e-5):
+                 delta=1e-5,
+                 noise_multiplier=None):
         self.model = model
         self.optimizer = optimizer
         self.num_bins = num_bins
         self.algorithm = algorithm
         self.use_coverage_correction = use_coverage_correction
         self.use_epoch_assignment = use_epoch_assignment
+        self.poisson_subsampling = poisson_subsampling
+        self.q_epoch = q_epoch
+        self.q_step = q_step
         self.steps_per_epoch = steps_per_epoch
         self.device = device
         self.dp = dp
         self.max_grad_norm = max_grad_norm
         self.epsilon = epsilon
         self.delta = delta
+        self.noise_multiplier = noise_multiplier
+        self.training_steps = 0
+
+        if self.poisson_subsampling and self.use_epoch_assignment:
+            raise ValueError("Cannot use both poisson_subsampling and use_epoch_assignment")
 
         if self.dp:
-            if self.epsilon is None:
-                raise ValueError("epsilon must be provided when dp=True")
-            # Noise std: sigma = (2C / N) * sqrt(2 * ln(1.25 / delta)) / epsilon
-            C = self.max_grad_norm
-            N = self.num_bins
-            self.noise_std = (2 * C / N) * math.sqrt(2 * math.log(1.25 / self.delta)) / self.epsilon
+            if noise_multiplier is not None and epsilon is not None:
+                raise ValueError("Provide noise_multiplier or epsilon, not both")
+            if noise_multiplier is not None:
+                self.noise_multiplier = noise_multiplier
+                self.noise_std = noise_multiplier * self.max_grad_norm
+            elif epsilon is not None:
+                # Standard Gaussian mechanism (same as Opacus):
+                # sigma = C * sqrt(2 * ln(1.25 / delta)) / epsilon
+                # Applied per-bin before averaging.
+                C = self.max_grad_norm
+                self.noise_std = C * math.sqrt(2 * math.log(1.25 / self.delta)) / self.epsilon
+                self.noise_multiplier = self.noise_std / self.max_grad_norm
+            else:
+                raise ValueError("dp=True requires either noise_multiplier or epsilon")
 
     def train_epoch(self, data) -> list:
         """
         Runs one full epoch. Returns list of per-step losses.
-        If use_epoch_assignment: steps_per_epoch steps, each ~|train|/T active nodes.
-        Else: 1 step with all training nodes.
+
+        Three modes (mutually exclusive):
+        - poisson_subsampling: Two-phase Poisson subsampling.
+            Phase 1: each train node included independently with prob q_epoch.
+            Phase 2: for each of steps_per_epoch steps, each epoch-node
+            included independently with prob q_step.
+            Effective per-step rate = q_epoch * q_step.
+        - use_epoch_assignment: deterministic chunking into steps_per_epoch.
+        - default: 1 step with all training nodes.
         """
         train_indices = data.train_mask.nonzero(as_tuple=True)[0]
 
-        if self.use_epoch_assignment:
+        if self.poisson_subsampling:
+            # Phase 1: Poisson subsample for this epoch
+            epoch_mask = torch.bernoulli(
+                torch.full((len(train_indices),), self.q_epoch, device=self.device)
+            ).bool()
+            epoch_nodes = train_indices[epoch_mask]
+
+            # Phase 2: per-step Poisson subsample from epoch pool
+            losses = []
+            for _ in range(self.steps_per_epoch):
+                step_mask = torch.bernoulli(
+                    torch.full((len(epoch_nodes),), self.q_step, device=self.device)
+                ).bool()
+                step_nodes = epoch_nodes[step_mask]
+                if len(step_nodes) > 0:
+                    loss = self._train_step(data, step_nodes)
+                    if loss is not None:
+                        losses.append(loss)
+            return losses
+
+        elif self.use_epoch_assignment:
             perm = torch.randperm(len(train_indices), device=self.device)
             chunks = torch.chunk(train_indices[perm], self.steps_per_epoch)
         else:
@@ -152,29 +199,28 @@ class SubgraphTrainer:
         if not bin_grads:
             return None
 
-        # Clip each bin's gradient vector
+        # Clip and noise each bin's gradient vector independently
         for grads in bin_grads:
             total_norm = torch.sqrt(sum(g.pow(2).sum() for g in grads))
             clip_coef = min(1.0, self.max_grad_norm / (total_norm.item() + 1e-8))
             if clip_coef < 1.0:
                 for g in grads:
                     g.mul_(clip_coef)
+            for g in grads:
+                g.add_(torch.randn_like(g) * self.noise_std)
 
-        # Average clipped gradients
+        # Average noised gradients
         avg_grads = []
         for param_idx in range(len(bin_grads[0])):
             stacked = torch.stack([bg[param_idx] for bg in bin_grads])
             avg_grads.append(stacked.mean(dim=0))
-
-        # Add Gaussian noise
-        for avg_g in avg_grads:
-            avg_g.add_(torch.randn_like(avg_g) * self.noise_std)
 
         # Set gradients and step
         self.optimizer.zero_grad()
         for p, avg_g in zip(self.model.parameters(), avg_grads):
             p.grad = avg_g
         self.optimizer.step()
+        self.training_steps += 1
 
         return total_loss_val
 

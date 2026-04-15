@@ -23,7 +23,7 @@ from src.trainers.subgraph_trainer import SubgraphTrainer
 
 def parse_args():
     p = argparse.ArgumentParser(description="Subgraph GCN utility experiments")
-    p.add_argument('--dataset', choices=['cora', 'citeseer', 'pubmed', 'ogbn-products'], default='cora')
+    p.add_argument('--dataset', choices=['cora', 'citeseer', 'pubmed'], default='cora')
     p.add_argument('--algorithm', type=int, choices=[1, 2, 3], default=1)
     p.add_argument('--model', choices=['gcn', 'mlp'], default='gcn')
     p.add_argument('--num-bins', type=int, nargs='+', default=[2, 4, 8])
@@ -37,6 +37,12 @@ def parse_args():
                    help='p_perp for Algorithm 3 (probability of dummy bin assignment)')
     p.add_argument('--coverage', action='store_true')
     p.add_argument('--epoch-assignment', action='store_true')
+    p.add_argument('--poisson', action='store_true',
+                   help='Enable two-phase Poisson subsampling of training nodes')
+    p.add_argument('--q-epoch', type=float, default=1.0,
+                   help='Poisson inclusion probability per epoch (default: 1.0)')
+    p.add_argument('--q-step', type=float, default=1.0,
+                   help='Poisson inclusion probability per step (default: 1.0)')
     p.add_argument('--baseline', action='store_true', help='Run baseline (no subgraph)')
     p.add_argument('--no-plot', action='store_true')
     p.add_argument('--dp', action='store_true', help='Enable DP noise and clipping')
@@ -73,6 +79,9 @@ def run_subgraph(dataset, data, device, num_bins, use_coverage, use_epoch_assign
         algorithm=algorithm,
         use_coverage_correction=use_coverage,
         use_epoch_assignment=use_epoch_assignment,
+        poisson_subsampling=args.poisson,
+        q_epoch=args.q_epoch,
+        q_step=args.q_step,
         steps_per_epoch=args.steps_per_epoch,
         device=device,
         dp=args.dp,
@@ -129,6 +138,9 @@ def main():
             'steps_per_epoch': args.steps_per_epoch,
             'coverage': coverage,
             'epoch_assignment': epoch_assignment,
+            'poisson_subsampling': args.poisson,
+            'q_epoch': args.q_epoch if args.poisson else None,
+            'q_step': args.q_step if args.poisson else None,
             'is_baseline': is_baseline,
             'dp': args.dp,
             'epsilon': args.eps,

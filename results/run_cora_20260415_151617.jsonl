@@ -1,0 +1,2 @@
+{"method": "GCN", "model": "gcn", "algorithm": null, "num_bins": null, "seed": 42, "train_acc": 0.9571428298950195, "test_acc": 0.7170000076293945, "epochs": 3, "dataset": "cora"}
+{"method": "Algo 2", "model": "gcn", "algorithm": 2, "num_bins": 4, "seed": 42, "train_acc": 0.8785714507102966, "test_acc": 0.6140000224113464, "epochs": 3, "coverage": false, "epoch_assignment": false, "poisson": false, "dataset": "cora"}

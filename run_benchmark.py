@@ -9,6 +9,7 @@ Usage:
     python run_benchmark.py              # full run (200 epochs)
     python run_benchmark.py --epochs 3   # quick smoke test
     python run_benchmark.py --converge --max-epochs 500 --patience 20  # convergence mode
+    python run_benchmark.py --dp --eps 1.0  # DP noise/clipping on subgraph (bin) gradients
 """
 
 import argparse
@@ -29,7 +30,7 @@ from src.trainers.subgraph_trainer import SubgraphTrainer
 
 SEEDS = [42, 123, 456, 789, 1024]
 NUM_BINS = [2, 4, 8, 16]
-DATASETS = ['cora', 'pubmed', 'ogbn-products']
+DATASETS = ['cora', 'pubmed']
 HIDDEN_CHANNELS = 64
 LR = 0.01
 WEIGHT_DECAY = 5e-4
@@ -84,7 +85,8 @@ def run_baseline(dataset, data, device, *, model_type, seed, epochs,
 
 
 def run_subgraph(dataset, data, device, *, algorithm_id, num_bins, seed, epochs,
-                 converge=False, max_epochs=500, patience=20, delta=1e-4):
+                 converge=False, max_epochs=500, patience=20, delta=1e-4,
+                 dp=False, epsilon=None, dp_delta=1e-5, clip_norm=1.0):
     torch.manual_seed(seed)
     algo_kwargs = {}
     if algorithm_id == 3:
@@ -101,6 +103,10 @@ def run_subgraph(dataset, data, device, *, algorithm_id, num_bins, seed, epochs,
         use_epoch_assignment=False,
         steps_per_epoch=STEPS_PER_EPOCH,
         device=device,
+        dp=dp,
+        max_grad_norm=clip_norm,
+        epsilon=epsilon,
+        delta=dp_delta,
     )
 
     actual_epochs = _train_loop(
@@ -114,11 +120,14 @@ def run_subgraph(dataset, data, device, *, algorithm_id, num_bins, seed, epochs,
 
 # ── Main benchmark loop ─────────────────────────────────────────────────────
 
-def run_benchmark(epochs, *, converge=False, max_epochs=500, patience=20, delta=1e-4):
+def run_benchmark(epochs, *, converge=False, max_epochs=500, patience=20, delta=1e-4,
+                  dp=False, epsilon=None, dp_delta=1e-5, clip_norm=1.0):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
     if converge:
         print(f"Convergence mode: max_epochs={max_epochs}, patience={patience}, delta={delta}")
+    if dp:
+        print(f"DP subgraph training: ε={epsilon}, δ={dp_delta}, clip_norm={clip_norm}")
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     os.makedirs('results', exist_ok=True)
@@ -172,15 +181,22 @@ def run_benchmark(epochs, *, converge=False, max_epochs=500, patience=20, delta=
                     train_acc, test_acc, actual_epochs = run_subgraph(
                         dataset, data, device,
                         algorithm_id=algo_id, num_bins=nb, seed=seed, epochs=epochs,
+                        dp=dp, epsilon=epsilon, dp_delta=dp_delta, clip_norm=clip_norm,
                         **conv_kwargs,
                     )
                     print(f"train={train_acc:.4f}  test={test_acc:.4f}  epochs={actual_epochs}")
-                    all_results.append(dict(
+                    row = dict(
                         dataset=ds_name, method=f'Algo {algo_id}', algorithm=algo_id,
                         num_bins=nb, seed=seed, train_acc=train_acc, test_acc=test_acc,
                         epochs=actual_epochs,
+                        dp=dp,
                         **(dict(subsample_prob=SUBSAMPLE_PROB) if algo_id == 3 else {}),
-                    ))
+                    )
+                    if dp:
+                        row['epsilon'] = epsilon
+                        row['delta'] = dp_delta
+                        row['clip_norm'] = clip_norm
+                    all_results.append(row)
 
         # Flush results after each dataset
         with open(jsonl_path, 'w') as f:
@@ -193,14 +209,18 @@ def run_benchmark(epochs, *, converge=False, max_epochs=500, patience=20, delta=
 
 # ── Plotting ─────────────────────────────────────────────────────────────────
 
-def plot_benchmark(all_results, timestamp):
+def plot_benchmark(all_results, timestamp, *, dp=False, epsilon=None):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     import numpy as np
 
     for ds_name in DATASETS:
-        ds_rows = [r for r in all_results if r['dataset'] == ds_name]
+        ds_rows = [
+            r for r in all_results
+            if r['dataset'] == ds_name
+            and (r['method'] in ('MLP', 'GCN') or r.get('dp') == dp)
+        ]
         if not ds_rows:
             continue
 
@@ -240,7 +260,10 @@ def plot_benchmark(all_results, timestamp):
 
         ax.set_xlabel('Number of Bins', fontsize=12)
         ax.set_ylabel('Test Accuracy', fontsize=12)
-        ax.set_title(f'{ds_name.capitalize()} — Accuracy vs Bins', fontsize=13)
+        title = f'{ds_name.capitalize()} — Accuracy vs Bins'
+        if dp and epsilon is not None:
+            title += f' (DP ε={epsilon})'
+        ax.set_title(title, fontsize=13)
         ax.set_xticks(NUM_BINS)
         ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
@@ -265,7 +288,18 @@ def main():
                         help='Epochs with no improvement before stopping (default: 20)')
     parser.add_argument('--delta', type=float, default=1e-4,
                         help='Minimum loss decrease to count as improvement (default: 1e-4)')
+    parser.add_argument('--dp', action='store_true',
+                        help='Enable DP gradient clipping and noise on subgraph (bin) steps')
+    parser.add_argument('--eps', type=float, default=None,
+                        help='Privacy budget ε for DP (required with --dp)')
+    parser.add_argument('--dp-delta', type=float, default=1e-5,
+                        help='Privacy parameter δ for DP (default: 1e-5)')
+    parser.add_argument('--clip-norm', type=float, default=1.0,
+                        help='Max gradient norm for DP clipping (default: 1.0)')
     args = parser.parse_args()
+
+    if args.dp and args.eps is None:
+        raise SystemExit('Error: --eps is required when --dp is set')
 
     all_results, timestamp = run_benchmark(
         args.epochs,
@@ -273,8 +307,12 @@ def main():
         max_epochs=args.max_epochs,
         patience=args.patience,
         delta=args.delta,
+        dp=args.dp,
+        epsilon=args.eps,
+        dp_delta=args.dp_delta,
+        clip_norm=args.clip_norm,
     )
-    plot_benchmark(all_results, timestamp)
+    plot_benchmark(all_results, timestamp, dp=args.dp, epsilon=args.eps)
 
 
 if __name__ == '__main__':
