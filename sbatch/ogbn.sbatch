@@ -3,7 +3,7 @@
 #SBATCH -N1 --ntasks-per-node=1           # 1 node, 1 task
 #SBATCH --gres=gpu:H200:1                # 1x H200 GPU
 #SBATCH --mem-per-gpu=128G               # 128G — ogbn-products is large
-#SBATCH -t8:00:00                         # 8 hours walltime
+#SBATCH -t6:00:00                         # 8 hours walltime
 #SBATCH -oReport-ogbn-%j.out              # Output file
 #SBATCH --mail-type=BEGIN,END,FAIL        # Mail notifications
 
@@ -18,8 +18,8 @@
 
 cd $SLURM_SUBMIT_DIR
 
-module load anaconda3
-module load cuda
+#module load anaconda3
+#module load cuda
 
 # Pre-download dataset to scratch if OGB_DATA_ROOT is set
 if [ -n "$OGB_DATA_ROOT" ]; then
