@@ -21,17 +21,15 @@ cd $SLURM_SUBMIT_DIR
 #module load anaconda3
 #module load cuda
 
-# Pre-download dataset to scratch if OGB_DATA_ROOT is set
-if [ -n "$OGB_DATA_ROOT" ]; then
-    echo "OGB data root: $OGB_DATA_ROOT"
-fi
+export OGB_DATA_ROOT=/storage/ice1/8/1/kjacob7/ogb_data/ogbn-products
+echo "OGB data root: $OGB_DATA_ROOT"
 
 # ── 1. Baselines ──
 echo "=== Baselines ==="
 srun python run.py \
     --dataset ogbn-products \
     --baseline gcn mlp \
-    --seeds 3 \
+    --seeds 1 \
     --converge --max-epochs 300 --patience 15 \
     --batch-size 1024 --num-neighbors 15 10 \
     --tag ogbn_baselines \
@@ -56,7 +54,7 @@ srun python run.py \
 srun python run.py \
     --dataset ogbn-products \
     --algo 2 3 \
-    --num-bins 4 8 16 32 \
+    --num-bins 8 16 32 \
     --poisson --q-epoch 0.1 --q-step 0.3 --steps-per-epoch 10 \
     --seeds 1 \
     --converge --max-epochs 300 --patience 15 \
