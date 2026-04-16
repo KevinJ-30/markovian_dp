@@ -21,23 +21,19 @@
 
 cd $SLURM_SUBMIT_DIR
 
-module load anaconda3
-module load cuda
-
-if [ -n "$OGB_DATA_ROOT" ]; then
-    echo "OGB data root: $OGB_DATA_ROOT"
-fi
+export OGB_DATA_ROOT=/storage/ice1/8/1/kjacob7/ogb_data/ogbn-products
+echo "OGB data root: $OGB_DATA_ROOT"
 
 # ── Baselines (for plot reference lines) ──
-echo "=== Baselines ==="
-srun python run.py \
-    --dataset ogbn-products \
-    --baseline gcn mlp \
-    --seeds 3 \
-    --converge --max-epochs 300 --patience 15 \
-    --batch-size 1024 --num-neighbors 15 10 \
-    --tag poisson_baselines \
-    --output-dir results/poisson
+#echo "=== Baselines ==="
+#srun python run.py \
+#    --dataset ogbn-products \
+#    --baseline gcn mlp \
+ #   --seeds 3 \
+  #  --converge --max-epochs 300 --patience 15 \
+  #  --batch-size 1024 --num-neighbors 15 10 \
+  #  --tag poisson_baselines \
+  #  --output-dir results/poisson
 
 # ═══════════════════════════════════════════════════════════════════
 # Part A: Rate sweep (steps_per_epoch=10)
