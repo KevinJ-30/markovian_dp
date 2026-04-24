@@ -16,6 +16,8 @@ class SubgraphTrainer:
                  use_coverage_correction=True,
                  use_epoch_assignment=False,
                  poisson_subsampling=False,
+                 single_phase_poisson=False,
+                 q=1.0,
                  q_epoch=1.0,
                  q_step=1.0,
                  steps_per_epoch=10,
@@ -32,6 +34,8 @@ class SubgraphTrainer:
         self.use_coverage_correction = use_coverage_correction
         self.use_epoch_assignment = use_epoch_assignment
         self.poisson_subsampling = poisson_subsampling
+        self.single_phase_poisson = single_phase_poisson
+        self.q = q
         self.q_epoch = q_epoch
         self.q_step = q_step
         self.steps_per_epoch = steps_per_epoch
@@ -43,15 +47,21 @@ class SubgraphTrainer:
         self.noise_multiplier = noise_multiplier
         self.training_steps = 0
 
-        if self.poisson_subsampling and self.use_epoch_assignment:
-            raise ValueError("Cannot use both poisson_subsampling and use_epoch_assignment")
+        modes_on = sum([self.poisson_subsampling,
+                        self.use_epoch_assignment,
+                        self.single_phase_poisson])
+        if modes_on > 1:
+            raise ValueError(
+                "poisson_subsampling, use_epoch_assignment, single_phase_poisson "
+                "are mutually exclusive"
+            )
 
         if self.dp:
             if noise_multiplier is not None and epsilon is not None:
                 raise ValueError("Provide noise_multiplier or epsilon, not both")
             if noise_multiplier is not None:
                 self.noise_multiplier = noise_multiplier
-                self.noise_std = noise_multiplier * self.max_grad_norm
+                self.noise_std = noise_multiplier * self.max_grad_norm / math.sqrt(self.num_bins) #this is the change to divide by the number of bins
             elif epsilon is not None:
                 # Standard Gaussian mechanism (same as Opacus):
                 # sigma = C * sqrt(2 * ln(1.25 / delta)) / epsilon
@@ -64,18 +74,36 @@ class SubgraphTrainer:
 
     def train_epoch(self, data) -> list:
         """
-        Runs one full epoch. Returns list of per-step losses.
+        Runs one outer iteration (steps_per_epoch steps). Returns list of per-step losses.
 
-        Three modes (mutually exclusive):
+        Four modes (mutually exclusive):
+        - single_phase_poisson: each of steps_per_epoch steps draws a fresh
+            independent Bernoulli(q) sample over the full train set. Matches
+            the standard DP-SGD / Opacus assumption of independent Poisson
+            subsampling per step.
         - poisson_subsampling: Two-phase Poisson subsampling.
             Phase 1: each train node included independently with prob q_epoch.
             Phase 2: for each of steps_per_epoch steps, each epoch-node
             included independently with prob q_step.
-            Effective per-step rate = q_epoch * q_step.
+            Effective per-step rate = q_epoch * q_step, but steps within an
+            outer iteration share the epoch pool (not independent).
         - use_epoch_assignment: deterministic chunking into steps_per_epoch.
         - default: 1 step with all training nodes.
         """
         train_indices = data.train_mask.nonzero(as_tuple=True)[0]
+
+        if self.single_phase_poisson:
+            losses = []
+            for _ in range(self.steps_per_epoch):
+                step_mask = torch.bernoulli(
+                    torch.full((len(train_indices),), self.q, device=self.device)
+                ).bool()
+                step_nodes = train_indices[step_mask]
+                if len(step_nodes) > 0:
+                    loss = self._train_step(data, step_nodes)
+                    if loss is not None:
+                        losses.append(loss)
+            return losses
 
         if self.poisson_subsampling:
             # Phase 1: Poisson subsample for this epoch

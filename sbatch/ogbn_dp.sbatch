@@ -3,7 +3,7 @@
 #SBATCH -N1 --ntasks-per-node=1           # 1 node, 1 task
 #SBATCH --gres=gpu:H200:1                # 1x H200 GPU
 #SBATCH --mem-per-gpu=128G               # 128G — ogbn-products is large
-#SBATCH -t6:00:00                         # 8 hours walltime
+#SBATCH -t4:00:00                         # 8 hours walltime
 #SBATCH -oReport-ogbn-%j.out              # Output file
 #SBATCH --mail-type=BEGIN,END,FAIL        # Mail notifications
 

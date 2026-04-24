@@ -122,6 +122,11 @@ def build_parser():
                    help='Deterministic chunking of train nodes into steps')
     g.add_argument('--poisson', action='store_true',
                    help='Two-phase Poisson subsampling of train nodes')
+    g.add_argument('--single-phase', action='store_true',
+                   help='Single-phase Poisson: fresh independent Bernoulli(q) per step '
+                        '(matches standard DP-SGD accounting)')
+    g.add_argument('--q', type=float, default=1.0,
+                   help='Single-phase Poisson per-step inclusion prob (default: 1.0)')
     g.add_argument('--q-epoch', type=float, default=1.0,
                    help='Poisson epoch-level inclusion prob (default: 1.0)')
     g.add_argument('--q-step', type=float, default=1.0,
@@ -176,8 +181,10 @@ def validate_args(args):
         if args.epsilon is None and args.noise_multiplier is None:
             raise SystemExit("Error: --dp requires --epsilon or --noise-multiplier")
 
-    if args.poisson and args.epoch_assignment:
-        raise SystemExit("Error: --poisson and --epoch-assignment are mutually exclusive")
+    if sum([args.poisson, args.epoch_assignment, args.single_phase]) > 1:
+        raise SystemExit(
+            "Error: --poisson, --epoch-assignment, --single-phase are mutually exclusive"
+        )
 
     # --baseline with no args defaults to ['gcn']
     if args.baseline is not None and len(args.baseline) == 0:
@@ -332,6 +339,8 @@ def run_subgraph(dataset, data, device, args, *, algo_id, num_bins, seed,
         use_coverage_correction=args.coverage,
         use_epoch_assignment=args.epoch_assignment,
         poisson_subsampling=args.poisson,
+        single_phase_poisson=args.single_phase,
+        q=args.q,
         q_epoch=args.q_epoch,
         q_step=args.q_step,
         steps_per_epoch=args.steps_per_epoch,
@@ -380,10 +389,15 @@ def run_subgraph(dataset, data, device, args, *, algo_id, num_bins, seed,
 
     # Optionally compute epsilon via Opacus RDP accountant
     if args.dp and args.accountant and noise_multiplier is not None:
+        # Node-level sampling factor: q for single-phase, 1 otherwise.
+        # (Two-phase poisson uses correlated draws within an epoch, so
+        # plugging q_epoch*q_step here would not be tight — left as 1 and
+        # flagged as known-loose.)
+        q_factor = args.q if args.single_phase else 1.0
         if algo_id == 3:
-            sample_rate = (1 - args.subsample_prob) / num_bins
+            sample_rate = q_factor * (1 - args.subsample_prob) / num_bins
         else:
-            sample_rate = 1.0 / num_bins
+            sample_rate = q_factor / num_bins
         result['sample_rate'] = sample_rate
         try:
             from src.privacy_accountant import compute_epsilon
@@ -416,7 +430,10 @@ def run_all(args):
         dp_type = "epsilon" if args.epsilon else "noise_multiplier"
         print(f"DP: {dp_type}={dp_vals} | clip={args.clip_norm} | delta={args.dp_delta}")
     if args.poisson:
-        print(f"Poisson: q_epoch={args.q_epoch}, q_step={args.q_step}, "
+        print(f"Poisson (two-phase): q_epoch={args.q_epoch}, q_step={args.q_step}, "
+              f"steps_per_epoch={args.steps_per_epoch}")
+    if args.single_phase:
+        print(f"Poisson (single-phase): q={args.q}, "
               f"steps_per_epoch={args.steps_per_epoch}")
     if args.epoch_assignment:
         print(f"Epoch assignment: steps_per_epoch={args.steps_per_epoch}")
