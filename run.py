@@ -43,6 +43,7 @@ from src.models import make_model
 from src.algorithms import get_algorithm
 from src.trainers.baseline_trainer import BaselineTrainer
 from src.trainers.subgraph_trainer import SubgraphTrainer
+from src.trainers.link_pred_trainer import LinkPredTrainer
 
 
 # ── Default hyperparameters ─────────────────────────────────────────────────
@@ -75,13 +76,19 @@ def build_parser():
     # ── What to run ──────────────────────────────────────────────────────
     g = p.add_argument_group("experiment setup")
     g.add_argument('--dataset', nargs='+', default=['cora'],
-                   choices=['cora', 'citeseer', 'pubmed', 'ogbn-products'],
+                   choices=['cora', 'citeseer', 'pubmed',
+                            'ogbn-products', 'ogbn-arxiv', 'reddit',
+                            'ogbl-collab'],
                    help='Dataset(s) to run on (default: cora)')
     g.add_argument('--algo', type=int, nargs='+', default=None,
                    choices=[1, 2, 3],
                    help='Algorithm(s) to run (default: none, use --baseline)')
     g.add_argument('--model', default='gcn', choices=['gcn', 'mlp'],
-                   help='Model architecture (default: gcn)')
+                   help='Model architecture for node-classification tasks (default: gcn). '
+                        'Link-prediction tasks always use the link-pred GCN encoder.')
+    g.add_argument('--task', default='node', choices=['node', 'link'],
+                   help='Supervision task: node classification (default) or link prediction. '
+                        '--task link requires a linkprop dataset (e.g. ogbl-collab).')
     g.add_argument('--num-bins', type=int, nargs='+', default=[4, 8],
                    help='Bin count(s) to sweep (default: 4 8)')
     g.add_argument('--baseline', nargs='*', default=None,
@@ -148,8 +155,12 @@ def build_parser():
                    help=f'Max gradient norm for clipping (default: {DEFAULTS["clip_norm"]})')
     g.add_argument('--dp-delta', type=float, default=DEFAULTS['dp_delta'],
                    help=f'Privacy parameter delta (default: {DEFAULTS["dp_delta"]})')
-    g.add_argument('--accountant', action='store_true',
-                   help='Run Opacus RDP accountant to compute epsilon (off by default)')
+    g.add_argument('--accountant', choices=['off', 'rdp', 'prv'], default='off',
+                   help='Privacy accountant for computing epsilon: off (skip), '
+                        'rdp (default Opacus), or prv (PLD-based, tighter)')
+    g.add_argument('--max-in-degree', type=int, default=None,
+                   help='Cap per-node in-degree by random subsampling (preprocessing). '
+                        'Bounds node-DP sensitivity on high-degree graphs.')
 
     # ── ogbn-products specific ───────────────────────────────────────────
     g = p.add_argument_group("ogbn-products (large graph)")
@@ -185,6 +196,23 @@ def validate_args(args):
         raise SystemExit(
             "Error: --poisson, --epoch-assignment, --single-phase are mutually exclusive"
         )
+
+    link_datasets = {'ogbl-collab'}
+    is_link_dataset = lambda d: d in link_datasets
+    if args.task == 'link':
+        if any(not is_link_dataset(d) for d in args.dataset):
+            raise SystemExit(
+                f"Error: --task link requires a linkprop dataset; got {args.dataset}. "
+                f"Supported: {sorted(link_datasets)}"
+            )
+        if args.baseline:
+            raise SystemExit("Error: --baseline is not supported for --task link yet")
+    else:
+        if any(is_link_dataset(d) for d in args.dataset):
+            raise SystemExit(
+                f"Error: link-prediction dataset(s) {[d for d in args.dataset if is_link_dataset(d)]} "
+                f"require --task link"
+            )
 
     # --baseline with no args defaults to ['gcn']
     if args.baseline is not None and len(args.baseline) == 0:
@@ -327,12 +355,14 @@ def run_subgraph(dataset, data, device, args, *, algo_id, num_bins, seed,
         algo_kwargs['subsample_prob'] = args.subsample_prob
     algorithm = get_algorithm(algo_id, **algo_kwargs)
 
-    model = make_model(dataset, model_type=args.model,
+    model_type = 'link_pred_gcn' if args.task == 'link' else args.model
+    model = make_model(dataset, model_type=model_type,
                        hidden_channels=args.hidden_channels).to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr,
                            weight_decay=args.weight_decay)
 
-    trainer = SubgraphTrainer(
+    trainer_cls = LinkPredTrainer if args.task == 'link' else SubgraphTrainer
+    trainer = trainer_cls(
         model, optimizer,
         num_bins=num_bins,
         algorithm=algorithm,
@@ -359,7 +389,8 @@ def run_subgraph(dataset, data, device, args, *, algo_id, num_bins, seed,
     result = dict(
         # ── identity ──
         method=f'Algo {algo_id}',
-        model=args.model,
+        task=args.task,
+        model=model_type,
         algorithm=algo_id,
         num_bins=num_bins,
         seed=seed,
@@ -387,8 +418,8 @@ def run_subgraph(dataset, data, device, args, *, algo_id, num_bins, seed,
         training_steps=trainer.training_steps if args.dp else None,
     )
 
-    # Optionally compute epsilon via Opacus RDP accountant
-    if args.dp and args.accountant and noise_multiplier is not None:
+    # Optionally compute epsilon via Opacus accountant (RDP or PRV)
+    if args.dp and args.accountant != 'off' and noise_multiplier is not None:
         # Node-level sampling factor: q for single-phase, 1 otherwise.
         # (Two-phase poisson uses correlated draws within an epoch, so
         # plugging q_epoch*q_step here would not be tight — left as 1 and
@@ -399,6 +430,7 @@ def run_subgraph(dataset, data, device, args, *, algo_id, num_bins, seed,
         else:
             sample_rate = q_factor / num_bins
         result['sample_rate'] = sample_rate
+        result['accountant'] = args.accountant
         try:
             from src.privacy_accountant import compute_epsilon
             result['computed_epsilon'] = round(compute_epsilon(
@@ -406,6 +438,7 @@ def run_subgraph(dataset, data, device, args, *, algo_id, num_bins, seed,
                 sample_rate=sample_rate,
                 num_steps=trainer.training_steps,
                 delta=args.dp_delta,
+                accountant=args.accountant,
             ), 4)
         except Exception:
             result['computed_epsilon'] = None
@@ -457,8 +490,27 @@ def run_all(args):
         print(f"Dataset: {ds_name}")
         print(f"{'='*60}")
         dataset, data = load_dataset(ds_name, device)
-        print(f"  {data.num_nodes} nodes, {data.num_edges} edges, "
-              f"{dataset.num_features} features, {dataset.num_classes} classes")
+        info = (f"  {data.num_nodes} nodes, {data.num_edges} edges, "
+                f"{dataset.num_features} features")
+        if args.task == 'node':
+            info += f", {dataset.num_classes} classes"
+        else:
+            info += f", {data.train_pos_edge.size(1)} train edges"
+        print(info)
+
+        if args.max_in_degree is not None:
+            from src.utils import sparsify_by_degree
+            # Fixed generator seed: sparsification is a property of the public
+            # input graph, so it should be identical across training seeds.
+            gen = torch.Generator(device=data.edge_index.device)
+            gen.manual_seed(0)
+            orig_edges = data.edge_index.size(1)
+            data.edge_index = sparsify_by_degree(
+                data.edge_index, data.num_nodes, args.max_in_degree,
+                generator=gen,
+            )
+            print(f"  sparsified: {orig_edges} -> {data.edge_index.size(1)} "
+                  f"edges (max_in_degree={args.max_in_degree})")
 
         for seed in args.seed_list:
             # ── Baselines ──

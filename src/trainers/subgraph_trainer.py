@@ -157,6 +157,18 @@ class SubgraphTrainer:
         else:
             return self._train_step_standard(data, partitions, active_mask, edge_index, y, num_nodes, N)
 
+    def _compute_bin_loss(self, data, out, bin_mask, active_mask):
+        """
+        Compute the per-bin loss. Returns a scalar tensor or None to skip.
+
+        Default: node-classification NLL on active nodes whose bin matches.
+        Override in subclasses for edge-level supervision.
+        """
+        active_in_bin = bin_mask & active_mask
+        if not active_in_bin.any():
+            return None
+        return F.nll_loss(out[active_in_bin], data.y[active_in_bin], reduction='sum')
+
     def _train_step_standard(self, data, partitions, active_mask, edge_index, y, num_nodes, N) -> float:
         if self.use_coverage_correction:
             full_degree = compute_full_degrees(edge_index, num_nodes)
@@ -167,11 +179,9 @@ class SubgraphTrainer:
         for bin_mask, directed_ei in partitions:
             out = self.model(data.x, directed_ei)
 
-            active_in_bin = bin_mask & active_mask
-            if not active_in_bin.any():
+            loss_i = self._compute_bin_loss(data, out, bin_mask, active_mask)
+            if loss_i is None:
                 continue
-
-            loss_i = F.nll_loss(out[active_in_bin], y[active_in_bin], reduction='sum')
 
             if self.use_coverage_correction:
                 c_i = self._compute_coverage_correction(bin_mask, edge_index, full_degree, num_nodes)
@@ -198,11 +208,9 @@ class SubgraphTrainer:
         for bin_mask, directed_ei in partitions:
             out = self.model(data.x, directed_ei)
 
-            active_in_bin = bin_mask & active_mask
-            if not active_in_bin.any():
+            loss_i = self._compute_bin_loss(data, out, bin_mask, active_mask)
+            if loss_i is None:
                 continue
-
-            loss_i = F.nll_loss(out[active_in_bin], y[active_in_bin], reduction='sum')
 
             if self.use_coverage_correction:
                 c_i = self._compute_coverage_correction(bin_mask, edge_index, full_degree, num_nodes)
