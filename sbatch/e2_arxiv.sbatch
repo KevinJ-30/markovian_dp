@@ -3,7 +3,7 @@
 #SBATCH -N1 --ntasks-per-node=1
 #SBATCH --gres=gpu:H200:1
 #SBATCH --mem-per-gpu=96G
-#SBATCH -t24:00:00
+#SBATCH -t8:00:00
 #SBATCH -oReport-e2-arxiv-%j.out
 #SBATCH --mail-type=END,FAIL
 
@@ -21,7 +21,7 @@ export OGB_DATA_ROOT=/storage/ice1/8/1/kjacob7/ogb_data/ogbn-arxiv
 echo "OGB data root: $OGB_DATA_ROOT"
 
 SIGMAS="0.5 0.7 1.0 1.5 2.0 4.0"
-SEEDS=3
+SEEDS=1
 OUT=results/e2_frontier
 
 for Q in 0.03 0.05 0.10 0.20 0.40; do
