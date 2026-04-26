@@ -16,9 +16,9 @@ class LinkPredGCN(nn.Module):
         super().__init__()
         self.dropout = dropout
         self.conv1 = GCNConv(in_channels, hidden_channels,
-                             add_self_loops=False, normalize=True)
+                             add_self_loops=True, normalize=True)
         self.conv2 = GCNConv(hidden_channels, out_channels,
-                             add_self_loops=False, normalize=True)
+                             add_self_loops=True, normalize=True)
 
     def forward(self, x, edge_index):
         """Encode nodes -> [N, out_channels] embeddings."""

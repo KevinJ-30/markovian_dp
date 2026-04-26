@@ -440,8 +440,11 @@ def run_subgraph(dataset, data, device, args, *, algo_id, num_bins, seed,
                 delta=args.dp_delta,
                 accountant=args.accountant,
             ), 4)
-        except Exception:
+        except Exception as e:
             result['computed_epsilon'] = None
+            result['accountant_error'] = f"{type(e).__name__}: {e}"
+            print(f"  [accountant] {args.accountant} failed: "
+                  f"{type(e).__name__}: {e}")
 
     return result
 
