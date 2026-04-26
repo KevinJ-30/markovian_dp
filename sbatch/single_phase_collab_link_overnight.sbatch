@@ -8,6 +8,7 @@
 #SBATCH --mail-type=END,FAIL
 
 # Single-phase DP link prediction on ogbl-collab.
+# Two compact blocks to increase coverage while keeping overnight-friendly runtime.
 
 cd "$SLURM_SUBMIT_DIR"
 
@@ -22,7 +23,20 @@ srun python run.py \
   --single-phase --q 0.10 --steps-per-epoch 10 \
   --dp --noise-multiplier 0.7 1.0 2.0 \
   --accountant prv \
-  --seeds 1 \
+  --seeds 2 \
   --converge --max-epochs 250 --patience 12 \
-  --tag sp_collab_link_q10 \
+  --tag sp_collab_link_q10_s2 \
+  --output-dir results/single_phase_overnight
+
+srun python run.py \
+  --dataset ogbl-collab \
+  --task link \
+  --algo 2 3 \
+  --num-bins 4 8 16 \
+  --single-phase --q 0.20 --steps-per-epoch 10 \
+  --dp --noise-multiplier 0.7 1.0 2.0 \
+  --accountant prv \
+  --seeds 2 \
+  --converge --max-epochs 250 --patience 12 \
+  --tag sp_collab_link_q20_s2 \
   --output-dir results/single_phase_overnight

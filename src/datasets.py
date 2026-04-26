@@ -55,10 +55,13 @@ def _load_ogbl_collab():
     root = os.environ.get('OGB_DATA_ROOT', 'data/ogbl-collab')
     try:
         dataset = PygLinkPropPredDataset(name='ogbl-collab', root=root)
+        # PyTorch 2.6+ default weights_only=True also affects OGB's
+        # split files (train.pt/valid.pt/test.pt), so keep the override
+        # active while loading split edges as well.
+        split_edge = dataset.get_edge_split()
     finally:
         torch.load = _orig_load
     data = dataset[0]
-    split_edge = dataset.get_edge_split()
     # ogbl-collab edge tensors are shape [E, 2] — store as (2, E) for consistency
     # with edge_index conventions used elsewhere.
     data.train_pos_edge = split_edge['train']['edge'].t().contiguous()
