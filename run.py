@@ -44,6 +44,7 @@ from src.algorithms import get_algorithm
 from src.trainers.baseline_trainer import BaselineTrainer
 from src.trainers.subgraph_trainer import SubgraphTrainer
 from src.trainers.link_pred_trainer import LinkPredTrainer
+from src.trainers.sparsified_dp_trainer import SparsifiedDPTrainer
 
 
 # ── Default hyperparameters ─────────────────────────────────────────────────
@@ -78,7 +79,7 @@ def build_parser():
     g.add_argument('--dataset', nargs='+', default=['cora'],
                    choices=['cora', 'citeseer', 'pubmed',
                             'ogbn-products', 'ogbn-arxiv', 'reddit',
-                            'ogbl-collab'],
+                            'ogbl-collab', 'bluesky'],
                    help='Dataset(s) to run on (default: cora)')
     g.add_argument('--algo', type=int, nargs='+', default=None,
                    choices=[1, 2, 3],
@@ -161,6 +162,16 @@ def build_parser():
     g.add_argument('--max-in-degree', type=int, default=None,
                    help='Cap per-node in-degree by random subsampling (preprocessing). '
                         'Bounds node-DP sensitivity on high-degree graphs.')
+    g.add_argument('--paradigm', choices=['standard', 'sparsified-dp'],
+                   default='standard',
+                   help='DP training paradigm: "standard" (current path, per-bin '
+                        'clip, degree-agnostic noise) or "sparsified-dp" '
+                        '(per-node clip, noise calibrated to C*(1+D+...+D^L) '
+                        'sensitivity bound; requires --max-in-degree).')
+    g.add_argument('--gnn-layers', type=int, default=2,
+                   help='Number of GCN layers L; only consulted under '
+                        '--paradigm sparsified-dp to compute the sensitivity '
+                        'factor 1+D+D^2+...+D^L (default: 2 to match SubgraphGCN).')
 
     # ── ogbn-products specific ───────────────────────────────────────────
     g = p.add_argument_group("ogbn-products (large graph)")
@@ -191,6 +202,31 @@ def validate_args(args):
             raise SystemExit("Error: specify --epsilon or --noise-multiplier, not both")
         if args.epsilon is None and args.noise_multiplier is None:
             raise SystemExit("Error: --dp requires --epsilon or --noise-multiplier")
+
+    if args.paradigm == 'sparsified-dp':
+        if not args.dp:
+            raise SystemExit(
+                "Error: --paradigm sparsified-dp requires --dp"
+            )
+        if args.max_in_degree is None:
+            raise SystemExit(
+                "Error: --paradigm sparsified-dp requires --max-in-degree "
+                "(the sensitivity factor 1+D+...+D^L is computed from D)"
+            )
+        if args.baseline:
+            raise SystemExit(
+                "Error: --paradigm sparsified-dp does not apply to baselines "
+                "(no bin/partition gradient path); run baselines separately"
+            )
+        if args.task == 'link':
+            raise SystemExit(
+                "Error: --paradigm sparsified-dp does not yet support --task link"
+            )
+        if args.coverage:
+            raise SystemExit(
+                "Error: --paradigm sparsified-dp does not support --coverage "
+                "(per-node clip already accounts for the privacy bound)"
+            )
 
     if sum([args.poisson, args.epoch_assignment, args.single_phase]) > 1:
         raise SystemExit(
@@ -254,8 +290,103 @@ def train_loop(trainer, data, args):
 
 # ── Baseline runner ─────────────────────────────────────────────────────────
 
+def _neighbor_loader_accuracy(model, data, device, args, mask_bool) -> float:
+    """Accuracy on nodes in mask using NeighborLoader (no full-graph forward)."""
+    from torch_geometric.loader import NeighborLoader
+
+    idx = mask_bool.nonzero(as_tuple=True)[0]
+    if idx.numel() == 0:
+        return 0.0
+    loader = NeighborLoader(
+        data,
+        num_neighbors=args.num_neighbors,
+        batch_size=args.batch_size,
+        input_nodes=idx,
+        shuffle=False,
+    )
+    correct = 0
+    total = 0
+    model.eval()
+    with torch.no_grad():
+        for batch in loader:
+            batch = batch.to(device)
+            out = model(batch.x, batch.edge_index)[: batch.batch_size]
+            pred = out.argmax(dim=-1)
+            y = batch.y[: batch.batch_size]
+            correct += int((pred == y).sum().item())
+            total += int(batch.batch_size)
+    return correct / max(total, 1)
+
+
+def _mlp_minibatch_train_epoch(model, optimizer, data, device, args) -> float:
+    """One epoch of node-minibatch training for MLP (ignores edges)."""
+    train_idx = data.train_mask.nonzero(as_tuple=True)[0]
+    model.train()
+    perm = train_idx[torch.randperm(train_idx.numel(), device=device)]
+    bs = args.batch_size
+    total_loss = 0.0
+    total_n = 0
+    for start in range(0, perm.numel(), bs):
+        batch_idx = perm[start:start + bs]
+        xb = data.x[batch_idx]
+        yb = data.y[batch_idx]
+        optimizer.zero_grad()
+        out = model(xb, None)
+        loss = F.nll_loss(out, yb)
+        loss.backward()
+        optimizer.step()
+        n = int(batch_idx.numel())
+        total_loss += float(loss.item()) * n
+        total_n += n
+    return total_loss / max(total_n, 1)
+
+
+def _train_baseline_mlp_minibatch(model, optimizer, data, device, args) -> int:
+    """Train MLP on large graphs with random node minibatches."""
+    if not args.converge:
+        for _ in range(args.epochs):
+            _mlp_minibatch_train_epoch(model, optimizer, data, device, args)
+        return args.epochs
+
+    best_loss = float('inf')
+    wait = 0
+    epoch = 0
+    while epoch < args.max_epochs:
+        epoch_loss = _mlp_minibatch_train_epoch(model, optimizer, data, device, args)
+        epoch += 1
+        if best_loss - epoch_loss > args.es_delta:
+            best_loss = epoch_loss
+            wait = 0
+        else:
+            wait += 1
+            if wait >= args.patience:
+                break
+    return epoch
+
+
+def _mlp_mask_accuracy(model, data, device, args, mask_bool) -> float:
+    """Accuracy with batched forwards (large graphs)."""
+    idx = mask_bool.nonzero(as_tuple=True)[0]
+    if idx.numel() == 0:
+        return 0.0
+    bs = args.batch_size
+    correct = 0
+    total = 0
+    model.eval()
+    with torch.no_grad():
+        for start in range(0, idx.numel(), bs):
+            batch_idx = idx[start:start + bs].to(device)
+            xb = data.x[batch_idx]
+            yb = data.y[batch_idx]
+            out = model(xb, None)
+            pred = out.argmax(dim=-1)
+            correct += int((pred == yb).sum().item())
+            total += int(batch_idx.numel())
+    return correct / max(total, 1)
+
+
 def run_baseline(dataset, data, device, args, *, model_type, seed):
-    """Run baseline training (full-graph or NeighborLoader for large graphs)."""
+    """Run baseline training (full-graph or minibatch for large graphs)."""
     torch.manual_seed(seed)
     model = make_model(dataset, model_type=model_type,
                        hidden_channels=args.hidden_channels).to(device)
@@ -275,17 +406,25 @@ def run_baseline(dataset, data, device, args, *, model_type, seed):
         )
         actual_epochs = _train_baseline_minibatch(
             model, optimizer, train_loader, device, args)
+        train_acc = _neighbor_loader_accuracy(
+            model, data, device, args, data.train_mask)
+        test_acc = _neighbor_loader_accuracy(
+            model, data, device, args, data.test_mask)
+    elif is_large and model_type == 'mlp':
+        actual_epochs = _train_baseline_mlp_minibatch(
+            model, optimizer, data, device, args)
+        train_acc = _mlp_mask_accuracy(model, data, device, args, data.train_mask)
+        test_acc = _mlp_mask_accuracy(model, data, device, args, data.test_mask)
     else:
         trainer = BaselineTrainer(model, optimizer, device=device)
         actual_epochs = train_loop(trainer, data, args)
-
-    # Evaluate
-    model.eval()
-    with torch.no_grad():
-        out = model(data.x, data.edge_index)
-        pred = out.argmax(dim=1)
-        train_acc = (pred[data.train_mask] == data.y[data.train_mask]).float().mean().item()
-        test_acc = (pred[data.test_mask] == data.y[data.test_mask]).float().mean().item()
+        model.eval()
+        eval_ei = getattr(data, 'eval_edge_index', data.edge_index)
+        with torch.no_grad():
+            out = model(data.x, eval_ei)
+            pred = out.argmax(dim=1)
+            train_acc = (pred[data.train_mask] == data.y[data.train_mask]).float().mean().item()
+            test_acc = (pred[data.test_mask] == data.y[data.test_mask]).float().mean().item()
 
     return dict(
         method=model_type.upper(),
@@ -361,26 +500,51 @@ def run_subgraph(dataset, data, device, args, *, algo_id, num_bins, seed,
     optimizer = optim.Adam(model.parameters(), lr=args.lr,
                            weight_decay=args.weight_decay)
 
-    trainer_cls = LinkPredTrainer if args.task == 'link' else SubgraphTrainer
-    trainer = trainer_cls(
-        model, optimizer,
-        num_bins=num_bins,
-        algorithm=algorithm,
-        use_coverage_correction=args.coverage,
-        use_epoch_assignment=args.epoch_assignment,
-        poisson_subsampling=args.poisson,
-        single_phase_poisson=args.single_phase,
-        q=args.q,
-        q_epoch=args.q_epoch,
-        q_step=args.q_step,
-        steps_per_epoch=args.steps_per_epoch,
-        device=device,
-        dp=args.dp,
-        max_grad_norm=args.clip_norm,
-        epsilon=epsilon,
-        noise_multiplier=noise_multiplier,
-        delta=args.dp_delta,
-    )
+    if args.paradigm == 'sparsified-dp':
+        # Validation in validate_args has already enforced --dp, --max-in-degree,
+        # no --task link, no --baseline, no --coverage.
+        trainer = SparsifiedDPTrainer(
+            model, optimizer,
+            num_bins=num_bins,
+            algorithm=algorithm,
+            use_coverage_correction=args.coverage,
+            use_epoch_assignment=args.epoch_assignment,
+            poisson_subsampling=args.poisson,
+            single_phase_poisson=args.single_phase,
+            q=args.q,
+            q_epoch=args.q_epoch,
+            q_step=args.q_step,
+            steps_per_epoch=args.steps_per_epoch,
+            device=device,
+            dp=args.dp,
+            max_grad_norm=args.clip_norm,
+            epsilon=epsilon,
+            noise_multiplier=noise_multiplier,
+            delta=args.dp_delta,
+            max_in_degree=args.max_in_degree,
+            gnn_layers=args.gnn_layers,
+        )
+    else:
+        trainer_cls = LinkPredTrainer if args.task == 'link' else SubgraphTrainer
+        trainer = trainer_cls(
+            model, optimizer,
+            num_bins=num_bins,
+            algorithm=algorithm,
+            use_coverage_correction=args.coverage,
+            use_epoch_assignment=args.epoch_assignment,
+            poisson_subsampling=args.poisson,
+            single_phase_poisson=args.single_phase,
+            q=args.q,
+            q_epoch=args.q_epoch,
+            q_step=args.q_step,
+            steps_per_epoch=args.steps_per_epoch,
+            device=device,
+            dp=args.dp,
+            max_grad_norm=args.clip_norm,
+            epsilon=epsilon,
+            noise_multiplier=noise_multiplier,
+            delta=args.dp_delta,
+        )
 
     actual_epochs = train_loop(trainer, data, args)
     train_acc, test_acc = trainer.evaluate(data)
@@ -416,6 +580,15 @@ def run_subgraph(dataset, data, device, args, *, algo_id, num_bins, seed,
         clip_norm=args.clip_norm if args.dp else None,
         dp_delta=args.dp_delta if args.dp else None,
         training_steps=trainer.training_steps if args.dp else None,
+
+        # ── Paradigm / sparsification ──
+        paradigm=args.paradigm,
+        max_in_degree=args.max_in_degree,
+        gnn_layers=args.gnn_layers if args.paradigm == 'sparsified-dp' else None,
+        sensitivity_factor=(
+            getattr(trainer, 'sensitivity_factor', None)
+            if args.paradigm == 'sparsified-dp' else None
+        ),
     )
 
     # Optionally compute epsilon via Opacus accountant (RDP or PRV)
@@ -514,6 +687,23 @@ def run_all(args):
             )
             print(f"  sparsified: {orig_edges} -> {data.edge_index.size(1)} "
                   f"edges (max_in_degree={args.max_in_degree})")
+
+            # Mirror sparsification onto the eval-time graph view (Bluesky and
+            # any future temporal/inductive dataset). Same fixed seed → the
+            # eval graph is a deterministic public-input view, sparsified
+            # consistently with what the model trains on.
+            eval_ei = getattr(data, 'eval_edge_index', None)
+            if eval_ei is not None:
+                gen_eval = torch.Generator(device=eval_ei.device)
+                gen_eval.manual_seed(0)
+                orig_eval_edges = eval_ei.size(1)
+                data.eval_edge_index = sparsify_by_degree(
+                    eval_ei, data.num_nodes, args.max_in_degree,
+                    generator=gen_eval,
+                )
+                print(f"  sparsified eval graph: {orig_eval_edges} -> "
+                      f"{data.eval_edge_index.size(1)} edges "
+                      f"(max_in_degree={args.max_in_degree})")
 
         for seed in args.seed_list:
             # ── Baselines ──

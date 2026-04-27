@@ -24,7 +24,8 @@ class BaselineTrainer:
     @torch.no_grad()
     def evaluate(self, data) -> tuple:
         self.model.eval()
-        out = self.model(data.x, data.edge_index)
+        eval_ei = getattr(data, 'eval_edge_index', data.edge_index)
+        out = self.model(data.x, eval_ei)
         pred = out.argmax(dim=1)
         train_acc = (pred[data.train_mask] == data.y[data.train_mask]).float().mean().item()
         test_acc = (pred[data.test_mask] == data.y[data.test_mask]).float().mean().item()

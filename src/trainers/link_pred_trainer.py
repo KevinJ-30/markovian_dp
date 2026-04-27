@@ -75,7 +75,8 @@ class LinkPredTrainer(SubgraphTrainer):
         if available; falls back to a simple Hits@K computation otherwise.
         """
         self.model.eval()
-        z = self.model(data.x, data.edge_index)
+        eval_ei = getattr(data, 'eval_edge_index', data.edge_index)
+        z = self.model(data.x, eval_ei)
 
         def _score(pairs):
             return self.model.score(z, pairs)
