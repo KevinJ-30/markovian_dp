@@ -61,7 +61,7 @@ class SubgraphTrainer:
                 raise ValueError("Provide noise_multiplier or epsilon, not both")
             if noise_multiplier is not None:
                 self.noise_multiplier = noise_multiplier
-                self.noise_std = noise_multiplier * self.max_grad_norm / math.sqrt(self.num_bins) #this is the change to divide by the number of bins
+                self.noise_std = noise_multiplier * self.max_grad_norm / math.sqrt(self.num_bins)
             elif epsilon is not None:
                 # Standard Gaussian mechanism (same as Opacus):
                 # sigma = C * sqrt(2 * ln(1.25 / delta)) / epsilon

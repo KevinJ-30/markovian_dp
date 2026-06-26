@@ -55,3 +55,12 @@ Thumbs.db
 # Logs
 *.log
 
+# Claude Code IDE state (worktrees, local settings)
+.claude/
+
+# Experiment runtime outputs
+results/
+saved/
+experiments/*.png
+sparsification_experiments/results/
+

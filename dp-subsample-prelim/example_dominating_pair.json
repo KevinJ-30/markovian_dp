@@ -1,0 +1,5 @@
+{
+  "description": "Example per-step dominating pair: randomized response with eps0 = ln(3). Replace p/q with your own pair (same length, each summing to 1); atoms with q == 0 contribute directly to delta. See accounting.py for details.",
+  "p": [0.75, 0.25],
+  "q": [0.25, 0.75]
+}
