@@ -103,9 +103,12 @@ nearest PLD grid point (pessimistic — makes eps an upper bound), and the
 resulting PLD is composed T times via exponentiation-by-squaring using the
 FFT-based convolution in `dp-subsample-prelim/accounting.py`.
 
-### C — Novel mechanism hook (open slot)
-`dp_accounting.make_novel_mechanism_dominating_pair` is a clearly-marked stub
-with the identical interface.  Swap it in for path B; nothing else changes.
+### C — Novel mechanism hook (SparseGNN, Theorem 4)
+`dp_accounting.make_novel_mechanism_dominating_pair` now delegates to
+`src/sparse/accounting.py`: the Theorem 4 insertion/removal marked pair by
+default (`theorem=3` selects the substitution pair, tractable only for tiny
+K_in and r).  Note the Theorem 4 pair is oriented — compose both (P,Q) and
+(Q,P) and report the max epsilon; `sparsegnn_thm4_epsilon` does this.
 
 ---
 

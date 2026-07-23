@@ -19,6 +19,9 @@ SUPPORTED_DATASETS = {
     'ogbn-arxiv': 'ogbn-arxiv',
     # PyG Reddit (large transductive node classification)
     'reddit': 'Reddit',
+    # Heterophilous graphs (GADBench: binary anomaly node classification)
+    'tolokers': 'Tolokers',
+    'questions': 'Questions',
     # OGB link property prediction
     'ogbl-collab': 'ogbl-collab',
     # GraphBench Bluesky (temporal-split node classification, inductive)
@@ -242,13 +245,34 @@ def _load_bluesky():
     return dataset, data
 
 
-def load_dataset(name, device='cpu'):
+def _load_heterophilous(canonical, split_idx=0):
+    """Load a HeterophilousGraphDataset (GADBench GAD datasets) with 1-D masks.
+
+    These datasets ship 10 pre-defined splits: train/val/test_mask each have shape
+    [N, num_splits]. We select column `split_idx` and expose the usual 1-D bool
+    masks so the rest of the pipeline is unchanged. Labels are binary (anomaly=1).
+    """
+    from torch_geometric.datasets import HeterophilousGraphDataset
+    dataset = HeterophilousGraphDataset(root=f'/tmp/{canonical}', name=canonical)
+    data = dataset[0]
+    num_splits = data.train_mask.size(1)
+    if not (0 <= split_idx < num_splits):
+        raise ValueError(f"split_idx {split_idx} out of range [0, {num_splits}) "
+                         f"for {canonical}")
+    for split in ('train', 'val', 'test'):
+        setattr(data, f'{split}_mask', getattr(data, f'{split}_mask')[:, split_idx])
+    return dataset, data
+
+
+def load_dataset(name, device='cpu', split_idx=0):
     """
     Load a dataset by name.
 
     Args:
         name: One of the keys in SUPPORTED_DATASETS (case-insensitive).
         device: Device to move data to.
+        split_idx: For datasets with multiple predefined splits (Tolokers,
+            Questions), which split column to use. Ignored otherwise.
 
     Returns:
         (dataset, data) tuple.
@@ -256,6 +280,11 @@ def load_dataset(name, device='cpu'):
     key = name.lower()
     if key not in SUPPORTED_DATASETS:
         raise ValueError(f"Unknown dataset '{name}'. Supported: {list(SUPPORTED_DATASETS.keys())}")
+
+    if key in ('tolokers', 'questions'):
+        dataset, data = _load_heterophilous(SUPPORTED_DATASETS[key], split_idx=split_idx)
+        data = data.to(device)
+        return dataset, data
 
     if key in ('ogbn-products', 'ogbn-arxiv'):
         dataset, data = _load_ogb_node(key)

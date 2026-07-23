@@ -104,20 +104,50 @@ def make_subsampled_gaussian_dominating_pair(q, sigma, n_atoms=60000, n_sigma=10
 
 def make_novel_mechanism_dominating_pair(q, sigma, **kwargs):
     """
-    STUB — replace with the paper's per-step dominating pair.
+    Per-step dominating pair for SparseGNN (paper Algorithms 1 & 2).
 
-    Must return (p_atoms, q_atoms): numpy arrays of probability masses, each
-    summing to 1.  Atom i contributes mass p_atoms[i] under P and q_atoms[i]
-    under Q; the privacy loss at atom i is log(p_atoms[i] / q_atoms[i]).
+    Defaults to the Theorem 4 insertion/removal pair (tractable: N_com_r + 1
+    fibers); pass theorem=3 for the substitution-relation pair (2^{N_r}
+    components, tiny (K_in, r) only).  The mechanism is parameterized by the
+    paper's (p1, p2, r, K_in) rather than a single sample rate `q`, so those
+    are read from kwargs:
 
-    Signature intentionally matches make_subsampled_gaussian_dominating_pair
-    so the caller can swap this in by changing one line.
+        make_novel_mechanism_dominating_pair(q=None, sigma=1.0,
+            p1=..., p2=..., r=..., K_in=..., [K_out=..., theorem=4])
+
+    Returns (p_atoms, q_atoms) with the same contract as
+    make_subsampled_gaussian_dominating_pair.  NOTE: the Theorem 4 pair is
+    ORIENTED — (p, q) dominates insertion and (q, p) removal; compose both
+    orientations and report the max (src.sparse.accounting.sparsegnn_thm4_epsilon
+    does this for you).
     """
-    raise NotImplementedError(
-        "Novel mechanism dominating pair not yet implemented. "
-        "Implement this function with the paper's per-step (P, Q) pair. "
-        "Return (p_atoms, q_atoms) with the same contract as "
-        "make_subsampled_gaussian_dominating_pair."
+    _root = os.path.join(os.path.dirname(__file__), '..')
+    if _root not in sys.path:
+        sys.path.insert(0, _root)
+    from src.sparse.accounting import (
+        sparsegnn_dominating_pair, sparsegnn_thm4_pair,
+    )
+
+    required = ('p1', 'p2', 'r', 'K_in')
+    missing = [k for k in required if k not in kwargs]
+    if missing:
+        raise ValueError(
+            f"make_novel_mechanism_dominating_pair requires {required} in kwargs; "
+            f"missing {missing}."
+        )
+    if kwargs.get('theorem', 4) == 3:
+        return sparsegnn_dominating_pair(
+            p1=kwargs['p1'], p2=kwargs['p2'], r=kwargs['r'], K_in=kwargs['K_in'],
+            K_out=kwargs.get('K_out'), sigma=sigma,
+            n_atoms=kwargs.get('n_atoms', 40000),
+            n_sigma=kwargs.get('n_sigma', 10.0),
+            max_components=kwargs.get('max_components', 512),
+        )
+    return sparsegnn_thm4_pair(
+        p1=kwargs['p1'], p2=kwargs['p2'], r=kwargs['r'], K_in=kwargs['K_in'],
+        K_out=kwargs.get('K_out'), sigma=sigma,
+        atoms_per_fiber=kwargs.get('atoms_per_fiber', 4000),
+        n_sigma=kwargs.get('n_sigma', 10.0),
     )
 # ─────────────────────────────────────────────────────────────────────────────
 
