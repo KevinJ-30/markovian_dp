@@ -1,10 +1,10 @@
 #!/bin/zsh
 # Stage 2 (clip + noise) and Stage 3 (post-hoc epsilon).
 #
-#   ./scripts/inductive_stage2.sh                       # arxiv + flickr
-#   DATASETS="ppi" ./scripts/inductive_stage2.sh        # PPI only
+#   ./scripts/ladder_stage2.sh                       # arxiv + flickr
+#   DATASETS="ppi" ./scripts/ladder_stage2.sh        # PPI only
 #
-#   nohup caffeinate -i ./scripts/inductive_stage2.sh > results/inductive_stage2.log 2>&1 &
+#   nohup caffeinate -i ./scripts/ladder_stage2.sh > results/logs/ladder_stage2.log 2>&1 &
 #
 # Grid per dataset and per r: p2 {1.0,0.5,0.25,0.1} x sigma {2,5,10,20} x 3 seeds
 # = 48 runs.  CSVs are flushed per row, so a killed run keeps what it finished.

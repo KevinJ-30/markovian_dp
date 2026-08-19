@@ -2,11 +2,11 @@
 # Stage 0 (baselines) + Stage 1 (sparsification-only).  No DP yet — this
 # establishes the utility ladder the Stage 2 runs degrade from.
 #
-#   ./scripts/inductive_stage01.sh                       # arxiv + flickr
-#   DATASETS="ppi" ./scripts/inductive_stage01.sh        # PPI only
-#   DATASETS="ogbn-arxiv flickr ppi" ./scripts/inductive_stage01.sh
+#   ./scripts/ladder_stage01.sh                       # arxiv + flickr
+#   DATASETS="ppi" ./scripts/ladder_stage01.sh        # PPI only
+#   DATASETS="ogbn-arxiv flickr ppi" ./scripts/ladder_stage01.sh
 #
-#   nohup caffeinate -i ./scripts/inductive_stage01.sh > results/inductive_stage01.log 2>&1 &
+#   nohup caffeinate -i ./scripts/ladder_stage01.sh > results/logs/ladder_stage01.log 2>&1 &
 #
 # Every dataset is a plain member of DATASETS; all per-dataset differences live
 # in scripts/_dataset_settings.sh so all the ladder scripts agree.

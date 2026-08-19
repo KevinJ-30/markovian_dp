@@ -14,7 +14,7 @@
 #
 # Reddit (232k nodes) and PPI (57k nodes, 1.6M edges, 121-way multilabel) are the
 # reason this lives on the cluster; ogbn-arxiv and Flickr run fine on a laptop
-# via scripts/inductive_stage01.sh.
+# via scripts/ladder_stage01.sh.
 #
 # IMPORTANT: --direction in is the corrected orientation (manuscript v35 §5-6).
 # Anything recorded before that fix used out-expansion, where the root received
