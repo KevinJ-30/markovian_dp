@@ -22,10 +22,10 @@
 
 cd $SLURM_SUBMIT_DIR
 
-export OGB_DATA_ROOT=/storage/ice1/8/1/kjacob7/ogb_data/ogbn-arxiv
-export REDDIT_DATA_ROOT=/storage/ice1/8/1/kjacob7/pyg_data/Reddit
-export FLICKR_DATA_ROOT=/storage/ice1/8/1/kjacob7/pyg_data/Flickr
-export PPI_DATA_ROOT=/storage/ice1/8/1/kjacob7/pyg_data/PPI
+export OGB_DATA_ROOT=/storage/project/r-smussmann3-0/shared/datasets/ogbn-arxiv
+export REDDIT_DATA_ROOT=/storage/project/r-smussmann3-0/shared/datasets/Reddit
+export FLICKR_DATA_ROOT=/storage/project/r-smussmann3-0/shared/datasets/Flickr
+export PPI_DATA_ROOT=/storage/project/r-smussmann3-0/shared/datasets/PPI
 
 DELTA=1e-6
 
