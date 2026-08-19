@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -Jreddit_dp
-#SBATCH -A gts-smussmann3                 # free account; -paid actually costs
-#SBATCH -q embers                         # free QoS.  inferno spends the $70/mo
+#SBATCH -A gts-pli77                      # CHECK THIS — see note below
+#SBATCH -q embers                         # free QoS.  inferno spends credit.
 #SBATCH -N1 --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G                         # Reddit: 114.6M arcs before capping
@@ -10,18 +10,20 @@
 #SBATCH -oReport-reddit-dp-%j.out
 #SBATCH --mail-type=END,FAIL
 #
+# ACCOUNT: the -A string above is a guess.  Confirm the real one with
+#     sacctmgr show assoc user=$USER format=account,qos
+# and fix it before submitting; a wrong account fails fast rather than
+# charging, but -A <anything>-paid would be real money.
+#
 # CPU node on purpose.  This workload is launch-latency bound, not FLOP bound:
-# ~96% of step time goes to a Python loop over per-root subgraphs averaging a
-# few nodes each, which a GPU does not accelerate.  Spending L40S hours here
-# would cost more and run no faster.  If you want to try a GPU anyway, add:
+# ~96% of step time is a Python loop over per-root subgraphs of a few nodes
+# each, which a GPU does not accelerate.  To try one anyway, add
 #     #SBATCH --gres=gpu:L40S:1
-# (the allocator defaults to V100 unless the type is named).
+# — naming the type matters, since the allocator defaults to V100.
 #
-# embers is PREEMPTIBLE.  Runs flush a CSV row per seed and skip cells whose
-# output already exists, so a killed job is resumed by resubmitting the same
-# script.  Keep the walltime short for the same reason.
-#
-# ONE SETTING PER SUBMISSION so a preemption loses at most one arm:
+# embers is PREEMPTIBLE.  Cells skip themselves when their output CSV exists,
+# so resubmitting the same script resumes.  One setting per submission, so a
+# preemption loses at most one arm:
 #     sbatch --export=SETTING=transductive sbatch/reddit_settings.sbatch
 #     sbatch --export=SETTING=inductive    sbatch/reddit_settings.sbatch
 #
@@ -35,17 +37,21 @@
 set -e
 cd $SLURM_SUBMIT_DIR
 
+PROJECT=/storage/project/r-pli77-0/kjacob7
+SCRATCH=${SCRATCH:-$HOME/scratch}
+
 SETTING=${SETTING:-transductive}
 FLAG=""
 [ "$SETTING" = "inductive" ] && FLAG="--inductive"
 
-# Dataset is ~2 GB, under the 10 GB shared-folder limit, and persists there —
-# scratch is wiped every 60 days and would need re-downloading.
-export REDDIT_DATA_ROOT=/storage/project/r-smussmann3-0/shared/datasets/Reddit
-# Use the shared venv; do not create new ones (they are large).
-source /storage/project/r-smussmann3-0/shared/shared_venvs/default_venv/bin/activate
-export OMP_NUM_THREADS=1                  # per-process; cells are run serially
-                                          # here but this avoids thread thrash
+# Scratch is wiped every 60 days.  Fine for the dataset (re-downloadable) and
+# for the venv (rebuildable), but nothing here is the only copy of anything.
+export REDDIT_DATA_ROOT=$SCRATCH/data/Reddit
+source $SCRATCH/venvs/markovian/bin/activate
+export OMP_NUM_THREADS=1
+
+# Results go to project storage, which persists.
+OUT_ROOT=$PROJECT/results/reddit
 
 PY="python -u"
 DELTA=1e-6
@@ -64,11 +70,11 @@ run_cell() {   # out_dir, then extra flags
 }
 
 echo "=== $SETTING: non-DP reference ==="
-run_cell results/reddit/${SETTING}_nodp --p2 1.0 --lr 0.01
+run_cell $OUT_ROOT/${SETTING}_nodp --p2 1.0 --lr 0.01
 
 for P2 in 1.0 0.1; do
   for SIGMA in 5.0 20.0; do
-    OUT=results/reddit/${SETTING}_p${P2}_s${SIGMA}
+    OUT=$OUT_ROOT/${SETTING}_p${P2}_s${SIGMA}
     echo "=== $SETTING DP: p2=$P2 sigma=$SIGMA ==="
     run_cell $OUT --dp --p2 $P2 --sigma $SIGMA --lr 0.3
     $PY -m src.sparse.compute_epsilon \
@@ -76,5 +82,4 @@ for P2 in 1.0 0.1; do
   done
 done
 
-chmod -R 777 results/reddit 2>/dev/null || true
 echo "=== REDDIT $SETTING COMPLETE ==="

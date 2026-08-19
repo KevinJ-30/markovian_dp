@@ -31,8 +31,8 @@
 cd $SLURM_SUBMIT_DIR
 
 # RelBench caches downloaded databases here; point it at scratch, not $HOME.
-export RELBENCH_CACHE_DIR=/storage/ice1/8/1/kjacob7/relbench_cache
-export HF_HOME=/storage/ice1/8/1/kjacob7/hf_cache
+export RELBENCH_CACHE_DIR=${SCRATCH:-$HOME/scratch}/relbench_cache
+export HF_HOME=${SCRATCH:-$HOME/scratch}/hf_cache
 
 DELTA=1e-6
 TASKS=("relbench:rel-stack/user-badge" "relbench:rel-hm/user-churn")
