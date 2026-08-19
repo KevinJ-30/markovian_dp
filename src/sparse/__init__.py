@@ -24,7 +24,6 @@ from .sparse_expand import (
 from .sparse_gnn import train_sparse_gnn
 from .base_mechanism import BaseMechanism
 from .gnn_mechanism import GNNMechanism
-from .anomaly_mechanism import AnomalyMechanism
 
 __all__ = [
     "RootedSubgraph",
@@ -38,5 +37,4 @@ __all__ = [
     "train_sparse_gnn",
     "BaseMechanism",
     "GNNMechanism",
-    "AnomalyMechanism",
 ]
