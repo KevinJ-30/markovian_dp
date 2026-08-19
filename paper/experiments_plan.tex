@@ -24,7 +24,7 @@
 \paragraph{Setting.} Inductive, node-level DP:
 \begin{itemize}
   \item Train on the train-induced subgraph; test on held-out nodes absent at training.
-  \item Transductive is unsound here: a root's \textsc{SparseExpand} reaches test nodes, and eval reuses the training graph.
+  \item Transductive training is privacy-sound (Theorem~6.4 substitutes any node, so test nodes are covered too) but its test accuracy does not measure generalization to unseen nodes; we report both settings.
   \item Inductive $\Rightarrow$ guarantee covers exactly the training nodes; test accuracy is honest.
   \item Sparsification ($p_1$ roots, $p_2$/$r$ edges) is unchanged by this choice.
 \end{itemize}
