@@ -21,6 +21,7 @@ they differ on directed ones (ogbn-arxiv, RelBench foreign-key graphs).
 from dataclasses import dataclass
 from typing import List, Sequence
 
+import numpy as np
 import torch
 
 
@@ -263,34 +264,37 @@ def cap_degrees_undirected(
 
     A self-loop consumes one unit of its node's capacity and is emitted as a
     single arc.  Parallel arcs are collapsed before capping.
+
+    The greedy pass iterates over numpy arrays, not Python lists: on a dense
+    graph (Reddit has ~57M undirected edges) `.tolist()` materializes billions
+    of boxed ints and exhausts memory.
     """
     ei = edge_index.cpu()
     u, v = ei[0].to(torch.long), ei[1].to(torch.long)
     a = torch.minimum(u, v)
     b = torch.maximum(u, v)
     key = torch.unique(a * num_nodes + b)
-    a = (key // num_nodes).tolist()
-    b = (key % num_nodes).tolist()
-    m = len(a)
+    a_np = (key // num_nodes).numpy()
+    b_np = (key % num_nodes).numpy()
+    m = a_np.shape[0]
 
-    perm = torch.randperm(m, generator=generator).tolist()
-    deg = [0] * num_nodes
-    keep_a, keep_b = [], []
+    perm = torch.randperm(m, generator=generator).numpy()
+    deg = np.zeros(num_nodes, dtype=np.int32)
+    keep = np.zeros(m, dtype=bool)
     for i in perm:
-        ai, bi = a[i], b[i]
+        ai = a_np[i]
+        bi = b_np[i]
         if ai == bi:
             if deg[ai] < K:
                 deg[ai] += 1
-                keep_a.append(ai)
-                keep_b.append(bi)
+                keep[i] = True
         elif deg[ai] < K and deg[bi] < K:
             deg[ai] += 1
             deg[bi] += 1
-            keep_a.append(ai)
-            keep_b.append(bi)
+            keep[i] = True
 
-    ka = torch.tensor(keep_a, dtype=torch.long)
-    kb = torch.tensor(keep_b, dtype=torch.long)
+    ka = torch.from_numpy(a_np[keep]).to(torch.long)
+    kb = torch.from_numpy(b_np[keep]).to(torch.long)
     loops = ka == kb
     src = torch.cat([ka[~loops], kb[~loops], ka[loops]])
     dst = torch.cat([kb[~loops], ka[~loops], ka[loops]])
