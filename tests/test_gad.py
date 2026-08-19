@@ -6,6 +6,7 @@ Run in PytorchEnv (needs xgboost + scikit-learn):
 """
 
 import numpy as np
+import pytest
 import torch
 
 from src.sparse.gad.neighbor_aggregation import (
@@ -82,6 +83,9 @@ def test_metrics_hand_checked():
 
 
 def test_xgbgraph_smoke():
+    # xgboost backs only the GAD side pipeline, not SparseGNN or the
+    # accounting, so an environment without it should skip rather than fail.
+    pytest.importorskip("xgboost")
     from src.sparse.gad.xgb_graph import XGBGraphDetector
     # small imbalanced synthetic graph
     torch.manual_seed(0)
