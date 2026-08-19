@@ -26,10 +26,26 @@ import torch
 class BaseMechanism(ABC):
     """Abstract base mechanism g0 consumed by the SparseGNN engine."""
 
+    #: What the train/val/test numbers from `evaluate` mean.  Recorded in the
+    #: results CSV so a sweep over datasets with different targets (accuracy,
+    #: micro-F1, AUROC) stays self-describing.
+    metric_name: str = "accuracy"
+
     def __init__(self, module: torch.nn.Module, device: torch.device = None):
         self.device = device or torch.device("cpu")
         self.module = module.to(self.device)
         self.optimizer = None
+        #: Optional edge_index override for `evaluate`.  None means evaluate on
+        #: data.edge_index (the full graph).  run.py sets this to the actual
+        #: training graph (inductive-filtered, deduplicated, degree-capped)
+        #: when --eval_graph train is passed, so utility can be measured on the
+        #: same graph the model was trained on.
+        self.eval_edge_index = None
+
+    def eval_edges(self, data) -> torch.Tensor:
+        """The edge_index `evaluate` should use (see `eval_edge_index`)."""
+        return (self.eval_edge_index if self.eval_edge_index is not None
+                else data.edge_index)
 
     # ── parameters / optimizer ────────────────────────────────────────────────
 
@@ -37,13 +53,18 @@ class BaseMechanism(ABC):
         return [p for p in self.module.parameters() if p.requires_grad]
 
     def build_optimizer(self, lr: float, weight_decay: float = 0.0,
-                        kind: str = "adam") -> torch.optim.Optimizer:
+                        kind: str = "adam",
+                        momentum: float = 0.0) -> torch.optim.Optimizer:
         if kind == "adam":
             self.optimizer = torch.optim.Adam(
                 self.module.parameters(), lr=lr, weight_decay=weight_decay)
         elif kind == "sgd":
+            # Momentum is a data-independent function of past (already noised)
+            # updates, i.e. post-processing — no privacy cost.  With DP noise
+            # it acts as an averaging filter over ~1/(1-momentum) steps.
             self.optimizer = torch.optim.SGD(
-                self.module.parameters(), lr=lr, weight_decay=weight_decay)
+                self.module.parameters(), lr=lr, weight_decay=weight_decay,
+                momentum=momentum)
         else:
             raise ValueError(f"unknown optimizer kind '{kind}'")
         return self.optimizer
@@ -95,7 +116,13 @@ class BaseMechanism(ABC):
         """Draw N(0, (sigma*C)^2 I) noise shaped like `grads` (Alg adds noise).
 
         The Gaussian base mechanism of Assumption 3.2 has covariance sigma^2 C^2 I.
+
+        The draw happens on CPU and is then moved to the gradient's device:
+        `generator` is a CPU torch.Generator, and torch.randn requires the
+        generator's device to match the output device, so drawing directly on
+        CUDA would raise.  CPU draws also make the noise stream identical
+        across CPU and GPU runs for a given seed.
         """
         std = sigma * C
-        return [torch.randn(g.shape, generator=generator, device=g.device) * std
+        return [(torch.randn(g.shape, generator=generator) * std).to(g.device)
                 for g in grads]

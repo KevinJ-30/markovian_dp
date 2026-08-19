@@ -17,7 +17,7 @@ from .neighbor_aggregation import (
     aggregate_features_expand,
     sparsify_edges_bernoulli,
 )
-from ..sparse_expand import build_out_adjacency
+from ..sparse_expand import build_adjacency
 
 # GADBench XGBoost defaults (Table 9): n_estimators=100, lr default 0.3, gbtree, L2=1.
 _DEFAULT_XGB = dict(
@@ -64,7 +64,7 @@ class XGBGraphDetector:
             edge_index = sparsify_edges_bernoulli(data.edge_index, p2, generator=generator)
             return aggregate_features(x, edge_index, self.num_layers, aggr=self.aggr)
         if sparsifier == "expand":
-            adj = build_out_adjacency(data.edge_index, int(data.num_nodes))
+            adj = build_adjacency(data.edge_index, int(data.num_nodes), direction='in')
             nodes = torch.arange(int(data.num_nodes))
             return aggregate_features_expand(
                 x, adj, nodes, p2, self.num_layers, aggr=self.aggr, generator=generator

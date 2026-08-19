@@ -28,10 +28,22 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from src.datasets import load_dataset                       # noqa: E402
 from src.sparse.gnn_mechanism import GNNMechanism           # noqa: E402
+from src.sparse.mlp_mechanism import MLPMechanism           # noqa: E402
+from src.sparse.multilabel_mechanism import MultiLabelGNNMechanism  # noqa: E402
+from src.sparse.binary_mechanism import BinaryGNNMechanism  # noqa: E402
 from src.sparse.sparse_expand import (                      # noqa: E402
-    build_out_adjacency, cap_degrees, max_degrees,
+    build_adjacency, cap_degrees, cap_degrees_undirected, edge_set_is_symmetric,
+    max_degrees, sparse_expand,
 )
 from src.sparse.sparse_gnn import train_sparse_gnn          # noqa: E402
+
+
+_MECHANISMS = {
+    'gnn': GNNMechanism,
+    'mlp': MLPMechanism,
+    'multilabel_gnn': MultiLabelGNNMechanism,
+    'binary_gnn': BinaryGNNMechanism,
+}
 
 
 def _set_seed(seed):
@@ -45,6 +57,57 @@ def _mean_std(xs):
         return m, 0.0
     var = sum((x - m) ** 2 for x in xs) / (len(xs) - 1)
     return m, var ** 0.5
+
+
+def _report_subgraph_size(adj, candidate_nodes, num_nodes, *, p2, r, direction,
+                          n_probe=512):
+    """Log the mean rooted-subgraph size at the widest sweep setting.
+
+    This is the diagnostic that catches an expansion which reaches nothing: if
+    the mean is ~1.0 the roots are isolated and the GNN degenerates to an MLP
+    regardless of p2 and r, which is exactly what the pre-v35 out-orientation
+    did on graphs whose degree mass sits on incoming edges (ogbn-arxiv: max
+    in-degree 3015 vs max out-degree 221).
+    """
+    pool = (torch.arange(num_nodes) if candidate_nodes is None
+            else candidate_nodes.cpu())
+    if pool.numel() == 0 or r == 0:
+        return
+    gen = torch.Generator().manual_seed(999)
+    probe = pool[torch.randperm(int(pool.numel()), generator=gen)[:n_probe]]
+    sizes = [sparse_expand(adj, int(v), p2, r, generator=gen,
+                           direction=direction).num_nodes
+             for v in probe.tolist()]
+    mean = sum(sizes) / len(sizes)
+    print(f"  direction={direction}: mean rooted-subgraph size at p2={p2}, "
+          f"r={r} is {mean:.2f} nodes (over {len(sizes)} probe roots)")
+    if mean < 1.05:
+        print("  WARNING: roots are effectively isolated — the graph "
+              "contributes nothing beyond the root's own features.")
+
+
+def trivial_baseline(data, metric):
+    """Score of the best label-only predictor, for the dataset's own metric.
+
+    This is the floor every result must clear, and it is recorded in the CSV so
+    a sweep can never again look like a result while sitting under chance — the
+    PPI runs of 2026-08-11 spent a night doing exactly that (best 0.4756 against
+    a trivial 0.4608).
+
+      accuracy  -> most frequent training class, evaluated on test
+      micro_f1  -> predict every label positive: 2p/(1+p) at positive rate p
+      auroc     -> 0.5 by definition
+    """
+    import torch as _t
+    if metric == "auroc":
+        return 0.5
+    y, te = data.y, data.test_mask
+    if metric == "micro_f1":
+        p = float(y[te].float().mean())
+        return 2 * p / (1 + p) if p > 0 else float("nan")
+    tr_counts = _t.bincount(y[data.train_mask].view(-1))
+    majority = int(tr_counts.argmax())
+    return float((y[te].view(-1) == majority).float().mean())
 
 
 def plot_sweep(summary, dataset_name, out_dir):
@@ -95,6 +158,37 @@ def parse_args():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--dataset', default='citeseer',
                    help='cora | citeseer | pubmed | ...')
+    p.add_argument('--model',
+                   choices=['gnn', 'mlp', 'multilabel_gnn', 'binary_gnn'],
+                   default='gnn',
+                   help="base mechanism g0: 'gnn' (GCN, single-label), 'mlp' "
+                        "(graph-blind Stage-0 baseline; use with --r 0), "
+                        "'multilabel_gnn' (BCE + micro-F1, for PPI), or "
+                        "'binary_gnn' (BCE + AUROC, for RelBench entity tasks)")
+    p.add_argument('--aggr', choices=['mean', 'gcn'], default='mean',
+                   help="message-passing aggregator: 'mean' (GraphSAGE) makes "
+                        "the rooted-subgraph computation agree EXACTLY with "
+                        "full-graph inference, so the eval protocol is exact; "
+                        "'gcn' (symmetric normalization) only approximates it, "
+                        "with error growing in graph density (~0.3%% on capped "
+                        "ogbn-arxiv, 150-400%% on PPI). Use 'gcn' to reproduce "
+                        "pre-2026-08-12 results.")
+    p.add_argument('--relbench_root', choices=['row', 'entity'], default='row',
+                   help='RelBench only: root one prediction per task ROW (all '
+                        'supervision) or per ENTITY (labels aggregated)')
+    p.add_argument('--relbench_reverse_edges', action='store_true',
+                   help='RelBench only: also add parent->child arcs; enriches '
+                        'neighbourhoods but raises K_out and hence epsilon')
+    p.add_argument('--inductive', action='store_true',
+                   help='train on the train-induced subgraph only (expansion '
+                        'never touches val/test nodes — the privacy-honest '
+                        'setting); evaluate with full-graph inductive inference')
+    p.add_argument('--direction', choices=['in', 'out'], default='in',
+                   help="SparseExpand orientation: 'in' = Algorithm 5, expand "
+                        "along incoming edges so messages flow toward the root "
+                        "(correct for message passing; accounted by Theorem "
+                        "6.4); 'out' = legacy Algorithm 2/4, kept for the "
+                        "orientation ablation (accounted by Theorem 4.5)")
     # Paper parameters (each accepts one or more values → swept as a grid)
     p.add_argument('--p1', type=float, nargs='+', default=[0.5],
                    help='root-sampling probability p1 (Bernoulli per node); '
@@ -111,7 +205,19 @@ def parse_args():
     p.add_argument('--hidden', type=int, default=64)
     p.add_argument('--num_layers', type=int, default=2, help='GCN layers L')
     p.add_argument('--dropout', type=float, default=0.5)
+    p.add_argument('--optimizer', choices=['auto', 'adam', 'sgd'],
+                   default='auto',
+                   help="'auto' = Adam for non-DP, SGD for DP (the historical "
+                        "default).  Pin it to 'sgd' to make a non-DP reference "
+                        "differ from its DP runs ONLY by the noise, so the gap "
+                        "measures the cost of privacy and not the cost of "
+                        "changing optimizer; 'adam' gives the best achievable "
+                        "non-private number.  The choice is post-processing "
+                        "either way and costs no privacy.")
     p.add_argument('--lr', type=float, default=0.01)
+    p.add_argument('--momentum', type=float, default=0.0,
+                   help='SGD momentum for the DP path (post-processing, no '
+                        'privacy cost; ignored by the non-DP Adam path)')
     p.add_argument('--weight_decay', type=float, default=5e-4)
     p.add_argument('--roots_from', choices=['train', 'all'], default='train',
                    help="eligible-root pool: 'train' (labeled roots only) or 'all'")
@@ -123,11 +229,33 @@ def parse_args():
                         '--sigma 2 5 10 (only swept when --dp)')
     p.add_argument('--K_in', type=int, default=None,
                    help='cap max in-degree before training (required for a '
-                        'valid Theorem 4 guarantee; recorded in the CSV for '
+                        'valid Theorem 6.4 guarantee; recorded in the CSV for '
                         'post-hoc accounting via src.sparse.compute_epsilon)')
     p.add_argument('--K_out', type=int, default=None,
                    help='cap max out-degree before training (defaults to K_in)')
+    p.add_argument('--cap_mode', choices=['auto', 'directed', 'undirected'],
+                   default='auto',
+                   help="degree capping: 'directed' caps in- and out-arcs "
+                        "independently (destroys edge symmetry on undirected "
+                        "graphs); 'undirected' caps the undirected degree at "
+                        "K_in (=K_out) and keeps both arcs of every surviving "
+                        "edge; 'auto' picks undirected iff the graph is "
+                        "symmetric and K_in == K_out")
+    p.add_argument('--eval_graph', choices=['full', 'train'], default='full',
+                   help="graph for `evaluate`: 'full' = data.edge_index "
+                        "(uncapped, unfiltered — the deployment view; for "
+                        "RelBench the test-cutoff graph); 'train' = the exact "
+                        "training graph (inductive-filtered, deduplicated, "
+                        "capped), so utility is measured on what the model "
+                        "was trained on")
     # General
+    p.add_argument('--track_every', type=int, default=0,
+                   help='if >0, evaluate every this many steps and write one '
+                        'CSV row per checkpoint (step column).  Evaluation '
+                        'draws no sampling randomness, so the trajectory is '
+                        'identical to an untracked run.  Post-hoc accounting '
+                        'then attaches eps(t) to every checkpoint, giving the '
+                        'whole privacy-utility curve from a single run.')
     p.add_argument('--seeds', type=int, default=3)
     p.add_argument('--out_dir', default='results')
     p.add_argument('--plot', action='store_true',
@@ -142,54 +270,148 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(args.out_dir, exist_ok=True)
     tag = '_dp' if args.dp else ''
+    # relbench:<db>/<task> names contain separators that are not filename-safe.
+    ds_slug = args.dataset.replace(':', '_').replace('/', '_')
     csv_path = os.path.join(args.out_dir,
-                            f'sparse_gnn_{args.dataset}{tag}_results.csv')
+                            f'sparse_gnn_{ds_slug}{tag}_results.csv')
 
     sigmas = args.sigma if args.dp else [args.sigma[0]]
     grid = list(itertools.product(args.p1, args.p2, args.r, sigmas))
 
     print(f"\n{'='*66}")
-    print(f"SparseGNN (Alg 1&2)  dataset={args.dataset}  device={device}")
+    print(f"SparseGNN  dataset={args.dataset}  device={device}  "
+          f"direction={args.direction}  aggr={args.aggr}")
     print(f"  p1={args.p1}  p2={args.p2}  r={args.r}  sigma={sigmas}  T={args.T}  "
           f"L={args.num_layers}  dp={args.dp}  seeds={args.seeds}")
     print(f"  sweep: {len(grid)} (p1,p2,r,sigma) combo(s) x {args.seeds} seed(s)")
     print('='*66)
 
-    dataset, data = load_dataset(args.dataset, device=str(device))
+    dataset, data = load_dataset(
+        args.dataset, device=str(device),
+        root=args.relbench_root, reverse_edges=args.relbench_reverse_edges,
+    ) if str(args.dataset).startswith('relbench') else load_dataset(
+        args.dataset, device=str(device))
     data = data.to(device)
     num_features = dataset.num_features
     num_classes = dataset.num_classes
 
+    # Model/task guard: fail fast on pairings that would crash deep in a shape
+    # error (single-label GNN on multilabel PPI) or silently report a
+    # misleading metric (accuracy on an imbalanced binary RelBench task).
+    if getattr(dataset, 'multilabel', False) and args.model != 'multilabel_gnn':
+        raise SystemExit(
+            f"{args.dataset} is multilabel — use --model multilabel_gnn "
+            f"(got --model {args.model})")
+    task_type = str(getattr(dataset, 'task_type', ''))
+    if 'BINARY' in task_type.upper() and args.model != 'binary_gnn':
+        print(f"  WARNING: {args.dataset} is a binary task "
+              f"({task_type}) — --model binary_gnn (AUROC) is recommended, "
+              f"got --model {args.model}")
+
     edge_index = data.edge_index
+    if args.inductive:
+        if hasattr(data, 'train_edge_index'):
+            # The loader already built a training graph (RelBench: everything at
+            # or before the train cutoff).  Masking on train_mask would be wrong
+            # here — a labelled root's neighbours are unlabelled DB rows.
+            edge_index = data.train_edge_index
+            print(f"  inductive: using the loader's training graph, edges "
+                  f"{data.edge_index.size(1)} -> {edge_index.size(1)}")
+        else:
+            # Training graph = subgraph induced on train nodes: keep only arcs
+            # whose BOTH endpoints are training nodes, so SparseExpand can never
+            # reach a val/test node during training (no privacy leak).
+            # Evaluation still uses the full data.edge_index for inductive
+            # inference on held-out nodes.
+            is_train = data.train_mask
+            both_train = is_train[edge_index[0]] & is_train[edge_index[1]]
+            edge_index = edge_index[:, both_train]
+            print(f"  inductive: restrict to train-induced subgraph, edges "
+                  f"{data.edge_index.size(1)} -> {edge_index.size(1)} "
+                  f"(train nodes {int(is_train.sum())}/{int(data.num_nodes)})")
+
+    # The accounting (path counts, Lemma 20) assumes graphs WITHOUT parallel
+    # edges; duplicates also get outsized survival odds under capping.  All
+    # shipped loaders are simple graphs, but enforce it here so e.g. a RelBench
+    # table with two foreign keys to the same parent row cannot break the
+    # assumption silently.
+    n_arcs_raw = edge_index.size(1)
+    edge_index = torch.unique(edge_index.cpu(), dim=1)
+    if edge_index.size(1) < n_arcs_raw:
+        print(f"  removed {n_arcs_raw - edge_index.size(1)} parallel arc(s): "
+              f"{n_arcs_raw} -> {edge_index.size(1)} (simple-graph assumption)")
+
     K_in, K_out = args.K_in, args.K_out if args.K_out is not None else args.K_in
     if K_in is not None:
         before = max_degrees(edge_index, int(data.num_nodes))
         cap_gen = torch.Generator().manual_seed(12345)
-        edge_index = cap_degrees(edge_index, int(data.num_nodes),
-                                 K_in=K_in, K_out=K_out, generator=cap_gen)
+        cap_mode = args.cap_mode
+        if cap_mode == 'auto':
+            cap_mode = ('undirected' if K_in == K_out and
+                        edge_set_is_symmetric(edge_index, int(data.num_nodes))
+                        else 'directed')
+        if cap_mode == 'undirected':
+            if K_in != K_out:
+                raise SystemExit("--cap_mode undirected needs K_in == K_out")
+            edge_index = cap_degrees_undirected(
+                edge_index, int(data.num_nodes), K_in, generator=cap_gen)
+        else:
+            # NOTE: on a symmetric graph this caps the two arc directions
+            # independently and so destroys edge symmetry (~2/3 of surviving
+            # arcs lose their reverse at K=5); that is why 'auto' prefers
+            # 'undirected' there.
+            edge_index = cap_degrees(edge_index, int(data.num_nodes),
+                                     K_in=K_in, K_out=K_out, generator=cap_gen)
         after = max_degrees(edge_index, int(data.num_nodes))
-        print(f"  degree cap K_in={K_in} K_out={K_out}: max (in,out) "
-              f"{before} -> {after}, edges {data.edge_index.size(1)} -> "
-              f"{edge_index.size(1)}")
-    elif args.dp:
-        print("  WARNING: --dp without --K_in — the Theorem 4 accounting "
-              "assumption (bounded degrees) is not enforced; post-hoc epsilon "
-              "will use the graph's raw max degrees.")
-        K_in, K_out = max_degrees(edge_index, int(data.num_nodes))
+        print(f"  degree cap K_in={K_in} K_out={K_out} (mode={cap_mode}): "
+              f"max (in,out) {before} -> {after}, edges "
+              f"{data.edge_index.size(1)} -> {edge_index.size(1)}")
+    else:
+        cap_mode = ''
+        if args.dp:
+            print("  WARNING: --dp without --K_in — the degree-bound "
+                  "accounting assumption (Assumption 3.1 / 6.2) is not "
+                  "enforced; post-hoc epsilon will use the graph's raw max "
+                  "degrees.")
+            K_in, K_out = max_degrees(edge_index, int(data.num_nodes))
 
-    # Out-adjacency is deterministic; build once and reuse across all runs.
-    adj = build_out_adjacency(edge_index, int(data.num_nodes))
+    # The adjacency is deterministic; build once and reuse across all runs.
+    adj = build_adjacency(edge_index, int(data.num_nodes),
+                          direction=args.direction)
 
     candidate_nodes = None
     if args.roots_from == 'train':
         candidate_nodes = torch.where(data.train_mask)[0]
 
+    _report_subgraph_size(adj, candidate_nodes, int(data.num_nodes),
+                          p2=max(args.p2), r=max(args.r),
+                          direction=args.direction)
+
+    _probe = _MECHANISMS[args.model]
+    _metric = getattr(_probe, 'metric_name', 'accuracy')
+    trivial = trivial_baseline(data, _metric)
+    print(f"  trivial baseline ({_metric}) on test: {trivial:.4f} "
+          f"— every result below must clear this")
+
     summary = []   # (p1, p2, r, sigma, test_mean, test_std, val_mean, val_std)
 
-    with open(csv_path, 'w', newline='') as fh:
+    # Write to <name>.partial and rename only on success.  Rows are still
+    # flushed as they complete, so a killed run leaves an inspectable partial
+    # file — but the final path never exists unless the sweep finished, which is
+    # what the ladder scripts' resume guard keys on.
+    partial_path = csv_path + '.partial'
+    with open(partial_path, 'w', newline='') as fh:
         w = csv.writer(fh)
-        w.writerow(['dataset', 'p1', 'p2', 'r', 'sigma', 'clip', 'K_in', 'K_out',
-                    'T', 'L', 'dp', 'seed', 'train_acc', 'val_acc', 'test_acc'])
+        # train_acc/val_acc/test_acc hold whatever `metric` names — accuracy for
+        # single-label GNN/MLP, micro-F1 for multilabel, AUROC for binary.
+        w.writerow(['dataset', 'model', 'aggr', 'metric', 'inductive',
+                    'direction', 'p1', 'p2', 'r', 'sigma', 'clip', 'K_in',
+                    'K_out', 'cap_mode', 'eval_graph', 'optimizer', 'lr',
+                    'momentum', 'T', 'L', 'dp', 'seed', 'step',
+                    'train_acc', 'val_acc', 'test_acc', 'trivial_baseline',
+                    # Secondary, threshold-free metric where the mechanism
+                    # reports one (multilabel).  Blank otherwise.
+                    'train_auroc', 'val_auroc', 'test_auroc'])
 
         for p1, p2, r, sigma in grid:
             print(f"\n[p1={p1} p2={p2} r={r}" +
@@ -197,36 +419,64 @@ def main():
             tests, vals = [], []
             for seed in range(args.seeds):
                 _set_seed(seed)
-                mech = GNNMechanism(
+                Mechanism = _MECHANISMS[args.model]
+                extra = {} if args.model == 'mlp' else {'aggr': args.aggr}
+                mech = Mechanism(
                     data, num_features, num_classes,
                     hidden=args.hidden, num_layers=args.num_layers,
-                    dropout=args.dropout, device=device,
+                    dropout=args.dropout, device=device, **extra,
                 )
+                if args.eval_graph == 'train':
+                    mech.eval_edge_index = edge_index.to(device)
+                opt_kind = (args.optimizer if args.optimizer != 'auto'
+                            else ('sgd' if args.dp else 'adam'))
                 mech.build_optimizer(lr=args.lr, weight_decay=args.weight_decay,
-                                     kind='sgd' if args.dp else 'adam')
+                                     kind=opt_kind, momentum=args.momentum)
 
                 accs = train_sparse_gnn(
-                    mech, data, adj=adj,
+                    mech, data, adj=adj, direction=args.direction,
                     p1=p1, p2=p2, r=r, T=args.T,
                     candidate_nodes=candidate_nodes,
                     dp=args.dp, clip=args.clip, sigma=sigma,
-                    seed=seed, eval_every=args.eval_every, verbose=args.verbose,
+                    seed=seed, eval_every=args.eval_every,
+                    track_every=args.track_every, verbose=args.verbose,
                 )
+                history = accs.pop('history', [])
                 tests.append(accs['test'])
                 vals.append(accs['val'])
                 print(f"  seed={seed}  train={accs['train']:.4f}  "
                       f"val={accs['val']:.4f}  test={accs['test']:.4f}")
-                w.writerow([args.dataset, p1, p2, r, sigma, args.clip,
-                            K_in if K_in is not None else '',
-                            K_out if K_out is not None else '',
-                            args.T, args.num_layers, args.dp, seed,
-                            f"{accs['train']:.5f}", f"{accs['val']:.5f}",
-                            f"{accs['test']:.5f}"])
+
+                def _write_row(step, m):
+                    w.writerow([args.dataset, args.model,
+                                '' if args.model == 'mlp' else args.aggr,
+                                mech.metric_name, args.inductive,
+                                args.direction, p1, p2, r, sigma, args.clip,
+                                K_in if K_in is not None else '',
+                                K_out if K_out is not None else '',
+                                cap_mode, args.eval_graph,
+                                opt_kind, args.lr, args.momentum,
+                                args.T, args.num_layers, args.dp, seed, step,
+                                f"{m['train']:.5f}", f"{m['val']:.5f}",
+                                f"{m['test']:.5f}", f"{trivial:.5f}",
+                                *(f"{m[k]:.5f}" if k in m else ''
+                                  for k in ('train_auroc', 'val_auroc',
+                                            'test_auroc'))])
+
+                for h in history:
+                    if h['step'] < args.T:   # final checkpoint == the T row
+                        _write_row(h['step'], h)
+                _write_row(args.T, accs)
+                fh.flush()   # persist each row so a killed run keeps its rows
 
             tm, ts = _mean_std(tests)
             vm, vs = _mean_std(vals)
             summary.append((p1, p2, r, sigma, tm, ts, vm, vs))
-            print(f"  >> test {tm:.4f} +/- {ts:.4f}   val {vm:.4f} +/- {vs:.4f}")
+            mark = "" if tm > trivial else "   <-- BELOW TRIVIAL BASELINE"
+            print(f"  >> test {tm:.4f} +/- {ts:.4f}   "
+                  f"val {vm:.4f} +/- {vs:.4f}{mark}")
+
+    os.replace(partial_path, csv_path)
 
     # Sweep summary table (sorted by test accuracy, best first)
     print(f"\n{'='*66}")

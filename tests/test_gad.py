@@ -12,7 +12,7 @@ from src.sparse.gad.neighbor_aggregation import (
     aggregate_features, aggregate_features_expand, sparsify_edges_bernoulli,
 )
 from src.sparse.gad.metrics import auroc, auprc, rec_at_k
-from src.sparse.sparse_expand import build_out_adjacency
+from src.sparse.sparse_expand import build_adjacency
 
 
 def _undirected_toy():
@@ -64,7 +64,7 @@ def test_global_matches_expand_at_p2_1():
     edge_index, x, n = _undirected_toy()
     L = 2
     glob = aggregate_features(x, edge_index, num_layers=L, aggr="mean")
-    adj = build_out_adjacency(edge_index, n)
+    adj = build_adjacency(edge_index, n, direction='in')
     nodes = torch.arange(n)
     exp = aggregate_features_expand(x, adj, nodes, p2=1.0, r=L, aggr="mean")
     assert torch.allclose(glob, exp, atol=1e-6)

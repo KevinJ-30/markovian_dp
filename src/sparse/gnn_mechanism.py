@@ -16,23 +16,20 @@ from typing import Dict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv
 
 from .base_mechanism import BaseMechanism
+from .layers import build_conv_stack
 
 
 class _GCN(nn.Module):
     """L-layer GCN with symmetric normalization (Kipf & Welling 2017)."""
 
     def __init__(self, in_channels, hidden_channels, out_channels,
-                 dropout=0.5, num_layers=2):
+                 dropout=0.5, num_layers=2, aggr='mean'):
         super().__init__()
         self.dropout = dropout
         dims = [in_channels] + [hidden_channels] * (num_layers - 1) + [out_channels]
-        self.convs = nn.ModuleList([
-            GCNConv(dims[i], dims[i + 1], add_self_loops=True, normalize=True)
-            for i in range(num_layers)
-        ])
+        self.convs = build_conv_stack(dims, aggr=aggr)
 
     def forward(self, x, edge_index):
         for i, conv in enumerate(self.convs):
@@ -56,9 +53,9 @@ class GNNMechanism(BaseMechanism):
     """
 
     def __init__(self, data, num_features, num_classes, *, hidden=64,
-                 num_layers=2, dropout=0.5, device=None):
+                 num_layers=2, dropout=0.5, aggr='mean', device=None):
         module = _GCN(num_features, hidden, num_classes,
-                      dropout=dropout, num_layers=num_layers)
+                      dropout=dropout, num_layers=num_layers, aggr=aggr)
         super().__init__(module, device=device)
         self.data = data
         # Precompute which nodes carry a training label (only these produce a
@@ -83,7 +80,7 @@ class GNNMechanism(BaseMechanism):
     def evaluate(self, data=None) -> Dict[str, float]:
         data = data or self.data
         self.eval_mode()
-        out = self.module(data.x, data.edge_index)
+        out = self.module(data.x, self.eval_edges(data))
         pred = out.argmax(dim=1)
         accs = {}
         for split in ("train", "val", "test"):

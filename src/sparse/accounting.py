@@ -1,189 +1,181 @@
 """
-Theorem 3 and Theorem 4 dominating pairs for SparseGNN.
+Dominating pairs for one SparseGNN step (manuscript v36).
 
-Theorem 3 gives a graph-independent dominating pair for one SparseGNN step under
-the node-level neighboring relation:
+Two families are implemented, one per neighbouring relation.  Which one applies
+is decided by the EXPANSION ORIENTATION used during training — see
+`src/sparse/sparse_expand.py`.
 
-    N_r = |U-bar| = 1 + sum_{d=1..r} K_in^d
-    U-bar = {(d, j) : 0 <= d <= r, 1 <= j <= n_d},  n_0 = 1,  n_d = K_in^d
-    activation probs:  a_{0,1} = p1,  a_{d,j} = p1 * q_d   (d >= 1)
-      q_0 = 1,  q_d = min(1, sum_{l=d..r} K^{l-1} p2^l),  K = min(K_in, K_out)
-    weights:  w_A = prod_{u in A} a_u * prod_{u not in A} (1 - a_u)
-    Gray ordering A_0..A_{2^{N_r}-1} of subsets of U-bar (A_0 = empty)
-    means:    mu^(1) = (0, -2, -4, ..., -2(2^{N_r}-1)),  mu^(2) = -mu^(1)
-    P = MoG(mu^(1), w, sigma),  Q = MoG(mu^(2), w, sigma)
 
-Then Hα(M_g || M_g') <= Hα(P || Q) for every neighboring pair g ~ g', and
-(P^{⊗T}, Q^{⊗T}) dominates the T-step transcript by adaptive composition.
+1. SUBSTITUTION — Theorem 6.4 (in-expansion) and Theorem 1/2 (out-expansion)
+---------------------------------------------------------------------------
+Both theorems have the identical form; only the shell size differs, because a
+substituted vertex s can affect a root v only if v lies in s's forward directed
+neighbourhood (in-expansion) or its backward one (out-expansion):
 
-The Theorem 3 mixture has 2^{N_r} components, which explodes with K_in and r;
-it is tractable only for small (K_in, r).
+    K   = min(K_in, K_out)
+    q_0 = 1,   q_d = 1 - prod_{l=d..r} (1 - p2^l)^{K^{l-1}}      (Eq. 3 / 43)
+    n_0 = 1,   n_d = K_out^d   for direction='in'   (Thm 6.4, Eq. 44)
+               n_d = K_in^d    for direction='out'  (Thm 1/2)
+    N_r = sum_{d=0..r} n_d
+    sum_k pi_k z^k = prod_{d=0..r} (1 - p1 q_d + p1 q_d z)^{n_d}  (Eq. 4 / 46)
+    P = sum_k pi_k N(-2k, sigma^2),  Q = sum_k pi_k N(+2k, sigma^2)  (Eq. 5 / 47)
 
-Theorem 4 (Section 4) is the pair we actually account with.  It works under the
-node INSERTION/REMOVAL relation and gives a marked mixture with only
-N_com_r + 1 = 1 + sum_{d=1..r} K_in^d fibers:
+The means are spaced by 2 because an arbitrary substitution of one rooted
+subgraph moves the clipped sum by up to 2C.  Q is the reflection of P through
+the origin, so H_a(P||Q) = H_a(Q||P) and the pair is its own reverse.
+
+
+2. INSERTION/REMOVAL — Theorem 4.5 (out-expansion only)
+-------------------------------------------------------
+Tighter per unit distance, because a single insertion or removal has
+sensitivity C rather than 2C, but the mark j is disclosed, so the pair loses
+the mixture-level amplification of the substitution family.  Stated for
+Algorithm 4 (out-expansion); it serves as the out-orientation ablation:
 
     K = min(K_in, K_out),  n_d = K_in^d
     q×_d = 1 - prod_{l=d..r} (1 - p2^l)^{K^{l-1}},   a_d = p1 * q×_d
-    pi_j from the PGF   sum_j pi_j z^j = prod_{d=1..r} (1 - a_d + a_d z^{n_d})
+    pi_j from the PGF   sum_j pi_j z^j = prod_{d=1..r} (1 - a_d + a_d z)^{n_d}
     P→ = ⊕_j pi_j N(-j, sigma^2)
     Q→ = ⊕_j pi_j [ (1-p1) N(j, sigma^2) + p1 N(j+1, sigma^2) ]
 
-(P→, Q→) dominates the insertion direction and (Q→, P→) the removal direction
-of ONE SparseGNN step; T steps compose via PLD self-composition, and the
-reported epsilon is the max over the two orientations.  Because the fibers are
-disjoint (the mark), the marked pair's PLD is exactly the pi-weighted mixture
-of per-fiber PLDs, which is how we discretize it.
+The PGF factors are the SAME Binomial family as the substitution pairs: by
+Lemma 17, each of the n_d common-root slots at distance d activates
+independently with probability a_d, so pi is the law of sum_d Binomial(n_d,
+a_d).  (An earlier revision of this module misread Eq. (29) as a single
+Bernoulli with jump n_d, which put mass a_d directly on the mark K_in^d and
+inflated epsilon by roughly 4x, or to infinity.)  (P→, Q→) dominates the
+insertion direction and (Q→, P→) the removal direction, so the reported
+epsilon is the max over both.  Because the fibers are disjoint (the mark), the
+marked pair's privacy loss distribution is exactly the pi-weighted mixture of
+per-fiber loss distributions, which is how it is discretized below.
 
-Both pairs are emitted as discretized (p_atoms, q_atoms) arrays compatible with
-`dp-subsample-prelim/accounting.py::PrivacyLossDistribution.from_dominating_pair`,
-matching the contract of the `make_novel_mechanism_dominating_pair` hook in
-`sparsification_experiments/dp_accounting.py`.
+
+NUMERICAL BACKEND — Google dp_accounting
+----------------------------------------
+Composition and epsilon(delta) are delegated to
+`dp_accounting.pld.privacy_loss_distribution`; nothing here hand-rolls PLD
+convolution any more.  The discretized input is CERTIFIED pessimistic:
+
+  * cell masses are exact Gaussian-mixture CDF differences (no density * dx
+    midpoint approximation);
+  * the per-cell privacy loss is the larger of the two cell-edge losses, which
+    upper-bounds the loss everywhere in the cell because the edge-loss
+    sequence is verified monotone at construction time;
+  * the lower (denominator) mass fed to dp_accounting is num_mass *
+    exp(-loss), which is <= the true denominator mass, so the resulting pair
+    dominates the analytic pair — its hockey-stick divergence, and every
+    composition of it, is an upper bound;
+  * truncated component/tail/cell mass on the numerator side goes to a
+    dedicated infinite-loss outcome, and the denominator deficit to an outcome
+    absent from the numerator, both of which are pessimistic.
+
+dp_accounting then applies its own pessimistic rounding of the losses onto the
+`value_discretization_interval` grid, composes by FFT, and converts to
+epsilon(delta).
 """
 
-import importlib.util
 import math
-import os
-from typing import List, Optional
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
-
-def _load_pld_module():
-    """Load dp-subsample-prelim/accounting.py by path (hyphenated dir, not a
-    package) without shadowing this module's name."""
-    path = os.path.join(os.path.dirname(__file__), '..', '..',
-                        'dp-subsample-prelim', 'accounting.py')
-    spec = importlib.util.spec_from_file_location('_dp_prelim_accounting', path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load PLD module from {path}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+# Total numerator mass allowed to be dropped into the infinite-loss outcome by
+# component / fiber / cell trimming.  Anything smaller than these floors is
+# treated as loss = +infinity, which is pessimistic, so the reported epsilon
+# stays a valid upper bound no matter how the floors are chosen.
+_COMPONENT_MASS_FLOOR = 1e-14
+_CELL_MASS_FLOOR = 1e-18
 
 
-def activation_probabilities(p1: float, p2: float, r: int, K_in: int,
-                             K_out: Optional[int] = None) -> List[float]:
-    """Flat list of activation probabilities a_u over U-bar (Theorem 3 / Lemma 10).
+def _q_products(p2: float, r: int, K: int) -> List[float]:
+    """q_0..q_r from Eq. (3) / (43): the multiplicative path-retention bounds.
 
-    Ordering: index 0 is (d=0, j=1); then (1,1..n_1), (2,1..n_2), ..., (r,1..n_r).
-    Length N_r = 1 + sum_{d=1..r} K_in^d.
+    q_0 = 1 and q_d = 1 - prod_{l=d..r} (1 - p2^l)^{K^{l-1}} for d >= 1.  The
+    product is taken in log space so that large K^{l-1} exponents stay stable.
     """
-    K = min(K_in, K_out if K_out is not None else K_in)
-    a = [p1]                       # (0, 1): a_{0,1} = p1  (q_0 = 1)
+    q = [1.0]
     for d in range(1, r + 1):
-        qd = min(1.0, sum((K ** (l - 1)) * (p2 ** l) for l in range(d, r + 1)))
-        n_d = K_in ** d
-        a.extend([p1 * qd] * n_d)
-    return a
+        if p2 >= 1.0:
+            q.append(1.0)
+            continue
+        log_keep = sum((K ** (l - 1)) * math.log1p(-(p2 ** l))
+                       for l in range(d, r + 1))
+        q.append(1.0 - math.exp(log_keep))
+    return q
 
 
-def _gray(i: int) -> int:
-    return i ^ (i >> 1)
+def _binom_pmf(n: int, p: float) -> np.ndarray:
+    """pmf of Binomial(n, p) as a length-(n+1) array; exact at p in {0, 1}."""
+    if p <= 0.0:
+        out = np.zeros(n + 1)
+        out[0] = 1.0
+        return out
+    if p >= 1.0:
+        out = np.zeros(n + 1)
+        out[n] = 1.0
+        return out
+    from scipy.stats import binom
+    pmf = binom.pmf(np.arange(n + 1), n, p)
+    pmf = np.clip(pmf, 0.0, None)
+    return pmf / pmf.sum()
 
 
-def _subset_weights(a: np.ndarray) -> np.ndarray:
-    """w_{A_i} for the Gray ordering of all 2^len(a) subsets of U-bar.
+def shell_sizes(r: int, K_in: int, K_out: Optional[int] = None,
+                direction: str = 'in') -> List[int]:
+    """n_0..n_r, the per-distance shell sizes of the substitution pairs.
 
-    Returns an array `w` of length 2^len(a) with w[i] = product over the Gray
-    subset A_i = gray(i) of a_u for u in A_i and (1 - a_u) otherwise.
+    n_0 = 1 always (the substituted vertex itself as a root).  For d >= 1:
+
+        direction='in'   n_d = K_out^d   (Theorem 6.4, Eq. 44) — a substituted
+                         vertex s reaches a root v only if v is in s's FORWARD
+                         neighbourhood, whose d-th shell has size <= K_out^d.
+        direction='out'  n_d = K_in^d    (Theorem 1/2) — the mirror statement.
     """
-    n = len(a)
-    M = 1 << n
-    log_a = np.log(np.clip(a, 1e-300, 1.0))
-    log_1ma = np.log(np.clip(1.0 - a, 1e-300, 1.0))
-    w = np.empty(M, dtype=np.float64)
-    for i in range(M):
-        g = _gray(i)
-        s = 0.0
-        for k in range(n):
-            if (g >> k) & 1:
-                s += log_a[k]
-            else:
-                s += log_1ma[k]
-        w[i] = math.exp(s)
-    total = w.sum()
-    if total > 0:
-        w /= total          # guard against tiny numerical drift
-    return w
+    if direction not in ('in', 'out'):
+        raise ValueError(f"direction must be 'in' or 'out', got {direction!r}")
+    base = (K_out if K_out is not None else K_in) if direction == 'in' else K_in
+    return [1] + [base ** d for d in range(1, r + 1)]
 
 
-def sparsegnn_dominating_pair(
-    p1: float,
-    p2: float,
-    r: int,
-    K_in: int,
-    K_out: Optional[int] = None,
-    sigma: float = 1.0,
-    n_atoms: int = 40000,
-    n_sigma: float = 10.0,
-    max_components: int = 512,
-):
-    """Discretize the Theorem 3 dominating pair (P, Q) into aligned atom masses.
+def sparsegnn_mixture_weights(p1: float, p2: float, r: int, K_in: int,
+                              K_out: Optional[int] = None,
+                              direction: str = 'in') -> np.ndarray:
+    """Mixture weights pi_0..pi_{N_r} of the substitution pairs (Eq. 4 / 46).
 
-    Returns (p_atoms, q_atoms): float64 arrays each summing to 1.0, where atom i
-    carries P-mass p_atoms[i] and Q-mass q_atoms[i] on a shared x-grid.  Feed
-    directly to PrivacyLossDistribution.from_dominating_pair.
-
-    The number of mixture components is 2^{N_r}; `max_components` guards against
-    the combinatorial blow-up (raise K_in/r only for small values).
+    sum_k pi_k z^k = prod_{d=0..r} (1 - p1 q_d + p1 q_d z)^{n_d}, i.e. pi is
+    the law of J = sum_d Binomial(n_d, p1 q_d).  Length N_r + 1 with
+    N_r = sum_{d=0..r} n_d.
     """
-    a = np.array(activation_probabilities(p1, p2, r, K_in, K_out), dtype=np.float64)
-    Nr = len(a)
-    M = 1 << Nr
-    if M > max_components:
-        raise ValueError(
-            f"Theorem 3 mixture has 2^{Nr} = {M} components > max_components="
-            f"{max_components}. This dominating pair is only tractable for small "
-            f"(K_in, r); increase max_components deliberately if you understand "
-            f"the cost."
-        )
+    if not (0.0 <= p1 <= 1.0 and 0.0 <= p2 <= 1.0):
+        raise ValueError("p1 and p2 must lie in [0, 1]")
+    if r < 0 or K_in < 1:
+        raise ValueError("need r >= 0 and K_in >= 1")
+    K = min(K_in, K_out if K_out is not None else K_in)
+    q = _q_products(p2, r, K)
+    n = shell_sizes(r, K_in, K_out, direction=direction)
 
-    w = _subset_weights(a)                         # [M]
-    idx = np.arange(M, dtype=np.float64)
-    means_p = -2.0 * idx                           # mu^(1)
-    means_q = +2.0 * idx                           # mu^(2)
+    pi = np.array([1.0])
+    for d in range(0, r + 1):
+        pi = np.convolve(pi, _binom_pmf(n[d], p1 * q[d]))
+    pi = np.clip(pi, 0.0, None)
+    pi /= pi.sum()
+    return pi
 
-    # Shared grid covering both mixtures' support.
-    span = 2.0 * (M - 1)
-    x_lo = -span - n_sigma * sigma
-    x_hi = +span + n_sigma * sigma
-    edges = np.linspace(x_lo, x_hi, n_atoms + 1)
-    dx = edges[1] - edges[0]
-    x_mid = 0.5 * (edges[:-1] + edges[1:])
-
-    inv = 1.0 / (sigma * math.sqrt(2.0 * math.pi))
-
-    def _mixture_density(means):
-        dens = np.zeros_like(x_mid)
-        for wi, mu in zip(w, means):
-            if wi <= 0.0:
-                continue
-            dens += wi * inv * np.exp(-0.5 * ((x_mid - mu) / sigma) ** 2)
-        return dens
-
-    p_density = _mixture_density(means_p)
-    q_density = _mixture_density(means_q)
-
-    p_atoms = p_density * dx
-    q_atoms = q_density * dx
-
-    # Absorb residual tail mass so both sum to exactly 1.
-    p_atoms = np.append(p_atoms, max(0.0, 1.0 - float(p_atoms.sum())))
-    q_atoms = np.append(q_atoms, max(0.0, 1.0 - float(q_atoms.sum())))
-    return p_atoms, q_atoms
-
-
-# ══ Theorem 4: insertion/removal marked pair ═══════════════════════════════════
 
 def thm4_fiber_weights(p1: float, p2: float, r: int, K_in: int,
                        K_out: Optional[int] = None) -> np.ndarray:
-    """Fiber weights pi_0..pi_{N_com_r} of the Theorem 4 marked mixture.
+    """Fiber weights pi_0..pi_{N_com_r} of the Theorem 4.5 marked mixture.
 
-    pi_j is the coefficient of z^j in prod_{d=1..r} (1 - a_d + a_d z^{n_d}),
+    pi_j is the coefficient of z^j in prod_{d=1..r} (1 - a_d + a_d z)^{n_d},
     with a_d = p1 * q×_d, q×_d = 1 - prod_{l=d..r} (1 - p2^l)^{K^{l-1}},
-    K = min(K_in, K_out), n_d = K_in^d.  For r = 0 the product is empty and
-    pi = [1.0] (only the j = 0 fiber: the inserted node itself).
+    K = min(K_in, K_out), n_d = K_in^d — i.e. pi is the law of
+    sum_d Binomial(n_d, a_d), per Lemma 17 (each of the n_d slots at distance
+    d activates independently with probability a_d).  For r = 0 the product is
+    empty and pi = [1.0] (only the j = 0 fiber: the inserted node itself).
+
+    Theorem 4.5 is stated for Algorithm 4 (OUT-expansion); it has no
+    in-expansion counterpart, so it applies only to runs recorded with
+    direction='out'.
     """
     if not (0.0 <= p1 <= 1.0 and 0.0 <= p2 <= 1.0):
         raise ValueError("p1 and p2 must lie in [0, 1]")
@@ -192,108 +184,269 @@ def thm4_fiber_weights(p1: float, p2: float, r: int, K_in: int,
     K = min(K_in, K_out if K_out is not None else K_in)
     pi = np.array([1.0])
     for d in range(1, r + 1):
-        # log-space product for (1 - p2^l)^{K^{l-1}} to stay stable at large K^l
-        log_keep = sum((K ** (l - 1)) * math.log1p(-(p2 ** l))
-                       for l in range(d, r + 1) if p2 < 1.0)
-        qx = 1.0 if p2 >= 1.0 else 1.0 - math.exp(log_keep)
-        a_d = p1 * qx
-        n_d = K_in ** d
-        factor = np.zeros(n_d + 1)
-        factor[0] = 1.0 - a_d
-        factor[n_d] = a_d
-        pi = np.convolve(pi, factor)
-    # Guard tiny FFT/rounding drift; pi must be a probability vector.
+        if p2 >= 1.0:
+            qx = 1.0
+        else:
+            log_keep = sum((K ** (l - 1)) * math.log1p(-(p2 ** l))
+                           for l in range(d, r + 1))
+            qx = 1.0 - math.exp(log_keep)
+        pi = np.convolve(pi, _binom_pmf(K_in ** d, p1 * qx))
     pi = np.clip(pi, 0.0, None)
     pi /= pi.sum()
     return pi
 
 
-def sparsegnn_thm4_pair(
+# ══ certified-pessimistic PLD construction ════════════════════════════════════
+
+def _mixture_cdf(x: np.ndarray, means: Sequence[float],
+                 weights: Sequence[float], sigma: float) -> np.ndarray:
+    from scipy.special import ndtr
+    out = np.zeros_like(x, dtype=float)
+    for mu, w in zip(means, weights):
+        out += w * ndtr((x - mu) / sigma)
+    return out
+
+
+def _mixture_logpdf(x: np.ndarray, means: Sequence[float],
+                    weights: Sequence[float], sigma: float) -> np.ndarray:
+    const = math.log(sigma * math.sqrt(2.0 * math.pi))
+    out = np.full_like(x, -np.inf, dtype=float)
+    for mu, w in zip(means, weights):
+        if w <= 0.0:
+            continue
+        out = np.logaddexp(
+            out, math.log(w) - 0.5 * ((x - mu) / sigma) ** 2 - const)
+    return out
+
+
+def _pld_from_fibers(
+    fibers: Sequence[Tuple[float, Sequence[float], Sequence[float],
+                           Sequence[float], Sequence[float]]],
+    sigma: float,
+    discretization: float,
+    n_sigma: float = 10.0,
+    atoms_per_sigma: float = 400.0,
+    cell_mass_floor: float = _CELL_MASS_FLOOR,
+):
+    """dp_accounting PLD dominating ⊕_f w_f (Num_f, Den_f) in the Num direction.
+
+    Each fiber is (weight, num_means, num_weights, den_means, den_weights),
+    the two sides being Gaussian mixtures with common std `sigma`.  Fibers are
+    disjoint marked components: the privacy loss on fiber f is
+    log(w_f num_f / (w_f den_f)) = log(num_f / den_f), so the fiber weight
+    cancels in the loss and scales only the mass — exactly the marked direct
+    sum of Theorem 4.4.  A single fiber of weight 1 is the plain-pair case.
+
+    Pessimism (see module docstring): exact CDF cell masses; per-cell loss =
+    max of the two edge losses, valid because the edge-loss sequence is
+    verified monotone; lower mass = num_mass * exp(-loss) <= true den mass;
+    trimmed num mass -> infinite-loss outcome; den deficit -> a den-only
+    outcome.
+    """
+    from dp_accounting.pld import privacy_loss_distribution as _PLD
+
+    log_upper = {}
+    log_lower = {}
+    inf_mass = 0.0          # num mass at loss = +infinity
+    lower_total = 0.0       # accumulated den mass placed so far
+
+    for f, (w_f, num_means, num_w, den_means, den_w) in enumerate(fibers):
+        if w_f <= 0.0:
+            continue
+        lo = min(min(num_means), min(den_means)) - n_sigma * sigma
+        hi = max(max(num_means), max(den_means)) + n_sigma * sigma
+        n_atoms = int(min(2_000_000,
+                          max(2000, (hi - lo) * atoms_per_sigma / sigma)))
+        edges = np.linspace(lo, hi, n_atoms + 1)
+
+        num_mass = w_f * np.diff(_mixture_cdf(edges, num_means, num_w, sigma))
+        edge_loss = (_mixture_logpdf(edges, num_means, num_w, sigma)
+                     - _mixture_logpdf(edges, den_means, den_w, sigma))
+        d = np.diff(edge_loss)
+        if not ((d <= 1e-9).all() or (d >= -1e-9).all()):
+            raise AssertionError(
+                "edge-loss sequence is not monotone; the per-cell endpoint "
+                "maximum is not a certified bound for this pair")
+        cell_loss = np.maximum(edge_loss[:-1], edge_loss[1:])
+
+        # Grid tails (num mass beyond [lo, hi]) go to the infinity outcome.
+        inf_mass += max(0.0, w_f - float(num_mass.sum()))
+
+        keep = num_mass >= cell_mass_floor
+        inf_mass += float(num_mass[~keep].sum())
+        for i in np.flatnonzero(keep):
+            m = float(num_mass[i])
+            lm = math.log(m)
+            log_upper[(f, int(i))] = lm
+            log_lower[(f, int(i))] = lm - float(cell_loss[i])
+            lower_total += m * math.exp(-float(cell_loss[i]))
+
+    if inf_mass > 0.0:
+        log_upper['inf'] = math.log(inf_mass)      # absent from lower: loss=+inf
+    deficit = max(0.0, 1.0 - lower_total)
+    if deficit > 0.0:
+        log_lower['rest'] = math.log(deficit)      # absent from upper: harmless
+
+    # symmetric=True means "this PLD covers one direction; treat it as both".
+    # That is the correct call here: each invocation of this helper constructs
+    # exactly the num-vs-den direction, and the CALLERS handle direction
+    # pairing (the substitution pair is analytically its own reverse; the
+    # Theorem 4.5 entry point invokes this helper once per orientation and
+    # takes the max).  symmetric=False would make dp_accounting additionally
+    # build the swapped direction from these same dicts, where the 'rest'
+    # outcome becomes genuine infinity mass and epsilon collapses to inf.
+    return _PLD.from_two_probability_mass_functions(
+        log_lower, log_upper, pessimistic_estimate=True,
+        value_discretization_interval=discretization, symmetric=True)
+
+
+# ══ epsilon entry points ══════════════════════════════════════════════════════
+
+def _substitution_pld(p1, p2, r, K_in, K_out, sigma, direction, grid,
+                      n_sigma, atoms_per_sigma):
+    """Single-step PLD for the substitution pair (Thm 6.4 / Thm 1-2)."""
+    pi = sparsegnn_mixture_weights(p1, p2, r, K_in, K_out, direction=direction)
+    kept = np.flatnonzero(pi >= _COMPONENT_MASS_FLOOR)
+    weights = [float(pi[k]) for k in kept]
+    p_means = [-2.0 * float(k) for k in kept]
+    q_means = [+2.0 * float(k) for k in kept]
+    # Dropped components lose their mass from the numerator grid cells, and the
+    # helper routes exactly that deficit to the infinite-loss outcome.
+    fibers = [(1.0, p_means, weights, q_means, weights)]
+    return _pld_from_fibers(fibers, sigma, discretization=grid,
+                            n_sigma=n_sigma, atoms_per_sigma=atoms_per_sigma)
+
+
+def _compose_schedule(base_plds, steps, eval_fn):
+    """eval_fn over the running composition of `base_plds` at each checkpoint.
+
+    `base_plds` are single-step PLDs advanced in lockstep; eval_fn receives the
+    list of current compositions.  Returns {t: eval_fn(...)} for the sorted,
+    deduplicated checkpoints.  One incremental compose per gap keeps the cost
+    at ~one FFT per checkpoint rather than a full self_compose per t.
+    """
+    out = {}
+    cur = [None] * len(base_plds)
+    last = 0
+    for t in sorted({int(s) for s in steps}):
+        if t < 1:
+            raise ValueError(f"checkpoints must be >= 1, got {t}")
+        gap = t - last
+        if gap > 0:
+            for i, base in enumerate(base_plds):
+                block = base if gap == 1 else base.self_compose(gap)
+                cur[i] = block if cur[i] is None else cur[i].compose(block)
+            last = t
+        out[t] = eval_fn(cur)
+    return out
+
+
+def sparsegnn_substitution_epsilon_schedule(
     p1: float,
     p2: float,
     r: int,
     K_in: int,
+    sigma: float,
+    steps,
+    delta: float,
     K_out: Optional[int] = None,
-    sigma: float = 1.0,
-    atoms_per_fiber: int = 4000,
+    direction: str = 'in',
+    grid: float = 1e-4,
     n_sigma: float = 10.0,
-    fiber_mass_floor: float = 1e-14,
+    atoms_per_sigma: float = 400.0,
 ):
-    """Discretize the Theorem 4 marked pair (P→, Q→) into aligned atom masses.
+    """{t: epsilon} for every checkpoint t in `steps` (NODE SUBSTITUTION).
 
-    Fibers are disjoint, so the atom list is the concatenation of per-fiber
-    grids; on fiber j atom masses are pi_j * density * dx for both families
-    (the pi_j cancels in the privacy loss, exactly as in the paper's marked
-    direct sum).  Fibers with pi_j < fiber_mass_floor are dropped: their P-mass
-    goes to a trailing (p > 0, q = 0) infinity atom and their Q-mass to a
-    (p = 0, q > 0) atom, which is pessimistic in both orientations.
-
-    Returns (p_atoms, q_atoms): float64 arrays each summing to 1.0, suitable
-    for PrivacyLossDistribution.from_dominating_pair (in either order — use
-    (p, q) for the insertion direction and (q, p) for removal).
+    The single-step pair is built once and composed incrementally across the
+    sorted checkpoints, so a 40-checkpoint schedule costs about as much as one
+    full-length composition.  Each entry is a valid (eps(t), delta) guarantee
+    for the mechanism truncated after t steps — i.e. for the model iterate
+    released at step t.
     """
+    base = _substitution_pld(p1, p2, r, K_in, K_out, sigma, direction, grid,
+                             n_sigma, atoms_per_sigma)
+    return _compose_schedule(
+        [base], steps, lambda cur: cur[0].get_epsilon_for_delta(delta))
+
+
+def sparsegnn_substitution_epsilon(
+    p1: float,
+    p2: float,
+    r: int,
+    K_in: int,
+    sigma: float,
+    steps: int,
+    delta: float,
+    K_out: Optional[int] = None,
+    direction: str = 'in',
+    grid: float = 1e-4,
+    n_sigma: float = 10.0,
+    atoms_per_sigma: float = 400.0,
+) -> float:
+    """(eps, delta) for T steps of SparseGNN under NODE SUBSTITUTION.
+
+    Uses Theorem 6.4 when direction='in' (Algorithm 5, the corrected
+    orientation) and Theorem 1/2 when direction='out'.  Composes the per-step
+    pair over `steps` via dp_accounting PLD self-composition.
+
+    Only one orientation is composed: Q is the reflection of P through the
+    origin, so H_a(P||Q) = H_a(Q||P) and the pair already covers both ordered
+    neighbouring directions.  (The Theorem 4.5 marked pair is NOT symmetric
+    and does need both — see `sparsegnn_thm4_epsilon`.)
+
+    `grid` is dp_accounting's value_discretization_interval; its rounding is
+    pessimistic, so together with the certified pair construction the returned
+    epsilon is a valid upper bound.
+    """
+    pld = _substitution_pld(p1, p2, r, K_in, K_out, sigma, direction, grid,
+                            n_sigma, atoms_per_sigma)
+    return pld.self_compose(steps).get_epsilon_for_delta(delta)
+
+
+def _thm4_plds(p1, p2, r, K_in, K_out, sigma, grid, n_sigma, atoms_per_sigma):
+    """Single-step PLDs (insertion direction, removal direction) for Thm 4.5."""
     pi = thm4_fiber_weights(p1, p2, r, K_in, K_out)
-    inv = 1.0 / (sigma * math.sqrt(2.0 * math.pi))
-
-    p_parts, q_parts = [], []
-    for j, pij in enumerate(pi):
-        if pij < fiber_mass_floor:
-            continue
-        # Grid covering N(-j, s^2) and (1-p1)N(j, s^2) + p1 N(j+1, s^2).
-        x_lo = -j - n_sigma * sigma
-        x_hi = j + 1 + n_sigma * sigma
-        edges = np.linspace(x_lo, x_hi, atoms_per_fiber + 1)
-        dx = edges[1] - edges[0]
-        x = 0.5 * (edges[:-1] + edges[1:])
-
-        p_dens = inv * np.exp(-0.5 * ((x + j) / sigma) ** 2)
-        q_dens = ((1.0 - p1) * inv * np.exp(-0.5 * ((x - j) / sigma) ** 2)
-                  + p1 * inv * np.exp(-0.5 * ((x - j - 1) / sigma) ** 2))
-        p_parts.append(pij * p_dens * dx)
-        q_parts.append(pij * q_dens * dx)
-
-    p_atoms = np.concatenate(p_parts)
-    q_atoms = np.concatenate(q_parts)
-
-    # Residual mass (dropped fibers + Gaussian tails beyond n_sigma) goes to
-    # two one-sided atoms: infinite loss for P-residual, -infinite for
-    # Q-residual.  Pessimistic in the P-vs-Q direction; for the swapped
-    # (removal) direction the roles flip and it is pessimistic there too.
-    p_res = max(0.0, 1.0 - float(p_atoms.sum()))
-    q_res = max(0.0, 1.0 - float(q_atoms.sum()))
-    p_atoms = np.concatenate([p_atoms, [p_res, 0.0]])
-    q_atoms = np.concatenate([q_atoms, [0.0, q_res]])
-    return p_atoms, q_atoms
+    kept = [(j, float(pij)) for j, pij in enumerate(pi)
+            if pij >= _COMPONENT_MASS_FLOOR]
+    # Dropped fibers lose their mass from the numerator, and the helper routes
+    # the deficit to the infinite-loss outcome — pessimistic in each direction.
+    plds = []
+    for swap in (False, True):
+        fibers = []
+        for j, pij in kept:
+            p_side = ([-float(j)], [1.0])
+            q_side = ([float(j), float(j) + 1.0], [1.0 - p1, p1])
+            num, den = (q_side, p_side) if swap else (p_side, q_side)
+            fibers.append((pij, num[0], num[1], den[0], den[1]))
+        plds.append(_pld_from_fibers(fibers, sigma, discretization=grid,
+                                     n_sigma=n_sigma,
+                                     atoms_per_sigma=atoms_per_sigma))
+    return plds
 
 
-def _pld_from_atoms(p, q, grid: float, loss_cap: float):
-    """PrivacyLossDistribution from aligned atoms, with capped loss support.
+def sparsegnn_thm4_epsilon_schedule(
+    p1: float,
+    p2: float,
+    r: int,
+    K_in: int,
+    sigma: float,
+    steps,
+    delta: float,
+    K_out: Optional[int] = None,
+    grid: float = 1e-4,
+    n_sigma: float = 10.0,
+    atoms_per_sigma: float = 400.0,
+):
+    """{t: epsilon} for every checkpoint t in `steps` (Theorem 4.5 pair).
 
-    Identical to PrivacyLossDistribution.from_dominating_pair except that the
-    privacy loss ln(p/q) is clamped into [-loss_cap, +loss_cap]:
-      * losses above +loss_cap send their P-mass to +infinity (pessimistic);
-      * losses below -loss_cap are rounded UP to -loss_cap (pessimistic).
-    Without the cap, high-j fibers put atoms at losses of order (2j+1)^2/sigma^2,
-    which makes the discrete pmf support astronomically wide even though those
-    atoms carry negligible mass.
+    Both orientations are composed incrementally in lockstep and the max is
+    reported per checkpoint, matching `sparsegnn_thm4_epsilon`.
     """
-    PrivacyLossDistribution = _load_pld_module().PrivacyLossDistribution
-
-    p = np.asarray(p, dtype=float)
-    q = np.asarray(q, dtype=float)
-    finite = (p > 0) & (q > 0)
-    losses = np.log(p[finite] / q[finite])
-    masses = p[finite]
-
-    keep = losses <= loss_cap          # above cap -> +inf (absent from pmf)
-    losses = np.maximum(losses[keep], -loss_cap)
-    masses = masses[keep]
-
-    ks = np.ceil(losses / grid - 1e-12).astype(np.int64)
-    offset = int(ks.min())
-    pmf = np.zeros(int(ks.max()) - offset + 1)
-    np.add.at(pmf, ks - offset, masses)
-    return PrivacyLossDistribution(pmf, offset, grid)
+    plds = _thm4_plds(p1, p2, r, K_in, K_out, sigma, grid, n_sigma,
+                      atoms_per_sigma)
+    return _compose_schedule(
+        plds, steps,
+        lambda cur: max(c.get_epsilon_for_delta(delta) for c in cur))
 
 
 def sparsegnn_thm4_epsilon(
@@ -305,29 +458,40 @@ def sparsegnn_thm4_epsilon(
     steps: int,
     delta: float,
     K_out: Optional[int] = None,
-    grid: float = 1e-3,
-    loss_cap: float = 50.0,
-    atoms_per_fiber: int = 4000,
+    grid: float = 1e-4,
     n_sigma: float = 10.0,
+    atoms_per_sigma: float = 400.0,
 ) -> float:
-    """(eps, delta) for T steps of SparseGNN via the Theorem 4 pair.
+    """(eps, delta) for T steps of SparseGNN via the Theorem 4.5 marked pair.
 
-    Composes the per-step marked pair over `steps` via PLD self-composition in
-    BOTH orientations (insertion: P→ vs Q→; removal: Q→ vs P→) and returns the
-    max — the guarantee under symmetric node insertion/removal adjacency.
+    Applies to OUT-expansion runs only (Algorithm 4); use
+    `sparsegnn_substitution_epsilon` for the corrected in-expansion.
 
-    `grid` is the PLD loss discretization; rounding is pessimistic, so the
-    slack is at most grid * steps.  `loss_cap` bounds the per-step loss
-    support; atoms beyond it are treated as infinite loss (pessimistic), so a
-    finite returned epsilon is always a valid upper bound, and configurations
-    whose genuine epsilon exceeds ~loss_cap report inf.
+    Composes the per-step marked pair over `steps` in BOTH orientations
+    (insertion: P→ vs Q→; removal: Q→ vs P→) and returns the max — the
+    guarantee under symmetric node insertion/removal adjacency.
     """
-    p_atoms, q_atoms = sparsegnn_thm4_pair(
-        p1, p2, r, K_in, K_out=K_out, sigma=sigma,
-        atoms_per_fiber=atoms_per_fiber, n_sigma=n_sigma,
-    )
-    eps = 0.0
-    for a, b in ((p_atoms, q_atoms), (q_atoms, p_atoms)):
-        pld = _pld_from_atoms(a, b, grid=grid, loss_cap=loss_cap)
-        eps = max(eps, pld.self_compose(steps).get_epsilon(delta))
-    return eps
+    plds = _thm4_plds(p1, p2, r, K_in, K_out, sigma, grid, n_sigma,
+                      atoms_per_sigma)
+    return max(p.self_compose(steps).get_epsilon_for_delta(delta)
+               for p in plds)
+
+
+def naive_opacus_epsilon(sigma: float, sample_rate: float, steps: int,
+                         delta: float, mechanism: str = 'prv') -> float:
+    """Opacus epsilon for a Poisson-subsampled Gaussian at rate `sample_rate`.
+
+    This is what accounting would claim if a node only influenced its own
+    subgraph — it ignores that a node appears in neighbours' expansions, so it
+    is NOT a valid node-level guarantee; it is a floor showing the price of
+    graph structure.  PRV by default, RDP fallback.
+    """
+    from opacus.accountants import create_accountant
+    try:
+        accountant = create_accountant(mechanism=mechanism)
+        accountant.history = [(sigma, sample_rate, steps)]
+        return accountant.get_epsilon(delta=delta)
+    except Exception:
+        accountant = create_accountant(mechanism='rdp')
+        accountant.history = [(sigma, sample_rate, steps)]
+        return accountant.get_epsilon(delta=delta)

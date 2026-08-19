@@ -32,16 +32,32 @@ def main():
     with open(args.csv, newline='') as fh:
         rows = list(csv.DictReader(fh))
 
-    # mean test acc per (p2, sigma), epsilon per config
+    # mean test metric per (p2, sigma), epsilon per config.  `epsilon_thm4` is
+    # the pre-orientation-fix column name; current CSVs use `epsilon` and record
+    # which theorem produced it in `epsilon_theorem`.
+    eps_col = 'epsilon' if 'epsilon' in rows[0] else 'epsilon_thm4'
     acc = defaultdict(list)
     eps = {}
     for row in rows:
         key = (float(row['p2']), float(row['sigma']))
         acc[key].append(float(row['test_acc']))
-        eps[key] = float(row['epsilon_thm4'])
+        eps[key] = float(row[eps_col])
     dataset = rows[0]['dataset']
+    metric = rows[0].get('metric', 'accuracy')
+    theorem = rows[0].get('epsilon_theorem', 'Theorem 4.5')
+    direction = rows[0].get('direction', 'out')
     meta = (f"p1={rows[0]['p1']}, r={rows[0]['r']}, K_in={rows[0]['K_in']}, "
+            f"K_out={rows[0].get('K_out', '?')}, dir={direction}, "
             f"T={rows[0]['T']}, delta={rows[0].get('delta', '?')}")
+
+    finite = [k for k in eps if eps[k] != float('inf')]
+    if len(finite) < len(eps):
+        print(f"note: {len(eps) - len(finite)} config(s) have epsilon=inf "
+              f"(beyond the accountant's loss cap) and are omitted from the plot")
+        acc = {k: v for k, v in acc.items() if k in finite}
+        eps = {k: v for k, v in eps.items() if k in finite}
+    if not acc:
+        raise SystemExit("every config has epsilon=inf — nothing to plot")
 
     fig, ax = plt.subplots(figsize=(6.5, 4.5))
     for p2 in sorted({k[0] for k in acc}, reverse=True):
@@ -59,8 +75,8 @@ def main():
                        label=f'non-DP ceiling ({ceiling:.3f})')
 
     ax.set_xscale('log')
-    ax.set_xlabel('epsilon (Theorem 4, post-hoc)')
-    ax.set_ylabel('test accuracy')
+    ax.set_xlabel(f'epsilon ({theorem}, post-hoc)')
+    ax.set_ylabel(f'test {metric}')
     ax.set_title(f'{dataset}: SparseGNN privacy-utility frontier\n({meta})')
     ax.grid(True, alpha=0.3)
     ax.legend(title='edge sampling')

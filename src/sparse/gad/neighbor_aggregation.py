@@ -66,13 +66,18 @@ def aggregate_features(x, edge_index, num_layers, aggr="mean"):
 def aggregate_features_expand(x, adj, nodes, p2, r, aggr="mean", generator=None):
     """Per-root fidelity aggregation via SparseExpand; returns [len(nodes), (r+1)*d].
 
-    For each root v in `nodes`, run `sparse_expand(adj, v, p2, r)` and aggregate within the
-    sampled rooted subgraph, reading off the root's concatenated features. At p2=1 and r=L on
-    an undirected graph this equals `aggregate_features` for the same nodes.
+    For each root v in `nodes`, run `sparse_expand(adj, v, p2, r, direction='in')` and aggregate
+    within the sampled rooted subgraph, reading off the root's concatenated features. At p2=1 and
+    r=L this equals `aggregate_features` for the same nodes.
+
+    Both builders aggregate along INCOMING edges: `aggregate_features` scatters src -> dst, so a
+    node absorbs its in-neighbours, and in-expansion is what collects exactly those nodes (see
+    src/sparse/sparse_expand.py on the v35 orientation fix). On the undirected GADBench graphs the
+    two orientations coincide; on a directed graph only this one matches.
 
     Args:
         x:        [N, d] feature matrix (original node indexing).
-        adj:      out-adjacency from build_out_adjacency.
+        adj:      in-adjacency from build_adjacency(..., direction='in').
         nodes:    iterable of root node ids to compute features for.
         p2, r:    SparseExpand edge-keep probability and depth.
         aggr:     aggregation reduction.
@@ -83,17 +88,17 @@ def aggregate_features_expand(x, adj, nodes, p2, r, aggr="mean", generator=None)
     d = x.size(1)
     feats = torch.zeros((len(nodes), (r + 1) * d), dtype=x.dtype)
     for i, v in enumerate(nodes):
-        sub = sparse_expand(adj, int(v), p2, r, generator=generator)
+        sub = sparse_expand(adj, int(v), p2, r, generator=generator, direction='in')
         n_sub = sub.num_nodes
         h = x[sub.nodes]                      # [n_sub, d], local index 0 == root
-        ei = sub.edge_index                   # local edges (u_local -> w_local), u closer to root
+        ei = sub.edge_index                   # local arcs (src -> dst), dst closer to the root
         outs = [h[0]]                          # root's h^0
         for _ in range(r):
             if ei.size(1) == 0:
                 agg = torch.zeros_like(h)
             else:
-                # messages flow toward the root: u (edge[0]) aggregates w (edge[1])
-                agg = scatter(h[ei[1]], ei[0], dim=0, dim_size=n_sub, reduce=aggr)
+                # Same convention as aggregate_features: dst absorbs src.
+                agg = scatter(h[ei[0]], ei[1], dim=0, dim_size=n_sub, reduce=aggr)
             h = agg
             outs.append(h[0])                  # root's h^(l)
         feats[i] = torch.cat(outs, dim=0)

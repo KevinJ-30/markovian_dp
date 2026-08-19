@@ -3,38 +3,39 @@ Privacy accounting for sparsification_experiments.
 
 Two paths:
   A. Opacus PRV (preferred) / RDP (fallback): standard subsampled-Gaussian.
-  B. Dominating-pair PLD: per-step (P, Q) pair constructed analytically for
-     the Poisson-subsampled Gaussian, composed via the PLD convolution in
-     dp-subsample-prelim/accounting.py.
+  B. Google dp_accounting PLD: the same subsampled Gaussian via
+     `privacy_loss_distribution.from_gaussian_mechanism` (connect-the-dots,
+     pessimistic, ADD_OR_REMOVE_ONE adjacency) — the reference implementation,
+     replacing the previous hand-rolled dominating-pair discretization.
 
 Both paths consume (sigma, q) where sigma is the SENSITIVITY-NORMALIZED noise
 multiplier (noise std = sigma * Delta, Delta = node sensitivity from
-sparsify.node_sensitivity). Folding Delta into sigma reduces the problem to
-a standard unit-sensitivity Gaussian, which is exactly what both accountants
+sparsify.node_sensitivity).  Folding Delta into sigma reduces the problem to a
+standard unit-sensitivity Gaussian, which is exactly what both accountants
 expect.
 
-The dominating pair for one step of Poisson-subsampled Gaussian (sensitivity 1):
-    Q = N(0, sigma^2)
-    P = (1 - q) * N(0, sigma^2) + q * N(1, sigma^2)
-
-See Section 3 of Mironov et al. (2017) and Li et al. (2022) for derivation.
+For the SparseGNN mechanism itself (parameterized by p1, p2, r, K_in, K_out
+rather than a single sample rate), use `src.sparse.compute_epsilon` /
+`src.sparse.accounting` — those compose the paper's dominating pairs through
+dp_accounting directly.
 """
 
 import math
-import os
-import sys
-
-import numpy as np
-
-# Reach dp-subsample-prelim/accounting.py without installing the package
-sys.path.insert(
-    0,
-    os.path.join(os.path.dirname(__file__), '..', 'dp-subsample-prelim')
-)
-from accounting import PrivacyLossDistribution, opacus_epsilon   # noqa: E402
 
 
 # ── A. Opacus path ────────────────────────────────────────────────────────────
+
+def opacus_epsilon(noise_multiplier, sample_rate, steps, delta, mechanism="rdp"):
+    try:
+        from opacus.accountants import create_accountant
+    except ImportError as e:
+        raise ImportError(
+            "opacus is required for the opacus accountants: pip install opacus"
+        ) from e
+    accountant = create_accountant(mechanism=mechanism)
+    accountant.history = [(noise_multiplier, sample_rate, steps)]
+    return accountant.get_epsilon(delta=delta)
+
 
 def opacus_prv_epsilon(sigma, q, steps, delta):
     """Epsilon via Opacus PRV accountant (RDP fallback)."""
@@ -44,121 +45,32 @@ def opacus_prv_epsilon(sigma, q, steps, delta):
         return opacus_epsilon(sigma, q, steps, delta, mechanism="rdp")
 
 
-# ── B. Dominating-pair path ───────────────────────────────────────────────────
+# ── B. Google dp_accounting PLD path ─────────────────────────────────────────
 
-def make_subsampled_gaussian_dominating_pair(q, sigma, n_atoms=60000, n_sigma=10.0):
+def dompair_epsilon(q, sigma, steps, delta, grid=1e-4):
+    """Epsilon for `steps` compositions of the Poisson-subsampled Gaussian.
+
+    Delegates to dp_accounting's connect-the-dots PLD for the subsampled
+    Gaussian (pessimistic estimate, ADD_OR_REMOVE_ONE adjacency, both
+    directions handled internally).  `grid` is the loss discretization
+    interval.
     """
-    Discretize the per-step dominating pair for Poisson-subsampled Gaussian DP-SGD
-    in sensitivity-normalized units (sensitivity = 1).
+    from dp_accounting.pld import privacy_loss_distribution as PLD
+    pld = PLD.from_gaussian_mechanism(
+        standard_deviation=sigma, sensitivity=1.0, pessimistic_estimate=True,
+        value_discretization_interval=grid, sampling_prob=q)
+    return pld.self_compose(steps).get_epsilon_for_delta(delta)
 
-    Q = N(0, sigma^2)
-    P = (1-q)*N(0, sigma^2) + q*N(1, sigma^2)
-
-    The output arrays are probability mass vectors over n_atoms contiguous
-    intervals covering [x_lo, x_hi], where
-        x_lo = -n_sigma * sigma,  x_hi = 1 + n_sigma * sigma.
-    A final atom absorbs remaining tail mass so both arrays sum exactly to 1.
-
-    The PLD is then computed by PrivacyLossDistribution.from_dominating_pair,
-    which computes log(p[i]/q[i]) per atom and bins the result on the loss grid.
-
-    Args:
-        q:       float, Poisson sampling rate
-        sigma:   float, sensitivity-normalized noise multiplier
-        n_atoms: int, number of x-axis discretization bins (more = more accurate)
-        n_sigma: float, truncation width (n_sigma * sigma beyond the centres)
-
-    Returns:
-        (p_atoms, q_atoms): numpy float64 arrays, each summing to 1.0
-    """
-    x_lo = -n_sigma * sigma
-    x_hi = 1.0 + n_sigma * sigma
-    edges = np.linspace(x_lo, x_hi, n_atoms + 1)
-    dx = edges[1] - edges[0]
-    x_mid = (edges[:-1] + edges[1:]) / 2.0
-
-    inv_sqrt2pi = 1.0 / math.sqrt(2.0 * math.pi)
-
-    def _pdf(x, mu, s):
-        return inv_sqrt2pi / s * np.exp(-0.5 * ((x - mu) / s) ** 2)
-
-    q_density = _pdf(x_mid, 0.0, sigma)
-    p_density = (1.0 - q) * _pdf(x_mid, 0.0, sigma) + q * _pdf(x_mid, 1.0, sigma)
-
-    q_atoms = q_density * dx
-    p_atoms = p_density * dx
-
-    # Absorb tail mass so both sum to 1.  At n_sigma=10 both tails are <1e-22
-    # so this atom carries negligible mass and ~zero privacy loss.
-    p_atoms = np.append(p_atoms, max(0.0, 1.0 - float(p_atoms.sum())))
-    q_atoms = np.append(q_atoms, max(0.0, 1.0 - float(q_atoms.sum())))
-
-    return p_atoms, q_atoms
-
-
-# ── NOVEL MECHANISM HOOK ──────────────────────────────────────────────────────
-# When the paper's composite-subsampling mechanism is ready, implement this
-# function. The rest of the pipeline (PLD composition, eps reporting, plotting)
-# requires no changes — the interface is identical to
-# make_subsampled_gaussian_dominating_pair.
 
 def make_novel_mechanism_dominating_pair(q, sigma, **kwargs):
+    """Removed: the atom-array contract this hook returned no longer exists.
+
+    The SparseGNN dominating pairs are composed directly through
+    dp_accounting — call `src.sparse.accounting.sparsegnn_substitution_epsilon`
+    (Theorem 6.4 / Theorem 1-2) or `sparsegnn_thm4_epsilon` (Theorem 4.5), or
+    run `python -m src.sparse.compute_epsilon --csv <results.csv>`.
     """
-    Per-step dominating pair for SparseGNN (paper Algorithms 1 & 2).
-
-    Defaults to the Theorem 4 insertion/removal pair (tractable: N_com_r + 1
-    fibers); pass theorem=3 for the substitution-relation pair (2^{N_r}
-    components, tiny (K_in, r) only).  The mechanism is parameterized by the
-    paper's (p1, p2, r, K_in) rather than a single sample rate `q`, so those
-    are read from kwargs:
-
-        make_novel_mechanism_dominating_pair(q=None, sigma=1.0,
-            p1=..., p2=..., r=..., K_in=..., [K_out=..., theorem=4])
-
-    Returns (p_atoms, q_atoms) with the same contract as
-    make_subsampled_gaussian_dominating_pair.  NOTE: the Theorem 4 pair is
-    ORIENTED — (p, q) dominates insertion and (q, p) removal; compose both
-    orientations and report the max (src.sparse.accounting.sparsegnn_thm4_epsilon
-    does this for you).
-    """
-    _root = os.path.join(os.path.dirname(__file__), '..')
-    if _root not in sys.path:
-        sys.path.insert(0, _root)
-    from src.sparse.accounting import (
-        sparsegnn_dominating_pair, sparsegnn_thm4_pair,
-    )
-
-    required = ('p1', 'p2', 'r', 'K_in')
-    missing = [k for k in required if k not in kwargs]
-    if missing:
-        raise ValueError(
-            f"make_novel_mechanism_dominating_pair requires {required} in kwargs; "
-            f"missing {missing}."
-        )
-    if kwargs.get('theorem', 4) == 3:
-        return sparsegnn_dominating_pair(
-            p1=kwargs['p1'], p2=kwargs['p2'], r=kwargs['r'], K_in=kwargs['K_in'],
-            K_out=kwargs.get('K_out'), sigma=sigma,
-            n_atoms=kwargs.get('n_atoms', 40000),
-            n_sigma=kwargs.get('n_sigma', 10.0),
-            max_components=kwargs.get('max_components', 512),
-        )
-    return sparsegnn_thm4_pair(
-        p1=kwargs['p1'], p2=kwargs['p2'], r=kwargs['r'], K_in=kwargs['K_in'],
-        K_out=kwargs.get('K_out'), sigma=sigma,
-        atoms_per_fiber=kwargs.get('atoms_per_fiber', 4000),
-        n_sigma=kwargs.get('n_sigma', 10.0),
-    )
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def dompair_epsilon(q, sigma, steps, delta, grid=1e-4, n_atoms=60000):
-    """Epsilon via dominating-pair PLD composition."""
-    p_atoms, q_atoms = make_subsampled_gaussian_dominating_pair(
-        q, sigma, n_atoms=n_atoms
-    )
-    pld = PrivacyLossDistribution.from_dominating_pair(p_atoms, q_atoms, grid)
-    return pld.self_compose(steps).get_epsilon(delta)
+    raise NotImplementedError(make_novel_mechanism_dominating_pair.__doc__)
 
 
 # ── Analytic Gaussian composition (q=1 cross-check) ──────────────────────────
@@ -200,7 +112,7 @@ def gaussian_composition_epsilon(sigma, steps, delta):
 
 def validate_accountants(sigma_grid, q, steps, delta, grid=1e-4, tol=0.1):
     """
-    Cross-check Opacus PRV vs dominating-pair PLD across sigma_grid (q < 1).
+    Cross-check Opacus PRV vs dp_accounting PLD across sigma_grid (q < 1).
 
     Prints a comparison table.  Raises AssertionError if any row exceeds `tol`.
     """
@@ -229,12 +141,11 @@ def validate_accountants_q1(sigma_grid, steps, delta, grid=1e-4, tol=0.1):
     """
     Three-way cross-check for q=1 (full batch, no subsampling):
       A. Opacus PRV with sample_rate=1
-      B. Dominating-pair PLD with q=1 (reduces to N(1,sigma^2) vs N(0,sigma^2))
+      B. dp_accounting PLD with sampling_prob=1
       C. Analytic Gaussian-composition formula (ground truth)
 
     All three must agree within `tol`.  This is the trust anchor for the q=1
-    (no-subsampling) mode which is our only configuration with a valid node-DP
-    guarantee today.
+    (no-subsampling) mode.
     """
     print(f"\n=== Accountant validation (q=1, Gaussian composition): "
           f"steps={steps}, delta={delta:g} ===")

@@ -19,6 +19,9 @@ SUPPORTED_DATASETS = {
     'ogbn-arxiv': 'ogbn-arxiv',
     # PyG Reddit (large transductive node classification)
     'reddit': 'Reddit',
+    # Inductive node classification benchmarks
+    'flickr': 'Flickr',
+    'ppi': 'PPI',
     # Heterophilous graphs (GADBench: binary anomaly node classification)
     'tolokers': 'Tolokers',
     'questions': 'Questions',
@@ -26,6 +29,10 @@ SUPPORTED_DATASETS = {
     'ogbl-collab': 'ogbl-collab',
     # GraphBench Bluesky (temporal-split node classification, inductive)
     'bluesky': 'Bluesky',
+    # RelBench entity tasks (temporal, natively inductive).  Shorthands for the
+    # generic form `relbench:<database>/<task>`, which accepts any RelBench pair.
+    'relbench-f1-top3': 'relbench:rel-f1/driver-top3',
+    'relbench-f1-dnf': 'relbench:rel-f1/driver-dnf',
 }
 
 
@@ -84,6 +91,74 @@ def _load_ogbl_collab():
     data.val_mask = all_true.clone()
     data.test_mask = all_true.clone()
     return dataset, data
+
+
+class _SimpleDataset:
+    """Minimal dataset wrapper exposing num_features / num_classes.
+
+    Mirrors the shape of a PyG/OGB dataset object for graphs we assemble
+    ourselves (PPI's disjoint union, RelBench's relational graph) rather than
+    load through torch_geometric.datasets.
+    """
+
+    def __init__(self, data, num_features, num_classes, **extra):
+        self._data = data
+        self.num_features = num_features
+        self.num_classes = num_classes
+        for k, v in extra.items():
+            setattr(self, k, v)
+
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, idx):
+        if idx != 0:
+            raise IndexError("single-graph dataset")
+        return self._data
+
+
+def _load_ppi():
+    """PPI as one disjoint-union graph with split masks by source graph.
+
+    PPI ships 24 protein-protein interaction graphs already partitioned into
+    20 train / 2 val / 2 test.  Concatenating them (offsetting each graph's
+    edge_index by the running node count) gives a single Data object that the
+    SparseGNN engine consumes unchanged, while keeping the splits genuinely
+    INDUCTIVE: the components are disconnected, so SparseExpand from a training
+    root provably cannot reach a val/test node no matter how large r is.  That
+    makes PPI the cleanest node-DP story available — no train-induced-subgraph
+    surgery (`--inductive`) is needed or has any effect.
+
+    Labels are 121-way MULTILABEL, so pair this with `--model multilabel_gnn`;
+    `num_classes` is the number of label columns and metrics are micro-F1.
+    """
+    from torch_geometric.datasets import PPI
+
+    root = os.environ.get('PPI_DATA_ROOT', 'data/PPI')
+    xs, ys, edge_indices, split_of_node = [], [], [], []
+    offset = 0
+    for split in ('train', 'val', 'test'):
+        for graph in PPI(root=root, split=split):
+            xs.append(graph.x)
+            ys.append(graph.y)
+            edge_indices.append(graph.edge_index + offset)
+            n = int(graph.num_nodes)
+            split_of_node.append(torch.full((n,), {'train': 0, 'val': 1,
+                                                   'test': 2}[split],
+                                            dtype=torch.long))
+            offset += n
+
+    data = Data(x=torch.cat(xs, dim=0),
+                y=torch.cat(ys, dim=0).float(),
+                edge_index=torch.cat(edge_indices, dim=1))
+    where = torch.cat(split_of_node)
+    for i, split in enumerate(('train', 'val', 'test')):
+        setattr(data, f'{split}_mask', where == i)
+
+    num_features = int(data.x.size(1))
+    num_classes = int(data.y.size(1))
+    return _SimpleDataset(data, num_features, num_classes,
+                          multilabel=True), data
 
 
 class _BlueskyDataset:
@@ -264,22 +339,37 @@ def _load_heterophilous(canonical, split_idx=0):
     return dataset, data
 
 
-def load_dataset(name, device='cpu', split_idx=0):
+def load_dataset(name, device='cpu', split_idx=0, **relbench_kwargs):
     """
     Load a dataset by name.
 
     Args:
-        name: One of the keys in SUPPORTED_DATASETS (case-insensitive).
+        name: One of the keys in SUPPORTED_DATASETS (case-insensitive), or a
+            RelBench pair written as 'relbench:<database>/<task>'.
         device: Device to move data to.
         split_idx: For datasets with multiple predefined splits (Tolokers,
             Questions), which split column to use. Ignored otherwise.
+        **relbench_kwargs: forwarded to src.sparse.relbench_data.load_relbench
+            (root, label_agg, reverse_edges, max_categories) for RelBench names.
 
     Returns:
         (dataset, data) tuple.
     """
     key = name.lower()
+    # RelBench pairs may be named directly as relbench:<database>/<task>, or via
+    # one of the shorthands in SUPPORTED_DATASETS.
+    spec = SUPPORTED_DATASETS.get(key, name)
+    if isinstance(spec, str) and spec.startswith('relbench:'):
+        from src.sparse.relbench_data import load_relbench, parse_relbench_name
+        db_name, task_name = parse_relbench_name(spec)
+        dataset, data = load_relbench(db_name, task_name, **relbench_kwargs)
+        data = data.to(device)
+        return dataset, data
+
     if key not in SUPPORTED_DATASETS:
-        raise ValueError(f"Unknown dataset '{name}'. Supported: {list(SUPPORTED_DATASETS.keys())}")
+        raise ValueError(f"Unknown dataset '{name}'. Supported: "
+                         f"{list(SUPPORTED_DATASETS.keys())} or "
+                         f"relbench:<database>/<task>")
 
     if key in ('tolokers', 'questions'):
         dataset, data = _load_heterophilous(SUPPORTED_DATASETS[key], split_idx=split_idx)
@@ -296,6 +386,20 @@ def load_dataset(name, device='cpu', split_idx=0):
         root = os.environ.get('REDDIT_DATA_ROOT', 'data/Reddit')
         dataset = Reddit(root=root)
         data = dataset[0].to(device)
+        return dataset, data
+
+    if key == 'flickr':
+        # Single graph with train/val/test masks (GraphSAINT's inductive
+        # benchmark); pass --inductive to train on the train-induced subgraph.
+        from torch_geometric.datasets import Flickr
+        root = os.environ.get('FLICKR_DATA_ROOT', 'data/Flickr')
+        dataset = Flickr(root=root)
+        data = dataset[0].to(device)
+        return dataset, data
+
+    if key == 'ppi':
+        dataset, data = _load_ppi()
+        data = data.to(device)
         return dataset, data
 
     if key == 'ogbl-collab':
