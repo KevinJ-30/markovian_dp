@@ -128,3 +128,47 @@ def test_parse_relbench_name():
         ('rel-f1', 'driver-top3')
     with pytest.raises(ValueError):
         parse_relbench_name('relbench:rel-f1')
+
+
+# ── large-graph evaluation ────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("aggr", ["mean", "gcn"])
+def test_csr_eval_path_matches_edge_index(aggr):
+    """Above the dense-message budget, evaluate() must switch to CSR and give
+    the same numbers.
+
+    Message passing over an edge_index gathers x[edge_index[0]], materializing
+    an [E, F] tensor.  On Reddit that is 114.6M x 602 x 4B = 276 GB, which is
+    what full-graph evaluation actually tried to allocate.  The CSR adjacency
+    fuses gather and scatter; PyG's result is identical either way.
+    """
+    from src.sparse.gnn_mechanism import GNNMechanism
+
+    torch.manual_seed(0)
+    n, f, c = 200, 6, 3
+    ei = torch.unique(torch.stack([torch.randint(0, n, (2000,)),
+                                   torch.randint(0, n, (2000,))]), dim=1)
+    data = _toy_like(n, f, c, ei)
+
+    torch.manual_seed(1)
+    mech = GNNMechanism(data, f, c, hidden=8, num_layers=2, dropout=0.0,
+                        aggr=aggr)
+    dense = mech.evaluate(data)
+    assert mech.eval_edges(data) is data.edge_index      # budget not exceeded
+
+    mech._DENSE_MESSAGE_BUDGET = 0                       # force CSR
+    mech._eval_adj_cache = None
+    assert mech.eval_edges(data) is not data.edge_index  # now a CSR adjacency
+    sparse = mech.evaluate(data)
+
+    for split in ("train", "val", "test"):
+        assert dense[split] == pytest.approx(sparse[split], abs=1e-9)
+
+
+def _toy_like(n, f, c, edge_index):
+    from torch_geometric.data import Data
+    data = Data(x=torch.randn(n, f), y=torch.randint(0, c, (n,)),
+                edge_index=edge_index)
+    data.train_mask = torch.ones(n, dtype=torch.bool)
+    data.val_mask = data.test_mask = data.train_mask
+    return data

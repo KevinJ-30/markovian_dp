@@ -42,10 +42,35 @@ class BaseMechanism(ABC):
         #: same graph the model was trained on.
         self.eval_edge_index = None
 
-    def eval_edges(self, data) -> torch.Tensor:
-        """The edge_index `evaluate` should use (see `eval_edge_index`)."""
-        return (self.eval_edge_index if self.eval_edge_index is not None
-                else data.edge_index)
+    #: Above this many (arc x feature) elements, full-graph evaluation switches
+    #: from an edge_index to a CSR adjacency.  Message passing over an
+    #: edge_index gathers x[edge_index[0]], materializing an [E, F] tensor: on
+    #: Reddit that is 114.6M x 602 x 4B = 276 GB.  A CSR adjacency fuses the
+    #: gather and scatter, and PyG returns identical values either way.
+    _DENSE_MESSAGE_BUDGET = 250_000_000
+
+    def eval_edges(self, data):
+        """The adjacency `evaluate` should use (see `eval_edge_index`).
+
+        Returns an edge_index normally, or a CSR adjacency when the dense
+        message tensor would be too large to allocate.
+        """
+        ei = (self.eval_edge_index if self.eval_edge_index is not None
+              else data.edge_index)
+        if not hasattr(data, 'x') or data.x is None:
+            return ei
+        if ei.size(1) * data.x.size(1) <= self._DENSE_MESSAGE_BUDGET:
+            return ei
+
+        cached = getattr(self, '_eval_adj_cache', None)
+        if cached is not None and cached[0] is ei:
+            return cached[1]
+        from torch_geometric.utils import to_torch_csr_tensor
+        # PyG expects adj_t[target, source]; edge_index is (source, target).
+        n = int(data.num_nodes)
+        adj_t = to_torch_csr_tensor(ei.flip(0), size=(n, n))
+        self._eval_adj_cache = (ei, adj_t)
+        return adj_t
 
     # ── parameters / optimizer ────────────────────────────────────────────────
 
