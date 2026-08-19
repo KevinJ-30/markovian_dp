@@ -283,3 +283,40 @@ def test_expected_batch_denominator_uses_public_quantities_only():
                  noise_gen=torch.Generator().manual_seed(0), expected_batch=B)
         got = _flat([p.grad for p in mech.parameters()]).norm().item()
         assert got == pytest.approx(n_roots * 1.0 / B, rel=1e-6)
+
+
+# ── receptive field: the model cannot read past what SparseExpand fetched ─────
+
+@pytest.mark.parametrize("r,reads_two_hop", [(1, False), (2, True)])
+def test_model_depth_does_not_widen_the_privacy_radius(r, reads_two_hop):
+    """An L-layer GNN on an r-hop subgraph reads r hops, not L.
+
+    This is the invariant the accounting rests on: epsilon is priced by r
+    (shells K_out^d for d <= r), so if a 2-layer model on an r=1 subgraph could
+    reach 2-hop data, every reported epsilon would be wrong.  It cannot — the
+    1-hop nodes have no in-edges inside the subgraph, so the second layer
+    re-aggregates the same 1-hop set rather than pulling anything new.
+
+    Verified by perturbing a 2-hop node's features and checking the per-root
+    loss: unchanged at r=1, changed at r=2 (which confirms the probe works).
+    """
+    from torch_geometric.data import Data
+    from src.sparse.gnn_mechanism import GNNMechanism
+    from src.sparse.sparse_expand import build_adjacency, sparse_expand
+
+    ei = torch.tensor([[2, 1], [1, 0]])        # c -> b -> a, root a
+    data = Data(x=torch.randn(3, 4), y=torch.tensor([0, 1, 0]), edge_index=ei)
+    data.train_mask = torch.ones(3, dtype=torch.bool)
+    data.val_mask = data.test_mask = data.train_mask
+
+    torch.manual_seed(0)
+    mech = GNNMechanism(data, 4, 2, hidden=8, num_layers=2, dropout=0.0)
+    H = sparse_expand(build_adjacency(ei, 3, direction='in'), 0, p2=1.0, r=r,
+                      direction='in')
+
+    before = float(mech.subgraph_loss(H).detach())
+    data.x[2] += 100.0                          # perturb the 2-hop node only
+    after = float(mech.subgraph_loss(H).detach())
+
+    assert (before != after) == reads_two_hop
+    assert (2 in H.nodes.tolist()) == reads_two_hop
