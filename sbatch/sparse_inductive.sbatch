@@ -34,30 +34,30 @@ echo "=== Reddit Stage 0: MLP baseline ==="
 srun python -u -m src.sparse.run \
     --dataset reddit --inductive --direction in --model mlp \
     --r 0 --p2 1.0 --p1 0.002 --T 500 --lr 0.01 --seeds 3 \
-    --roots_from train --out_dir results/inductive_mlp_reddit
+    --roots_from train --out_dir results/ppi/mlp_reddit
 
 echo "=== Reddit Stage 0: GCN ceiling ==="
 srun python -u -m src.sparse.run \
     --dataset reddit --inductive --direction in \
     --p2 1.0 --r 2 --p1 0.002 --T 500 --lr 0.01 --seeds 3 \
-    --roots_from train --out_dir results/inductive_ceiling_reddit
+    --roots_from train --out_dir results/ppi/ceiling_reddit
 
 echo "=== Reddit Stage 1: sparsification sweep ==="
 srun python -u -m src.sparse.run \
     --dataset reddit --inductive --direction in --K_in 5 \
     --p2 1.0 0.5 0.25 0.1 --r 1 --p1 0.002 --T 500 --lr 0.01 --seeds 3 \
-    --roots_from train --out_dir results/inductive_stage1_reddit
+    --roots_from train --out_dir results/arxiv/reddit_stage1
 
 echo "=== Reddit Stage 2: DP sigma sweep ==="
 srun python -u -m src.sparse.run \
     --dataset reddit --inductive --direction in --dp --K_in 5 \
     --p2 1.0 0.5 0.25 0.1 --r 1 --sigma 2.0 5.0 10.0 20.0 \
     --clip 1.0 --lr 1.0 --p1 0.002 --T 500 --seeds 3 \
-    --roots_from train --out_dir results/inductive_stage2_reddit
+    --roots_from train --out_dir results/arxiv/reddit_stage2
 
 echo "=== Reddit Stage 3: post-hoc epsilon ==="
 srun python -u -m src.sparse.compute_epsilon \
-    --csv results/inductive_stage2_reddit/sparse_gnn_reddit_dp_results.csv \
+    --csv results/arxiv/reddit_stage2/sparse_gnn_reddit_dp_results.csv \
     --delta $DELTA
 
 # ── PPI: natively inductive (24 disjoint graphs), 121-way multilabel -> micro-F1 ──
@@ -67,27 +67,27 @@ echo "=== PPI Stage 0-1 ==="
 srun python -u -m src.sparse.run \
     --dataset ppi --direction in --model mlp \
     --r 0 --p2 1.0 --p1 0.01 --T 1000 --lr 0.01 --seeds 3 \
-    --roots_from train --out_dir results/inductive_mlp_ppi
+    --roots_from train --out_dir results/ppi/mlp_ppi
 
 srun python -u -m src.sparse.run \
     --dataset ppi --direction in --model multilabel_gnn \
     --p2 1.0 --r 2 --p1 0.01 --T 1000 --lr 0.01 --seeds 3 \
-    --roots_from train --out_dir results/inductive_ceiling_ppi
+    --roots_from train --out_dir results/ppi/ceiling_ppi
 
 srun python -u -m src.sparse.run \
     --dataset ppi --direction in --model multilabel_gnn --K_in 5 \
     --p2 1.0 0.5 0.25 0.1 --r 2 --p1 0.01 --T 1000 --lr 0.01 --seeds 3 \
-    --roots_from train --out_dir results/inductive_stage1_ppi
+    --roots_from train --out_dir results/ppi/stage1_ppi
 
 echo "=== PPI Stage 2-3: DP + epsilon ==="
 srun python -u -m src.sparse.run \
     --dataset ppi --direction in --model multilabel_gnn --dp --K_in 5 \
     --p2 1.0 0.5 0.25 0.1 --r 2 --sigma 2.0 5.0 10.0 20.0 \
     --clip 1.0 --lr 1.0 --p1 0.01 --T 1000 --seeds 3 \
-    --roots_from train --out_dir results/inductive_stage2_ppi
+    --roots_from train --out_dir results/ppi/stage2_ppi
 
 srun python -u -m src.sparse.compute_epsilon \
-    --csv results/inductive_stage2_ppi/sparse_gnn_ppi_dp_results.csv \
+    --csv results/ppi/stage2_ppi/sparse_gnn_ppi_dp_results.csv \
     --delta $DELTA
 
 echo "=== Done ==="
