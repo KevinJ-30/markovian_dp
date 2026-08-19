@@ -1,39 +1,26 @@
 """
 Post-hoc privacy accounting for SparseGNN DP sweeps.
 
-Reads the results CSV written by `src.sparse.run --dp` (which records the
-mechanism parameters direction, p1, p2, r, sigma, T, K_in, K_out per row),
-computes epsilon for every distinct configuration, and writes an augmented CSV.
-Utility is measured first; epsilon is attached after the fact — accounting never
-touches training.
+Reads a results CSV from `src.sparse.run --dp`, computes epsilon per distinct
+configuration (and per checkpoint, for CSVs written with --track_every), and
+writes an augmented copy.  Accounting never touches training.
 
-Which theorem applies is set by the expansion orientation recorded in the CSV:
+The expansion orientation recorded in the CSV selects the theorem:
+direction='in' uses Theorem 6.4 (node substitution), direction='out' uses
+Theorem 4.5 (node insertion/removal).
 
-  direction='in'   Theorem 6.4 (node substitution).  The corrected Algorithm 5
-                   orientation; this is the headline number.
-  direction='out'  Theorem 4.5 (node insertion/removal).  Only stated for the
-                   legacy Algorithm 4, so it is the out-orientation ablation.
+Columns added:
 
-Columns written:
-
-  epsilon               the guarantee for this row, per the rule above
+  epsilon               the guarantee for this row
   epsilon_theorem       which theorem produced it
-  epsilon_substitution  the substitution pair for this row's direction, computed
-                        for EVERY row so that in- and out-expansion can be
-                        compared under the same adjacency notion
-  epsilon_naive_opacus  Opacus PRV epsilon for a Poisson-subsampled Gaussian at
-                        sample rate p1.  This is what accounting would claim if
-                        a node only influenced its own subgraph — it ignores
-                        that a node appears in neighbours' expansions, so it is
-                        NOT a valid node-level guarantee; it is a floor showing
-                        the price of graph structure.
+  epsilon_substitution  the substitution pair, computed for every row so the
+                        two orientations are comparable under one adjacency
+  epsilon_naive_opacus  subsampled-Gaussian epsilon at rate p1.  NOT a valid
+                        node-level guarantee — it ignores that a node appears
+                        in its neighbours' expansions — but it shows the price
+                        of graph structure.
 
-CSVs written before the orientation fix have no `direction` column; they are
-read as direction='out'.
-
-Usage:
-  python -m src.sparse.compute_epsilon --csv results/sparse_gnn_citeseer_dp_results.csv
-  python -m src.sparse.compute_epsilon --csv ... --delta 1e-6 --grid 1e-3
+  python -m src.sparse.compute_epsilon --csv <results.csv> --delta 1e-6
 """
 
 import argparse

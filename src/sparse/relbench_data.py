@@ -1,83 +1,34 @@
 """
 RelBench entity tasks as a homogeneous directed graph for SparseGNN.
 
-RelBench ships relational databases plus temporal entity-prediction tasks.  This
-module turns one (dataset, task) pair into the single `Data` object the
-SparseGNN engine already consumes, so no part of the mechanism, the DP path, or
-the accounting needs to know that the source was a relational database.
+Turns one (database, task) pair into the single `Data` object the engine
+consumes, so no part of the mechanism, DP path, or accounting needs to know the
+source was relational.  Built from the raw `Database` rather than RelBench's
+`make_pkey_fkey_graph`, which produces a HeteroData of torch_frame TensorFrames
+and pulls in a text embedder.
 
-Why build the graph from the raw `Database` instead of RelBench's own
-`make_pkey_fkey_graph`
-----------------------------------------------------------------------------
-`make_pkey_fkey_graph` produces a HeteroData whose per-type features are
-`torch_frame` TensorFrames, which additionally drags in a text embedder for text
-columns.  Our engine is homogeneous and our accounting is stated for a single
-directed graph with degree bounds (K_in, K_out).  Walking `db.table_dict`
-directly gives exactly that, with no extra dependencies.
+Nodes    one per table row, plus one "row node" per task row (root='row', the
+         default) carrying a single label at a single timestamp.  root='entity'
+         instead roots one node per entity with labels aggregated, which on
+         rel-f1 discards ~93% of the supervision.
+Edges    one arc per foreign key, child -> parent, plus entity -> row_node so
+         that in-expansion from a row root reaches its entity at depth 1 and
+         that entity's history at depth 2 (so r >= 2 is required to see any
+         history).  reverse_edges=True mirrors every arc, which enriches
+         neighbourhoods but raises K_out and hence epsilon.
+Features per table: z-scored numerics, datetimes as z-scored epoch-years,
+         one-hot categoricals under `max_categories`; free text and
+         high-cardinality identifiers dropped.  Blocks are laid out
+         block-diagonally with a node-type one-hot appended.
+Time     `data.edge_index` is the graph at the TEST cutoff (used by evaluate);
+         `data.train_edge_index` is the TRAIN cutoff, picked up by
+         `src.sparse.run --inductive`.
 
-Graph construction
-------------------
-Nodes
-    One node per row of every table, plus one node per row of the task table
-    ("row nodes").  A row node is the ROOT of a prediction: it carries a single
-    label at a single timestamp, which is what `subgraph_loss` expects.
-
-    Using row nodes rather than entity nodes as roots matters on rel-f1: the
-    task has 1353 training rows but only 92 distinct drivers, so entity roots
-    would throw away 93% of the supervision.  Pass root='entity' to get the
-    entity framing instead (one root per driver, label aggregated over rows).
-
-Edges
-    One arc per foreign key, oriented CHILD -> PARENT (e.g. results -> drivers),
-    plus one arc entity_row -> row_node.  Information therefore flows
-
-        results / standings / qualifying  ->  driver  ->  prediction row
-
-    so under the corrected in-expansion (Algorithm 5) a row root reaches its
-    driver at depth 1 and that driver's history at depth 2.  Note the row arc
-    runs PARENT -> CHILD, the opposite of the foreign-key arcs: a row node is a
-    readout, so it is fed by its entity rather than referencing it.  (With the
-    arc the other way a row root has in-degree 0 and expansion reaches nothing —
-    the mean-subgraph-size diagnostic in run.py catches exactly that.)
-
-    `reverse_edges=True` additionally adds the mirrored arcs, which enriches
-    neighbourhoods but inflates K_out and hence epsilon (Theorem 6.4, Eq. 44) —
-    it is off by default.
-
-    Depth matters here: r=1 gives a root only its entity, so r>=2 is required
-    for a RelBench root to see any history at all.
-
-Features
-    Per table: z-scored numerics, datetimes as z-scored epoch-years, and
-    one-hot categoricals up to `max_categories`.  Free-text and high-cardinality
-    identifier columns are dropped.  Each table's block is written into its own
-    column range of a shared `x` (block-diagonal), and a node-type one-hot is
-    appended, so a single shared input layer acts as a per-type encoder and
-    `GNNMechanism` needs no changes.
-
-Time
-    Splits are temporal.  Two edge sets are attached:
-
-        data.edge_index        graph at the TEST cutoff — used by `evaluate`,
-                               so held-out rows have their real neighbourhoods
-        data.train_edge_index   graph at the TRAIN cutoff — used for training
-                               expansion, so training can never read an edge
-                               that did not exist yet
-
-    `src.sparse.run --inductive` picks up `train_edge_index` automatically.
-
-    Caveat: the cutoff is per SPLIT, not per row.  Inside the training window a
-    row dated 1998 may reach a row dated 2003.  That is future leakage between
-    training examples only — never into val/test — and it is the coarse version
-    of what RelBench's own neighbour sampler does per seed time.  Per-root time
-    filtering would require SparseExpand to consult a timestamp while expanding;
-    it is not implemented here.
-
-Scale caveat
-    rel-f1 is the smallest RelBench database (1353 training rows).  It is the
-    right target for validating the pipeline, but epsilon at that sample size is
-    not informative — for DP numbers point this at a large task (rel-hm
-    user-churn, rel-stack user-badge) via --dataset relbench:<db>/<task>.
+Two caveats.  The cutoff is per split, not per row, so inside the training
+window an early row may reach a later one — leakage between training examples
+only, never into val/test.  And rel-f1 has 1353 training rows, enough to
+validate the pipeline but too few for a meaningful epsilon; use a large task
+(rel-hm user-churn, rel-stack user-badge) for DP numbers.
 """
 
 import numpy as np

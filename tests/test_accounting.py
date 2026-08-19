@@ -1,27 +1,11 @@
 """
 Tests for the SparseGNN dominating-pair accountants and degree capping.
 
-Two families are covered (see src/sparse/accounting.py):
-
-  * the substitution pairs — Theorem 6.4 (direction='in', Algorithm 5) and
-    Theorem 1/2 (direction='out', Algorithm 2/4);
-  * the Theorem 4.5 insertion/removal marked pair, which is stated for
-    out-expansion only.  Its PGF is the Binomial family of Lemma 17:
-    pi = law of sum_d Binomial(n_d, a_d).
-
-Composition and epsilon(delta) are delegated to Google dp_accounting; the
-correctness anchors here cross-check the degenerate cases against Opacus,
-which computes them through an independent code path:
-
-  * Theorem 4.5 at r=0 (or p2=0) is a plain Poisson-subsampled Gaussian.
-  * The substitution pair at p1=1, r=0 collapses to N(-2, s^2) vs N(+2, s^2),
-    i.e. an unsubsampled Gaussian mechanism at sensitivity 4C.  (The extremal
-    pair places the two families at -2k and +2k; the cross-family constraint
-    is deliberately dropped in the paper's final step, so the separation is 4k
-    rather than 2k — the factor-2-in-sigma looseness of Corollary 6.5.)
-
-Ours must land at or above the reference in both, since the discretized pair
-fed to dp_accounting is constructed to dominate the analytic one.
+Correctness anchors are the degenerate cases, cross-checked against Opacus:
+Theorem 4.5 at r=0 (or p2=0) is a plain Poisson-subsampled Gaussian, and the
+substitution pair at p1=1, r=0 collapses to N(-2, s^2) vs N(+2, s^2) — an
+unsubsampled Gaussian at sensitivity 4C.  Our discretization dominates the
+analytic pair, so ours must land at or above the reference in both.
 """
 
 import math

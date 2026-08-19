@@ -1,18 +1,12 @@
 """
-SparseGNN experiment CLI — paper Algorithms 1 & 2 (current default sparsification).
+SparseGNN experiment CLI: root sampling (p1) + SparseExpand (p2, r) with a GNN
+base mechanism, swept over (p1, p2, r, sigma) and written to a results CSV.
 
-Runs the composite-subsampling mechanism (root sampling p1 + SparseExpand p2/r)
-with a GNN base mechanism for node classification.  Defaults to CiteSeer, no DP.
+  python -m src.sparse.run --dataset ppi --model multilabel_gnn --direction in \
+      --p1 0.01 --p2 0.1 --r 1 --num_layers 2 --T 2000 --K_in 5 --K_out 5
 
-Examples (from repo root):
-  # Sanity: p1=p2=1 recovers (near) full-graph GCN
-  python -m src.sparse.run --dataset citeseer --p1 1.0 --p2 1.0 --r 2 --T 200 --seeds 3
-
-  # The actual sparsified mechanism
-  python -m src.sparse.run --dataset citeseer --p1 0.5 --p2 0.5 --r 2 --T 200 --seeds 3
-
-DP (--dp) is prepared but off by default; see src/sparse/accounting.py for the
-Theorem 3 dominating pair used for accounting.
+Add --dp for the clip+noise path; epsilon is attached afterwards by
+`python -m src.sparse.compute_epsilon --csv <results.csv>`.
 """
 
 import argparse
@@ -63,11 +57,8 @@ def _report_subgraph_size(adj, candidate_nodes, num_nodes, *, p2, r, direction,
                           n_probe=512):
     """Log the mean rooted-subgraph size at the widest sweep setting.
 
-    This is the diagnostic that catches an expansion which reaches nothing: if
-    the mean is ~1.0 the roots are isolated and the GNN degenerates to an MLP
-    regardless of p2 and r, which is exactly what the pre-v35 out-orientation
-    did on graphs whose degree mass sits on incoming edges (ogbn-arxiv: max
-    in-degree 3015 vs max out-degree 221).
+    A mean near 1.0 means roots are isolated and the GNN has degenerated to an
+    MLP regardless of p2 and r.
     """
     pool = (torch.arange(num_nodes) if candidate_nodes is None
             else candidate_nodes.cpu())
@@ -87,16 +78,15 @@ def _report_subgraph_size(adj, candidate_nodes, num_nodes, *, p2, r, direction,
 
 
 def trivial_baseline(data, metric):
-    """Score of the best label-only predictor, for the dataset's own metric.
-
-    This is the floor every result must clear, and it is recorded in the CSV so
-    a sweep can never again look like a result while sitting under chance — the
-    PPI runs of 2026-08-11 spent a night doing exactly that (best 0.4756 against
-    a trivial 0.4608).
+    """Score of the best label-only predictor under the dataset's own metric.
 
       accuracy  -> most frequent training class, evaluated on test
       micro_f1  -> predict every label positive: 2p/(1+p) at positive rate p
       auroc     -> 0.5 by definition
+
+    Recorded in the CSV as the floor every result must clear.  Note micro_f1's
+    floor is high but has no ranking ability (its AUROC is 0.5), so a model
+    below it may still be learning — compare AUROC too.
     """
     import torch as _t
     if metric == "auroc":
@@ -168,11 +158,8 @@ def parse_args():
     p.add_argument('--aggr', choices=['mean', 'gcn'], default='mean',
                    help="message-passing aggregator: 'mean' (GraphSAGE) makes "
                         "the rooted-subgraph computation agree EXACTLY with "
-                        "full-graph inference, so the eval protocol is exact; "
-                        "'gcn' (symmetric normalization) only approximates it, "
-                        "with error growing in graph density (~0.3%% on capped "
-                        "ogbn-arxiv, 150-400%% on PPI). Use 'gcn' to reproduce "
-                        "pre-2026-08-12 results.")
+                        "full-graph inference; 'gcn' only approximates it, with "
+                        "error growing in graph density")
     p.add_argument('--relbench_root', choices=['row', 'entity'], default='row',
                    help='RelBench only: root one prediction per task ROW (all '
                         'supervision) or per ENTITY (labels aggregated)')
@@ -207,13 +194,10 @@ def parse_args():
     p.add_argument('--dropout', type=float, default=0.5)
     p.add_argument('--optimizer', choices=['auto', 'adam', 'sgd'],
                    default='auto',
-                   help="'auto' = Adam for non-DP, SGD for DP (the historical "
-                        "default).  Pin it to 'sgd' to make a non-DP reference "
-                        "differ from its DP runs ONLY by the noise, so the gap "
-                        "measures the cost of privacy and not the cost of "
-                        "changing optimizer; 'adam' gives the best achievable "
-                        "non-private number.  The choice is post-processing "
-                        "either way and costs no privacy.")
+                   help="'auto' = Adam for non-DP, SGD for DP.  Pin to 'sgd' "
+                        "so a non-DP reference differs from its DP runs only "
+                        "by the noise; 'adam' gives the best achievable "
+                        "non-private number.  Costs no privacy either way.")
     p.add_argument('--lr', type=float, default=0.01)
     p.add_argument('--momentum', type=float, default=0.0,
                    help='SGD momentum for the DP path (post-processing, no '

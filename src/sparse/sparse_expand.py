@@ -1,46 +1,21 @@
 """
 SparseExpand: randomized breadth-first expansion from a root vertex.
 
-    SparseExpand(G, v, p2, r) -> rooted sparsified subgraph G_v = (V_v, E_v, F|_{V_v})
+    SparseExpand(G, v, p2, r) -> rooted sparsified subgraph (V_v, E_v, F|_{V_v})
 
-Starting from the frontier Q_0 = {v}, at each of r levels every examined edge is
-retained independently with probability p2 (Bernoulli(p2)).  A newly reached
-vertex is added to the vertex set and to the next frontier.  This mirrors the
-paper's pseudocode, including the detail that an edge is added to E_v BEFORE the
-"already visited" check, so E_v may contain edges pointing into
+From frontier Q_0 = {v}, each of r levels retains every examined arc
+independently with probability p2.  Following the paper's pseudocode, an arc
+joins E_v before the "already visited" test, so E_v may contain arcs into
 already-discovered vertices.
 
-Notation follows the paper: p2 is the edge-sampling probability, r the maximum
-distance (number of expansion levels).
+`direction='in'` (default) is Algorithm 5: traverse incoming arcs (w, u) but
+keep their original orientation, so messages flow toward the root — what a
+message-passing GNN needs.  `direction='out'` is the legacy Algorithm 2/4,
+retained for the orientation ablation.  The direction also selects the
+accounting shell size: n_d = K_out^d for 'in' (Eq. 44), K_in^d for 'out'.
 
-
-ORIENTATION (manuscript v35, Sections 5-6)
-------------------------------------------
-Earlier versions of this module expanded along OUTGOING edges (u, w), matching
-Algorithm 2/4.  That orientation is *backwards* for message passing.  A GNN that
-aggregates from in-neighbours computes the root's representation from vertices
-that admit a directed path TO the root, so with out-expansion the root receives
-nothing but its own self-loop and the "GNN" silently degenerates to a
-graph-blind MLP.  Section 5 of v35 states this explicitly and Section 6 develops
-the corrected procedure, `SparseExpand_in` (Algorithm 5): traverse each INCOMING
-edge (w, u) from u to w, but retain the original orientation (w, u) in the
-returned subgraph.
-
-`direction='in'` (the default) implements Algorithm 5; `direction='out'` keeps
-the legacy Algorithm 2/4 behaviour for the orientation ablation.
-
-The direction also selects which degree bound governs the accounting shells:
-
-    direction='in'   n_d = K_out^d   (Theorem 6.4, Eq. 44)
-    direction='out'  n_d = K_in^d    (Theorem 1/2)
-
-while q_d is driven by K = min(K_in, K_out) in both cases.  See
-`src/sparse/accounting.py`.
-
-Undirected graphs (Planetoid citation graphs, Flickr, PPI, Reddit) store each
-edge as both arcs, so in- and out-expansion coincide there; the distinction
-bites on genuinely directed graphs such as ogbn-arxiv (max in-degree 3015 vs
-max out-degree 221) and on RelBench foreign-key graphs.
+In- and out-expansion coincide on undirected graphs, which store both arcs;
+they differ on directed ones (ogbn-arxiv, RelBench foreign-key graphs).
 """
 
 from dataclasses import dataclass

@@ -1,9 +1,6 @@
 """
-Tests for the paper-faithful sparsification (SparseExpand / SparseGNN).
-
-Covers SparseExpand invariants in BOTH orientations (Algorithm 5's in-expansion,
-the default since manuscript v35, and the legacy Algorithm 2/4 out-expansion),
-root sampling, and a smoke test of the Algorithm 1 engine.
+Tests for SparseExpand, root sampling, and the SparseGNN engine, covering both
+expansion orientations ('in' = Algorithm 5, the default; 'out' = Algorithm 2/4).
 """
 
 import math
@@ -62,7 +59,7 @@ def test_in_expansion_reaches_backward_neighbours():
 
 
 def test_in_expansion_orients_edges_toward_root():
-    """Regression test for the pre-v35 orientation bug.
+    """In-expansion must deliver neighbour features to the root.
 
     Under Algorithm 5 every level-1 arc must have the root (local index 0) as
     its TARGET, so a message-passing layer actually delivers the neighbour's

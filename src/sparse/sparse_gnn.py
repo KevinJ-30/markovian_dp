@@ -12,10 +12,8 @@ Algorithm 1: SparseGNN — the model-agnostic training engine.
     the summed gradient G(y) = sum_v g0(y_v); optimizer.step().
 
   * DP (dp=True): per-subgraph backward, clip each g0(H) to L2 norm C, sum,
-    add Gaussian noise N(0, (sigma*C)^2 I) (Assumption 3.2 / 6.3), then step.
-    This is the concrete per-step Gaussian base mechanism; its privacy is
-    accounted for post-hoc by the dominating pairs in accounting.py (Theorem 6.4
-    for the default in-expansion).  DP is OFF by default.
+    add Gaussian noise N(0, (sigma*C)^2 I) (Assumption 6.3), then step.
+    Accounted post-hoc by the dominating pairs in accounting.py.
 
 The engine only talks to a BaseMechanism, so it is identical for the GNN node
 classifier and a future non-GNN anomaly detector.
