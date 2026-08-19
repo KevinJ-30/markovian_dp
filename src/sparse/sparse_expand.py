@@ -231,6 +231,24 @@ def cap_degrees(
     return ei
 
 
+def dedup_arcs(edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
+    """Remove parallel arcs (the accounting assumes a simple graph).
+
+    Encodes each arc as a single int64 key rather than calling
+    `torch.unique(..., dim=1)`, whose row-wise sort needs several copies of the
+    [2, E] tensor: on Reddit (114.6M arcs, 1.8 GB) that alone exhausts a 16 GB
+    allocation.  When there are no duplicates — the common case — the original
+    tensor is returned without rebuilding it.
+    """
+    ei = edge_index.cpu()
+    key = ei[0].to(torch.long) * num_nodes + ei[1].to(torch.long)
+    uniq = torch.unique(key)
+    if uniq.numel() == key.numel():
+        return ei
+    del key
+    return torch.stack([uniq // num_nodes, uniq % num_nodes])
+
+
 def edge_set_is_symmetric(edge_index: torch.Tensor, num_nodes: int) -> bool:
     """True iff every arc (u, v) has its reverse (v, u) present.
 

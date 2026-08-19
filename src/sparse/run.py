@@ -26,7 +26,8 @@ from src.sparse.mlp_mechanism import MLPMechanism           # noqa: E402
 from src.sparse.multilabel_mechanism import MultiLabelGNNMechanism  # noqa: E402
 from src.sparse.binary_mechanism import BinaryGNNMechanism  # noqa: E402
 from src.sparse.sparse_expand import (                      # noqa: E402
-    build_adjacency, cap_degrees, cap_degrees_undirected, edge_set_is_symmetric,
+    build_adjacency, cap_degrees, cap_degrees_undirected, dedup_arcs,
+    edge_set_is_symmetric,
     max_degrees, sparse_expand,
 )
 from src.sparse.sparse_gnn import train_sparse_gnn          # noqa: E402
@@ -320,7 +321,7 @@ def main():
     # table with two foreign keys to the same parent row cannot break the
     # assumption silently.
     n_arcs_raw = edge_index.size(1)
-    edge_index = torch.unique(edge_index.cpu(), dim=1)
+    edge_index = dedup_arcs(edge_index, int(data.num_nodes))
     if edge_index.size(1) < n_arcs_raw:
         print(f"  removed {n_arcs_raw - edge_index.size(1)} parallel arc(s): "
               f"{n_arcs_raw} -> {edge_index.size(1)} (simple-graph assumption)")
