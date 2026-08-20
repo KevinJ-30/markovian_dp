@@ -26,11 +26,15 @@ from matplotlib.ticker import (FixedFormatter, FixedLocator,   # noqa: E402
 P2_COLORS = {1.0: '#2a78d6', 0.5: '#eb6834', 0.25: '#1baf7a', 0.1: '#4a3aa7'}
 INK, MUTED, GRID = '#1a1a19', '#6b6a63', '#e3e2dc'
 
+# Reference lines, both non-private.  The floor is the graph-blind model
+# (results/ppi/blind_L2: same mechanism at r=0, so each root sees only its own
+# features) rather than a constant predictor — it is the bar the graph has to
+# clear to be worth anything.
 REFS = {
-    'test_acc':   dict(floor=0.4608, ceiling=0.6998, label='test micro-F1',
-                       floor_label='best constant predictor'),
-    'test_auroc': dict(floor=0.4955, ceiling=0.8925, label='test AUROC',
-                       floor_label='chance'),
+    'test_acc':   dict(floor=0.5090, ceiling=0.6998, label='test micro-F1',
+                       floor_label='graph-blind, no privacy'),
+    'test_auroc': dict(floor=0.7550, ceiling=0.8925, label='test AUROC',
+                       floor_label='graph-blind, no privacy'),
 }
 
 

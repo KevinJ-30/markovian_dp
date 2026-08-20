@@ -27,15 +27,17 @@ BLUE, VIOLET = '#2a78d6', '#4a3aa7'
 INK, MUTED, GRID = '#1a1a19', '#6b6a63', '#e3e2dc'
 
 # Measured references (results/ppi/ppi_ceiling_true, uncapped full-batch).
+# Both references are non-private; the floor is the graph-blind model
+# (results/ppi/blind_L2, same mechanism at r=0).
 REFS = {
-    'test_acc':   dict(floor=0.4608, ceiling=0.6998,
-                       floor_label='all-positive predictor (ε=0)',
-                       ceiling_label='non-private ceiling',
+    'test_acc':   dict(floor=0.5090, ceiling=0.6998,
+                       floor_label='graph-blind, no privacy',
+                       ceiling_label='full graph, no privacy',
                        title='micro-F1', ylim=(0.35, 0.75)),
-    'test_auroc': dict(floor=0.4955, ceiling=0.8925,
-                       floor_label='chance',
-                       ceiling_label='non-private ceiling',
-                       title='AUROC', ylim=(0.35, 0.95)),
+    'test_auroc': dict(floor=0.7550, ceiling=0.8925,
+                       floor_label='graph-blind, no privacy',
+                       ceiling_label='full graph, no privacy',
+                       title='AUROC', ylim=(0.50, 0.95)),
 }
 
 
