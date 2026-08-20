@@ -21,8 +21,8 @@ from .base_mechanism import BaseMechanism
 from .layers import build_conv_stack
 
 
-class _GCNBinary(nn.Module):
-    """L-layer GCN emitting one logit per node."""
+class _BinaryGNN(nn.Module):
+    """L-layer message-passing stack emitting one logit per node."""
 
     def __init__(self, in_channels, hidden_channels, dropout=0.5,
                  num_layers=2, aggr='mean'):
@@ -67,7 +67,7 @@ class BinaryGNNMechanism(BaseMechanism):
 
     def __init__(self, data, num_features, num_classes=2, *, hidden=64,
                  num_layers=2, dropout=0.5, aggr='mean', device=None):
-        module = _GCNBinary(num_features, hidden, dropout=dropout,
+        module = _BinaryGNN(num_features, hidden, dropout=dropout,
                             num_layers=num_layers, aggr=aggr)
         super().__init__(module, device=device)
         self.data = data

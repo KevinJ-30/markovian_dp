@@ -22,8 +22,8 @@ from .base_mechanism import BaseMechanism
 from .layers import build_conv_stack
 
 
-class _GCNLogits(nn.Module):
-    """L-layer GCN returning raw logits (no log_softmax — labels are not 1-of-K)."""
+class _MultiLabelGNN(nn.Module):
+    """L-layer message-passing stack returning raw logits (labels are not 1-of-K)."""
 
     def __init__(self, in_channels, hidden_channels, out_channels,
                  dropout=0.5, num_layers=2, aggr='mean'):
@@ -83,7 +83,7 @@ class MultiLabelGNNMechanism(BaseMechanism):
 
     def __init__(self, data, num_features, num_classes, *, hidden=64,
                  num_layers=2, dropout=0.5, aggr='mean', device=None):
-        module = _GCNLogits(num_features, hidden, num_classes,
+        module = _MultiLabelGNN(num_features, hidden, num_classes,
                             dropout=dropout, num_layers=num_layers, aggr=aggr)
         super().__init__(module, device=device)
         self.data = data

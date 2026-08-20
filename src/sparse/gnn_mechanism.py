@@ -21,8 +21,9 @@ from .base_mechanism import BaseMechanism
 from .layers import build_conv_stack
 
 
-class _GCN(nn.Module):
-    """L-layer GCN with symmetric normalization (Kipf & Welling 2017)."""
+class _NodeGNN(nn.Module):
+    """L-layer message-passing stack; see layers.build_conv_stack for the
+    aggregator choice (SAGE-mean by default, GCN with aggr='gcn')."""
 
     def __init__(self, in_channels, hidden_channels, out_channels,
                  dropout=0.5, num_layers=2, aggr='mean'):
@@ -54,7 +55,7 @@ class GNNMechanism(BaseMechanism):
 
     def __init__(self, data, num_features, num_classes, *, hidden=64,
                  num_layers=2, dropout=0.5, aggr='mean', device=None):
-        module = _GCN(num_features, hidden, num_classes,
+        module = _NodeGNN(num_features, hidden, num_classes,
                       dropout=dropout, num_layers=num_layers, aggr=aggr)
         super().__init__(module, device=device)
         self.data = data
