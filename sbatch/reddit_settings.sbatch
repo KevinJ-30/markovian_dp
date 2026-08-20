@@ -1,19 +1,18 @@
 #!/bin/bash
 #SBATCH -Jreddit_dp
-#SBATCH -A gts-pli77                      # CHECK THIS — see note below
+#SBATCH -A gts-pli77                      # free account (-paid costs money)
 #SBATCH -q embers                         # free QoS.  inferno spends credit.
 #SBATCH -N1 --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G                         # Reddit: 114.6M arcs before capping
-#SBATCH -t4:00:00                         # allocation is billed, not usage —
+#SBATCH -t6:00:00                         # allocation is billed, not usage —
                                           # request the minimum that fits
 #SBATCH -oReport-reddit-dp-%j.out
 #SBATCH --mail-type=END,FAIL
 #
-# ACCOUNT: the -A string above is a guess.  Confirm the real one with
-#     sacctmgr show assoc user=$USER format=account,qos
-# and fix it before submitting; a wrong account fails fast rather than
-# charging, but -A <anything>-paid would be real money.
+# ACCOUNT: gts-pli77 is confirmed present for this user.  Never swap in
+# gts-pli77-paid — that one bills real money.  gts-pli77-ideas_l40s holds the
+# L40S allocation, which this job deliberately does not use.
 #
 # CPU node on purpose.  This workload is launch-latency bound, not FLOP bound:
 # ~96% of step time is a Python loop over per-root subgraphs of a few nodes
@@ -56,9 +55,9 @@ OUT_ROOT=$PROJECT/results/reddit
 PY="python -u"
 DELTA=1e-6
 COMMON="--dataset reddit --direction in --aggr mean --p1 0.01 --r 1 \
-        --num_layers 2 --T 2000 --K_in 5 --K_out 5 --clip 1.0 \
+        --num_layers 2 --T 1000 --K_in 5 --K_out 5 --clip 1.0 \
         --dropout 0.0 --weight_decay 0.0 --roots_from train --seeds 3 \
-        --track_every 50"
+        --track_every 25"
 
 run_cell() {   # out_dir, then extra flags
   local OUT=$1; shift
