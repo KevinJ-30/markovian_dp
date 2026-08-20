@@ -320,39 +320,53 @@ def main():
     # shipped loaders are simple graphs, but enforce it here so e.g. a RelBench
     # table with two foreign keys to the same parent row cannot break the
     # assumption silently.
-    n_arcs_raw = edge_index.size(1)
-    edge_index = dedup_arcs(edge_index, int(data.num_nodes))
-    if edge_index.size(1) < n_arcs_raw:
-        print(f"  removed {n_arcs_raw - edge_index.size(1)} parallel arc(s): "
-              f"{n_arcs_raw} -> {edge_index.size(1)} (simple-graph assumption)")
-
+    n_nodes = int(data.num_nodes)
     K_in, K_out = args.K_in, args.K_out if args.K_out is not None else args.K_in
-    if K_in is not None:
-        before = max_degrees(edge_index, int(data.num_nodes))
+
+    def _simplify_and_cap(ei, label):
+        """Deduplicate arcs, then enforce the degree bound."""
+        n_raw = ei.size(1)
+        ei = dedup_arcs(ei, n_nodes)
+        if ei.size(1) < n_raw and label:
+            print(f"  removed {n_raw - ei.size(1)} parallel arc(s): "
+                  f"{n_raw} -> {ei.size(1)} (simple-graph assumption)")
+        if K_in is None:
+            return ei, ''
+        before = max_degrees(ei, n_nodes)
         cap_gen = torch.Generator().manual_seed(12345)
-        cap_mode = args.cap_mode
-        if cap_mode == 'auto':
-            cap_mode = ('undirected' if K_in == K_out and
-                        edge_set_is_symmetric(edge_index, int(data.num_nodes))
-                        else 'directed')
-        if cap_mode == 'undirected':
+        mode = args.cap_mode
+        if mode == 'auto':
+            mode = ('undirected' if K_in == K_out and
+                    edge_set_is_symmetric(ei, n_nodes) else 'directed')
+        if mode == 'undirected':
             if K_in != K_out:
                 raise SystemExit("--cap_mode undirected needs K_in == K_out")
-            edge_index = cap_degrees_undirected(
-                edge_index, int(data.num_nodes), K_in, generator=cap_gen)
+            ei = cap_degrees_undirected(ei, n_nodes, K_in, generator=cap_gen)
         else:
-            # NOTE: on a symmetric graph this caps the two arc directions
+            # On a symmetric graph this caps the two arc directions
             # independently and so destroys edge symmetry (~2/3 of surviving
             # arcs lose their reverse at K=5); that is why 'auto' prefers
             # 'undirected' there.
-            edge_index = cap_degrees(edge_index, int(data.num_nodes),
-                                     K_in=K_in, K_out=K_out, generator=cap_gen)
-        after = max_degrees(edge_index, int(data.num_nodes))
-        print(f"  degree cap K_in={K_in} K_out={K_out} (mode={cap_mode}): "
-              f"max (in,out) {before} -> {after}, edges "
-              f"{data.edge_index.size(1)} -> {edge_index.size(1)}")
+            ei = cap_degrees(ei, n_nodes, K_in=K_in, K_out=K_out,
+                             generator=cap_gen)
+        if label:
+            print(f"  degree cap K_in={K_in} K_out={K_out} (mode={mode}) "
+                  f"[{label}]: max (in,out) {before} -> "
+                  f"{max_degrees(ei, n_nodes)}, edges {n_raw} -> {ei.size(1)}")
+        return ei, mode
+
+    edge_index, cap_mode = _simplify_and_cap(edge_index, 'training graph')
+
+    # Reference graph for the second set of metrics: capped but NOT
+    # split-filtered.  Filtering would leave held-out nodes with no edges at
+    # all (on PPI their mean in-degree drops 29.3 -> 0), so the comparison has
+    # to isolate the cap from the inductive filter.
+    if args.inductive and K_in is not None:
+        eval_capped_ei, _ = _simplify_and_cap(data.edge_index, '')
     else:
-        cap_mode = ''
+        eval_capped_ei = edge_index
+
+    if K_in is None:
         if args.dp:
             print("  WARNING: --dp without --K_in — the degree-bound "
                   "accounting assumption (Assumption 3.1 / 6.2) is not "
@@ -396,7 +410,13 @@ def main():
                     'train_acc', 'val_acc', 'test_acc', 'trivial_baseline',
                     # Secondary, threshold-free metric where the mechanism
                     # reports one (multilabel).  Blank otherwise.
-                    'train_auroc', 'val_auroc', 'test_auroc'])
+                    'train_auroc', 'val_auroc', 'test_auroc',
+                    # Same metrics on the OTHER graph: the training graph when
+                    # eval_graph=full, the full graph when eval_graph=train.
+                    # They differ by the degree cap (and, for inductive runs,
+                    # the split filter), so both are recorded.
+                    'train_acc_alt', 'val_acc_alt', 'test_acc_alt',
+                    'train_auroc_alt', 'val_auroc_alt', 'test_auroc_alt'])
 
         for p1, p2, r, sigma in grid:
             print(f"\n[p1={p1} p2={p2} r={r}" +
@@ -413,6 +433,9 @@ def main():
                 )
                 if args.eval_graph == 'train':
                     mech.eval_edge_index = edge_index.to(device)
+                    alt_ei = data.edge_index                  # uncapped
+                else:
+                    alt_ei = eval_capped_ei.to(device)        # capped
                 opt_kind = (args.optimizer if args.optimizer != 'auto'
                             else ('sgd' if args.dp else 'adam'))
                 mech.build_optimizer(lr=args.lr, weight_decay=args.weight_decay,
@@ -424,7 +447,8 @@ def main():
                     candidate_nodes=candidate_nodes,
                     dp=args.dp, clip=args.clip, sigma=sigma,
                     seed=seed, eval_every=args.eval_every,
-                    track_every=args.track_every, verbose=args.verbose,
+                    track_every=args.track_every, eval_alt_edge_index=alt_ei,
+                    verbose=args.verbose,
                 )
                 history = accs.pop('history', [])
                 tests.append(accs['test'])
@@ -446,7 +470,10 @@ def main():
                                 f"{m['test']:.5f}", f"{trivial:.5f}",
                                 *(f"{m[k]:.5f}" if k in m else ''
                                   for k in ('train_auroc', 'val_auroc',
-                                            'test_auroc'))])
+                                            'test_auroc',
+                                            'train_alt', 'val_alt', 'test_alt',
+                                            'train_auroc_alt', 'val_auroc_alt',
+                                            'test_auroc_alt'))])
 
                 for h in history:
                     if h['step'] < args.T:   # final checkpoint == the T row

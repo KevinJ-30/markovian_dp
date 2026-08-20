@@ -93,6 +93,15 @@ def _step_dp(mechanism: BaseMechanism, subgraphs: List, *, C: float,
     return running
 
 
+def _evaluate(mechanism, data, alt_edge_index):
+    """Metrics on the configured graph, plus `<key>_alt` on `alt_edge_index`."""
+    out = dict(mechanism.evaluate(data))
+    if alt_edge_index is not None:
+        for k, v in mechanism.evaluate_on(data, alt_edge_index).items():
+            out[f'{k}_alt'] = v
+    return out
+
+
 def train_sparse_gnn(
     mechanism: BaseMechanism,
     data,
@@ -110,6 +119,7 @@ def train_sparse_gnn(
     seed: int = 0,
     eval_every: int = 0,
     track_every: int = 0,
+    eval_alt_edge_index=None,
     verbose: bool = False,
 ) -> Dict[str, float]:
     """Run T steps of SparseGNN and return the final evaluation metrics.
@@ -132,6 +142,10 @@ def train_sparse_gnn(
                          when dp=True; sigma scales noise std = sigma*C).
         seed:            base seed for reproducible root/edge sampling.
         eval_every:      if >0 and verbose, evaluate every `eval_every` steps.
+        eval_alt_edge_index: if given, every evaluation is also run against
+                         this adjacency and reported under `<key>_alt`.  Used to
+                         record utility on both the training graph and the full
+                         one, which differ by the degree cap.
         track_every:     if >0, evaluate every `track_every` steps and return
                          the checkpoints under the 'history' key (a list of
                          {'step': t, <metrics>} dicts).  Evaluation draws no
@@ -180,14 +194,15 @@ def train_sparse_gnn(
             loss = _step_nondp(mechanism, subgraphs)
 
         if track_every and (t % track_every == 0 or t == T):
-            history.append({'step': t, **mechanism.evaluate(data)})
+            history.append({'step': t, **_evaluate(mechanism, data,
+                                                   eval_alt_edge_index)})
 
         if verbose and eval_every and (t % eval_every == 0 or t == 1):
             accs = mechanism.evaluate(data)
             print(f"  step {t:4d}/{T}  |V_root|={roots.numel():4d}  "
                   f"loss={loss:.4f}  val={accs['val']:.4f}  test={accs['test']:.4f}")
 
-    final = mechanism.evaluate(data)
+    final = _evaluate(mechanism, data, eval_alt_edge_index)
     if track_every:
         final = dict(final)
         final['history'] = history

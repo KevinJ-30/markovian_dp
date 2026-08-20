@@ -49,6 +49,23 @@ class BaseMechanism(ABC):
     #: gather and scatter, and PyG returns identical values either way.
     _DENSE_MESSAGE_BUDGET = 250_000_000
 
+    def evaluate_on(self, data, edge_index) -> Dict[str, float]:
+        """`evaluate` against a specific adjacency, leaving state untouched.
+
+        `edge_index=None` means the full graph carried on `data`.  Used to
+        report utility on both the training graph and the full one, since they
+        differ by the degree cap (and, for inductive runs, the split filter).
+        """
+        saved_ei = self.eval_edge_index
+        saved_cache = getattr(self, '_eval_adj_cache', None)
+        self.eval_edge_index = edge_index
+        self._eval_adj_cache = None
+        try:
+            return self.evaluate(data)
+        finally:
+            self.eval_edge_index = saved_ei
+            self._eval_adj_cache = saved_cache
+
     def eval_edges(self, data):
         """The adjacency `evaluate` should use (see `eval_edge_index`).
 
