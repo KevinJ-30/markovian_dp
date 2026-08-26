@@ -1,26 +1,25 @@
 #!/bin/bash
 # PACE-ICE version of facebook_settings.sbatch.
 #
-# ICE is a SEPARATE cluster from Phoenix: different scheduler config AND a
-# different filesystem.  The three #SBATCH lines below and the two paths in the
-# body are marked CONFIRM-ON-ICE because I do not know your ICE allocation.
-# Find the right values on an ICE login node with:
+# ICE is a SEPARATE cluster from Phoenix, with its own scheduler and its own
+# filesystem, so paths and directives differ.  Values below are set for this
+# user's ICE allocation (partition ice-cpu, account coc, home /home/hice1/...).
+# ICE is free and non-preemptible for instructional use — no embers/inferno, no
+# billing — which is why we run here.
 #
-#     sinfo -s                                  # partition names + limits
-#     sacctmgr show assoc user=$USER format=account,qos,partition
-#     echo $HOME ; ls -d ~/scratch 2>/dev/null  # ICE home / scratch paths
-#
-# ICE is free and non-preemptible for instructional use, so there is no
-# embers/inferno QoS and no billing to worry about — that is the whole reason
-# to run here instead of Phoenix embers.
+# Before submitting, on an ICE login node: clone the repo into scratch, build
+# the venv there, and cache the Facebook .mat:
+#     cd ~/scratch && git clone https://github.com/KevinJ-30/markovian_dp.git
+#     cd markovian_dp && git checkout sparse_expand_clean
+#     bash scripts/setup_pace.sh facebook     # venv + Facebook + tests
 
 #SBATCH -Jfacebook_dp
-#SBATCH -A CONFIRM-ON-ICE                  # your ICE account (sacctmgr, above)
-#SBATCH -p CONFIRM-ON-ICE                  # ICE cpu partition (sinfo -s)
+#SBATCH -A coc                             # ICE account (sacctmgr)
+#SBATCH -p ice-cpu                         # free instructional CPU partition
 #SBATCH -N1 --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH -t8:00:00                          # non-preemptible: one arm can be one job
+#SBATCH -t8:00:00                          # ice-cpu allows up to 18h
 #SBATCH -oReport-facebook-dp-%j.out
 #SBATCH --mail-type=END,FAIL
 #
@@ -30,9 +29,8 @@
 set -e
 cd $SLURM_SUBMIT_DIR
 
-# CONFIRM-ON-ICE: these paths differ from Phoenix.  ICE storage is typically
-# under /storage/ice1/... or your ICE $HOME; set them to wherever you cloned
-# the repo and built the venv on ICE.
+# ICE has no separate project space; results (small CSVs) go to persistent
+# $HOME, while the venv and dataset live in the larger scratch.
 PROJECT=${PROJECT:-$HOME/markovian_dp_results}
 SCRATCH=${SCRATCH:-$HOME/scratch}
 
