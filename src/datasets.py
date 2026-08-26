@@ -29,6 +29,10 @@ SUPPORTED_DATASETS = {
     'ogbl-collab': 'ogbl-collab',
     # GraphBench Bluesky (temporal-split node classification, inductive)
     'bluesky': 'Bluesky',
+    # GAP/ProGAP's Facebook: the UIllinois20 FB100 network, year label filtered
+    # to classes with >=1000 nodes.  For head-to-head comparison with those
+    # papers on a dataset where the graph actually carries signal.
+    'facebook': 'Facebook',
     # RelBench entity tasks (temporal, natively inductive).  Shorthands for the
     # generic form `relbench:<database>/<task>`, which accepts any RelBench pair.
     'relbench-f1-top3': 'relbench:rel-f1/driver-top3',
@@ -159,6 +163,116 @@ def _load_ppi():
     num_classes = int(data.y.size(1))
     return _SimpleDataset(data, num_features, num_classes,
                           multilabel=True), data
+
+
+def _load_facebook(name='UIllinois20', target='year', min_count=1000,
+                   val_ratio=0.10, test_ratio=0.15, seed=0):
+    """GAP/ProGAP's Facebook: one FB100 university network, node classification.
+
+    Replicates core/datasets/facebook.py + its pre_transform in the ProGAP repo
+    (github.com/sisaman/ProGAP):
+
+      * download <name>.mat from sisaman/pyg-datasets (features in `local_info`,
+        adjacency in `A`);
+      * label y = `target` column (default 'year'); one-hot the other five
+        categorical attributes as features, treating value 0 as missing;
+      * split 75/val/test at random over ALL nodes, THEN keep only classes with
+        >= `min_count` members and drop the rest (FilterClassByCount), which is
+        what reduces UIllinois20's years to ~6 classes / ~26k nodes;
+      * remove self-loops and isolated nodes.
+
+    The D=100 degree bound is NOT applied here — it is a training-time cap,
+    matched by `--K_out 100` in the SparseGNN pipeline.
+
+    The split is random (their protocol), not their exact split; they report a
+    mean over random splits, so a fixed-seed 75/10/15 split is comparable.
+    """
+    import ssl
+    import numpy as np
+    import pandas as pd
+    from scipy.io import loadmat
+    from torch_geometric.utils import subgraph
+    from torch_geometric.data import download_url
+
+    targets = ['status', 'gender', 'major', 'minor', 'housing', 'year']
+    root = os.environ.get('FACEBOOK_DATA_ROOT', 'data/facebook100')
+    os.makedirs(root, exist_ok=True)
+    mat_path = os.path.join(root, f'{name}.mat')
+    if not os.path.exists(mat_path):
+        ctx = ssl._create_default_https_context
+        ssl._create_default_https_context = ssl._create_unverified_context
+        try:
+            download_url('https://github.com/sisaman/pyg-datasets/raw/main/'
+                         f'datasets/facebook100/{name}.mat', root)
+        finally:
+            ssl._create_default_https_context = ctx
+
+    mat = loadmat(mat_path)
+    feats = pd.DataFrame(mat['local_info'][:, :-1], columns=targets)
+
+    # label: LabelEncoder == sorted-unique codes; shift to 0-based if 0 present.
+    y_codes = pd.Categorical(feats[target]).codes.astype(np.int64)
+    y = torch.from_numpy(y_codes)
+    if (feats[target] == 0).any():
+        y = y - 1
+
+    # features: one-hot the other attributes, value 0 -> missing (no column).
+    x_df = feats.drop(columns=target).replace({0: None})
+    x = torch.tensor(pd.get_dummies(x_df).values, dtype=torch.float)
+
+    from torch_geometric.utils import from_scipy_sparse_matrix
+    edge_index = from_scipy_sparse_matrix(mat['A'])[0]
+
+    # drop unlabeled, relabel
+    keep = y >= 0
+    edge_index, _ = subgraph(keep, edge_index, relabel_nodes=True,
+                             num_nodes=len(y))
+    x, y = x[keep], y[keep]
+    n = int(y.numel())
+
+    # 75/10/15 random split over all nodes (their RandomNodeSplit order: before
+    # the class filter).
+    g = torch.Generator().manual_seed(seed)
+    perm = torch.randperm(n, generator=g)
+    n_val, n_test = int(val_ratio * n), int(test_ratio * n)
+    val_mask = torch.zeros(n, dtype=torch.bool)
+    test_mask = torch.zeros(n, dtype=torch.bool)
+    train_mask = torch.zeros(n, dtype=torch.bool)
+    test_mask[perm[:n_test]] = True
+    val_mask[perm[n_test:n_test + n_val]] = True
+    train_mask[perm[n_test + n_val:]] = True
+
+    # FilterClassByCount(min_count, remove_unlabeled=True): keep classes with
+    # >= min_count members, drop the rest, relabel classes to 0..C-1.
+    onehot = torch.nn.functional.one_hot(y)
+    counts = onehot.sum(0)
+    onehot = onehot[:, counts >= min_count]
+    row_keep = onehot.sum(1).bool()
+    y = onehot.argmax(1)
+    idx = torch.where(row_keep)[0]
+    edge_index, _ = subgraph(row_keep, edge_index, relabel_nodes=True,
+                             num_nodes=n)
+    x, y = x[row_keep], y[row_keep]
+    train_mask, val_mask, test_mask = (train_mask[row_keep], val_mask[row_keep],
+                                       test_mask[row_keep])
+
+    # remove self-loops, then isolated nodes
+    sl = edge_index[0] != edge_index[1]
+    edge_index = edge_index[:, sl]
+    deg = torch.zeros(int(y.numel()), dtype=torch.long)
+    deg.index_add_(0, edge_index[0], torch.ones(edge_index.size(1), dtype=torch.long))
+    deg.index_add_(0, edge_index[1], torch.ones(edge_index.size(1), dtype=torch.long))
+    not_iso = deg > 0
+    edge_index, _ = subgraph(not_iso, edge_index, relabel_nodes=True,
+                             num_nodes=int(y.numel()))
+    x, y = x[not_iso], y[not_iso]
+    train_mask, val_mask, test_mask = (train_mask[not_iso], val_mask[not_iso],
+                                       test_mask[not_iso])
+
+    data = Data(x=x, y=y, edge_index=edge_index)
+    data.train_mask, data.val_mask, data.test_mask = train_mask, val_mask, test_mask
+    num_classes = int(y.max()) + 1
+    return _SimpleDataset(data, int(x.size(1)), num_classes), data
 
 
 class _BlueskyDataset:
@@ -399,6 +513,11 @@ def load_dataset(name, device='cpu', split_idx=0, **relbench_kwargs):
 
     if key == 'ppi':
         dataset, data = _load_ppi()
+        data = data.to(device)
+        return dataset, data
+
+    if key == 'facebook':
+        dataset, data = _load_facebook()
         data = data.to(device)
         return dataset, data
 
