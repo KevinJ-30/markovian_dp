@@ -19,7 +19,7 @@ from collections import defaultdict
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt   # noqa: E402
-from matplotlib.ticker import (FixedFormatter, FixedLocator,   # noqa: E402
+from matplotlib.ticker import (FixedFormatter, FixedLocator, NullLocator,  # noqa: E402
                                NullFormatter)
 
 # Validated categorical slots 1, 2, 3, 7.
@@ -100,8 +100,15 @@ def main():
                 xycoords=('axes fraction', 'data'), textcoords='offset points',
                 xytext=(0, -11), color=MUTED, fontsize=8)
 
-    ax.set_xlim(0, 10)
-    ax.set_xticks([0, 2, 4, 6, 8, 10])
+    ax.set_xscale('log', base=2)
+    _allx = [e for pts in curves.values() for e, _ in pts]
+    _lo, _hi = min(_allx), max(_allx)
+    ax.set_xlim(_lo * 0.8, _hi * 1.25)
+    _t = [t for t in (0.0625, 0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64)
+          if _lo * 0.7 <= t <= _hi * 1.4]
+    ax.xaxis.set_major_locator(FixedLocator(_t))
+    ax.xaxis.set_major_formatter(FixedFormatter([f'{v:g}' for v in _t]))
+    ax.xaxis.set_minor_locator(NullLocator())
     ax.set_xlabel('privacy budget  ε   (δ = 10⁻⁶)', fontsize=9, color=INK)
     ax.set_ylabel(ref['label'], fontsize=9, color=INK)
     ax.set_title('PPI: privacy–utility tradeoff by sparsification level',

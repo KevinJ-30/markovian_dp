@@ -26,6 +26,20 @@ from matplotlib.ticker import (FixedFormatter, FixedLocator,   # noqa: E402
 P2_COLORS = {1.0: '#2a78d6', 0.5: '#eb6834', 0.25: '#1baf7a', 0.1: '#4a3aa7'}
 INK, MUTED, GRID = '#1a1a19', '#6b6a63', '#e3e2dc'
 
+_POW2 = [0.0625, 0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128, 256]
+
+
+def _log2_axis(ax, lo, hi):
+    """Log base-2 x-axis with power-of-2 ticks (ProGAP style: 2,4,8,16,32)."""
+    from matplotlib.ticker import (FixedLocator, FixedFormatter,
+                                   NullLocator)
+    ax.set_xscale('log', base=2)
+    ax.set_xlim(lo * 0.8, hi * 1.25)
+    ticks = [t for t in _POW2 if lo * 0.7 <= t <= hi * 1.4]
+    ax.xaxis.set_major_locator(FixedLocator(ticks))
+    ax.xaxis.set_major_formatter(FixedFormatter([f'{t:g}' for t in ticks]))
+    ax.xaxis.set_minor_locator(NullLocator())
+
 
 def load_curves(pattern, metric):
     per_p2 = defaultdict(list)
@@ -86,8 +100,8 @@ def main():
                     textcoords='offset points', xytext=(0, dy),
                     color=MUTED, fontsize=8)
 
-    ax.set_xlim(0, 10)
-    ax.set_xticks([0, 2, 4, 6, 8, 10])
+    allx = [e for pts in curves.values() for e, _ in pts]
+    _log2_axis(ax, min(allx), max(allx))
     ax.set_xlabel('privacy budget  ε', fontsize=9, color=INK)
     ax.set_ylabel(a.ylabel, fontsize=9, color=INK)
     if a.title:

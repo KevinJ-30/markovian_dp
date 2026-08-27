@@ -19,7 +19,7 @@ from collections import defaultdict
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt   # noqa: E402
-from matplotlib.ticker import (FixedFormatter, FixedLocator,   # noqa: E402
+from matplotlib.ticker import (FixedFormatter, FixedLocator, NullLocator,  # noqa: E402
                                NullFormatter)
 
 # Categorical slots 1 and 7 of the validated palette (CVD-checked pair).
@@ -100,8 +100,13 @@ def main():
                     textcoords='offset points', xytext=(0, -11),
                     color=MUTED, fontsize=8)
 
-        ax.set_xlim(0, 10)
-        ax.set_xticks([0, 2, 4, 6, 8, 10])
+        ax.set_xscale('log', base=2)
+        ax.set_xlim(lo_x * 0.8, hi_x * 1.25)
+        _t = [t for t in (0.0625, 0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64)
+              if lo_x * 0.7 <= t <= hi_x * 1.4]
+        ax.xaxis.set_major_locator(FixedLocator(_t))
+        ax.xaxis.set_major_formatter(FixedFormatter([f'{v:g}' for v in _t]))
+        ax.xaxis.set_minor_locator(NullLocator())
         ax.set_ylim(*ref['ylim'])
         ax.set_xlabel('privacy budget  ε   (δ = 10⁻⁶)', fontsize=9, color=INK)
         ax.set_title(ref['title'], fontsize=11, color=INK, loc='left', pad=8)
@@ -118,10 +123,6 @@ def main():
                        labelcolor=INK)
     fig.suptitle('PPI: privacy–utility frontier (p₂=0.1, r=1, L=2, K=5)',
                  fontsize=12, color=INK, x=0.02, ha='left', y=0.99)
-    fig.text(0.02, 0.005,
-             'each point is one tracked checkpoint of a single run; ε(t) is the '
-             'guarantee for the iterate released at step t',
-             fontsize=8, color=MUTED)
     fig.tight_layout(rect=(0, 0.03, 1, 0.96))
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     fig.savefig(args.out, dpi=200, bbox_inches='tight', facecolor='white')
