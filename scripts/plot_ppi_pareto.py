@@ -120,10 +120,6 @@ def main():
     ax.tick_params(colors=MUTED, labelsize=8)
     ax.legend(frameon=False, fontsize=9, loc='lower right', labelcolor=INK)
 
-    fig.text(0.01, 0.005,
-             'p₂ is the fraction of edges kept.  2 seeds, r=1, L=2, K=5, '
-             'p₁=0.01; ε grows with the number of training steps.',
-             fontsize=8, color=MUTED)
     fig.tight_layout(rect=(0, 0.03, 1, 1))
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     fig.savefig(args.out, dpi=200, bbox_inches='tight', facecolor='white')
