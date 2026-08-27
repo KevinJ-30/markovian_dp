@@ -78,8 +78,7 @@ def main():
         ax.plot(xs, ys, '-', color=P2_COLORS.get(p2, INK), linewidth=2,
                 zorder=3, label=f'p₂ = {p2:g}')
 
-    for val, ls, lbl, dy in ((a.ceiling, (0, (5, 4)), a.ceiling_label, 4),
-                             (a.floor, (0, (2, 3)), a.floor_label, -11)):
+    for val, ls, lbl, dy in ((a.ceiling, (0, (5, 4)), a.ceiling_label, 4),):
         if val is None:
             continue
         ax.axhline(val, color=MUTED, linestyle=ls, linewidth=1.2, zorder=1)
