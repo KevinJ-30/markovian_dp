@@ -29,14 +29,19 @@
 set -e
 cd $SLURM_SUBMIT_DIR
 
-# ICE has no separate project space; results (small CSVs) go to persistent
-# $HOME, while the venv and dataset live in the larger scratch.
-PROJECT=${PROJECT:-$HOME/markovian_dp_results}
+# ICE $HOME has a hard quota that fills up; everything writes to scratch, which
+# is the large filesystem where the repo and venv already live.  Copy results
+# off if scratch is periodically purged.
 SCRATCH=${SCRATCH:-$HOME/scratch}
+PROJECT=${PROJECT:-$SCRATCH/markovian_dp_results}
 
 export FACEBOOK_DATA_ROOT=$SCRATCH/data/facebook100
 source $SCRATCH/venvs/markovian/bin/activate
 export OMP_NUM_THREADS=1
+# Keep every cache off the quota-limited home directory.
+export TORCH_HOME=$SCRATCH/.torch
+export MPLCONFIGDIR=$SCRATCH/.mpl
+export XDG_CACHE_HOME=$SCRATCH/.cache
 
 OUT_ROOT=$PROJECT/results/facebook
 PY="python -u"
