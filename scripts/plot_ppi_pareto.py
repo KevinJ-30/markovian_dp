@@ -100,13 +100,8 @@ def main():
                 xycoords=('axes fraction', 'data'), textcoords='offset points',
                 xytext=(0, -11), color=MUTED, fontsize=8)
 
-    ax.set_xscale('log')
-    allx = [e for pts in curves.values() for e, _ in pts]
-    ticks = [t for t in (0.1, 0.3, 1, 3, 10, 30)
-             if min(allx) * 0.9 <= t <= max(allx) * 1.1]
-    ax.xaxis.set_major_locator(FixedLocator(ticks))
-    ax.xaxis.set_major_formatter(FixedFormatter([f'{t:g}' for t in ticks]))
-    ax.xaxis.set_minor_formatter(NullFormatter())
+    ax.set_xlim(0, 10)
+    ax.set_xticks([0, 2, 4, 6, 8, 10])
     ax.set_xlabel('privacy budget  ε   (δ = 10⁻⁶)', fontsize=9, color=INK)
     ax.set_ylabel(ref['label'], fontsize=9, color=INK)
     ax.set_title('PPI: privacy–utility tradeoff by sparsification level',

@@ -100,14 +100,8 @@ def main():
                     textcoords='offset points', xytext=(0, -11),
                     color=MUTED, fontsize=8)
 
-        # Log x: epsilon spans ~40x.  Explicit decade-ish ticks with the
-        # minor labels suppressed — the default log formatter collides.
-        ax.set_xscale('log')
-        ticks = [t for t in (0.1, 0.2, 0.5, 1.0, 2.0, 5.0)
-                 if lo_x * 0.9 <= t <= hi_x * 1.1]
-        ax.xaxis.set_major_locator(FixedLocator(ticks))
-        ax.xaxis.set_major_formatter(FixedFormatter([f'{t:g}' for t in ticks]))
-        ax.xaxis.set_minor_formatter(NullFormatter())
+        ax.set_xlim(0, 10)
+        ax.set_xticks([0, 2, 4, 6, 8, 10])
         ax.set_ylim(*ref['ylim'])
         ax.set_xlabel('privacy budget  ε   (δ = 10⁻⁶)', fontsize=9, color=INK)
         ax.set_title(ref['title'], fontsize=11, color=INK, loc='left', pad=8)
