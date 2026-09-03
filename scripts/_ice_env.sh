@@ -48,6 +48,12 @@ PY=${PY:-python}
 DATA_ROOT=${DATA_ROOT:-$SCRATCH/data}
 CACHE_ROOT=${CACHE_ROOT:-$SCRATCH/.cache_markovian}
 
+# ~/.local/lib/python3.10/site-packages holds a BROKEN torch (verified
+# 2026-09-03: libtorch_global_deps.so missing).  User-site can shadow a venv, so
+# a job that picked it up would die on `import torch` with a confusing dlopen
+# error rather than anything about this project.  Shut user-site out entirely.
+export PYTHONNOUSERSITE=1
+
 mkdir -p "$DATA_ROOT" "$CACHE_ROOT"
 
 export PPI_DATA_ROOT=${PPI_DATA_ROOT:-$DATA_ROOT/PPI}
@@ -69,13 +75,20 @@ echo "  threads    = $OMP_NUM_THREADS"
 # Preflight.  dp_accounting is the one most likely to be missing: it is only
 # needed by the accountant, so a torch-only env passes every other check and
 # then fails at the first calibration call.
-$PY - <<'PREFLIGHT' || { echo "FATAL: preflight failed (see above)" >&2; exit 1; }
-import importlib, sys
+# -u and a per-module line: a cold torch/torch_geometric import off the shared
+# NFS home can take minutes on a login node, and a silent wait is
+# indistinguishable from a hang.
+$PY -u - <<'PREFLIGHT' || { echo "FATAL: preflight failed (see above)" >&2; exit 1; }
+import importlib, sys, time
 missing = []
-for mod in ('torch', 'torch_geometric', 'numpy', 'scipy', 'dp_accounting'):
+for mod in ('numpy', 'scipy', 'dp_accounting', 'torch', 'torch_geometric'):
+    t0 = time.time()
+    print(f"  importing {mod:<16}", end='', flush=True)
     try:
         importlib.import_module(mod)
+        print(f" ok ({time.time() - t0:.1f}s)")
     except Exception as exc:
+        print(f" FAILED ({type(exc).__name__})")
         missing.append(f"{mod}: {type(exc).__name__}: {exc}")
 if missing:
     print("missing/broken imports:", file=sys.stderr)
@@ -89,7 +102,7 @@ PREFLIGHT
 # The accountant must import and reproduce a known value, or every epsilon this
 # job reports is suspect.  7.2143 is the facebook cell
 # (p1=0.013, p2=1, r=1, K=5, sigma=5, T=500, delta=1e-6, grid=1e-4).
-$PY - <<'REGRESSION' || { echo "FATAL: accountant regression failed" >&2; exit 1; }
+$PY -u - <<'REGRESSION' || { echo "FATAL: accountant regression failed" >&2; exit 1; }
 import sys
 sys.path.insert(0, '.')
 from src.sparse.accounting import sparsegnn_substitution_epsilon as EPS
