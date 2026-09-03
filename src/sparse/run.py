@@ -226,13 +226,25 @@ def parse_args():
                         "K_in (=K_out) and keeps both arcs of every surviving "
                         "edge; 'auto' picks undirected iff the graph is "
                         "symmetric and K_in == K_out")
-    p.add_argument('--eval_graph', choices=['full', 'train'], default='full',
-                   help="graph for `evaluate`: 'full' = data.edge_index "
-                        "(uncapped, unfiltered — the deployment view; for "
+    p.add_argument('--cap_seed', type=int, default=None,
+                   help='RNG seed for the degree cap.  Default (unset) uses the '
+                        'run seed, so each --seed trains on its own capped '
+                        'graph and the reported spread includes the cap as a '
+                        'source of variance.  Pin it to an int to hold the '
+                        'graph fixed across seeds (isolating model/sampling/'
+                        'noise variance instead).')
+    p.add_argument('--eval_graph', choices=['auto', 'full', 'train'],
+                   default='auto',
+                   help="graph for `evaluate`.  'auto' (default) = 'train' for "
+                        "a transductive run and 'full' for an inductive one: "
+                        "transductive inference happens on the same graph the "
+                        "model trained on, while an inductive model is scored "
+                        "on the unprocessed full graph it has never seen.  "
+                        "'full' = data.edge_index (uncapped, unfiltered; for "
                         "RelBench the test-cutoff graph); 'train' = the exact "
                         "training graph (inductive-filtered, deduplicated, "
-                        "capped), so utility is measured on what the model "
-                        "was trained on")
+                        "capped).  The other graph's metrics are always "
+                        "recorded alongside under the *_alt columns.")
     # General
     p.add_argument('--track_every', type=int, default=0,
                    help='if >0, evaluate every this many steps and write one '
@@ -252,6 +264,13 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.eval_graph == 'auto':
+        # Transductive: score on the graph the model actually trained on (capped,
+        # deduplicated) — the model never saw a node with degree > K, so scoring
+        # it on the uncapped graph measures it off-distribution.  Inductive: the
+        # whole point is generalizing to unseen nodes, so score on the
+        # unprocessed full graph.
+        args.eval_graph = 'full' if args.inductive else 'train'
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(args.out_dir, exist_ok=True)
     tag = '_dp' if args.dp else ''
@@ -268,6 +287,8 @@ def main():
           f"direction={args.direction}  aggr={args.aggr}")
     print(f"  p1={args.p1}  p2={args.p2}  r={args.r}  sigma={sigmas}  T={args.T}  "
           f"L={args.num_layers}  dp={args.dp}  seeds={args.seeds}")
+    print(f"  inductive={args.inductive}  eval_graph={args.eval_graph}  "
+          f"roots_from={args.roots_from}")
     print(f"  sweep: {len(grid)} (p1,p2,r,sigma) combo(s) x {args.seeds} seed(s)")
     print('='*66)
 
@@ -321,62 +342,84 @@ def main():
     # table with two foreign keys to the same parent row cannot break the
     # assumption silently.
     n_nodes = int(data.num_nodes)
-    K_in, K_out = args.K_in, args.K_out if args.K_out is not None else args.K_in
+    K_in_req = args.K_in
+    K_out_req = args.K_out if args.K_out is not None else args.K_in
+    raw_train_ei = edge_index
 
-    def _simplify_and_cap(ei, label):
+    def _simplify_and_cap(ei, label, cap_seed):
         """Deduplicate arcs, then enforce the degree bound."""
         n_raw = ei.size(1)
         ei = dedup_arcs(ei, n_nodes)
         if ei.size(1) < n_raw and label:
             print(f"  removed {n_raw - ei.size(1)} parallel arc(s): "
                   f"{n_raw} -> {ei.size(1)} (simple-graph assumption)")
-        if K_in is None:
+        if K_in_req is None:
             return ei, ''
         before = max_degrees(ei, n_nodes)
-        cap_gen = torch.Generator().manual_seed(12345)
+        cap_gen = torch.Generator().manual_seed(int(cap_seed))
         mode = args.cap_mode
         if mode == 'auto':
-            mode = ('undirected' if K_in == K_out and
+            mode = ('undirected' if K_in_req == K_out_req and
                     edge_set_is_symmetric(ei, n_nodes) else 'directed')
         if mode == 'undirected':
-            if K_in != K_out:
+            if K_in_req != K_out_req:
                 raise SystemExit("--cap_mode undirected needs K_in == K_out")
-            ei = cap_degrees_undirected(ei, n_nodes, K_in, generator=cap_gen)
+            ei = cap_degrees_undirected(ei, n_nodes, K_in_req, generator=cap_gen)
         else:
             # On a symmetric graph this caps the two arc directions
             # independently and so destroys edge symmetry (~2/3 of surviving
             # arcs lose their reverse at K=5); that is why 'auto' prefers
             # 'undirected' there.
-            ei = cap_degrees(ei, n_nodes, K_in=K_in, K_out=K_out,
+            ei = cap_degrees(ei, n_nodes, K_in=K_in_req, K_out=K_out_req,
                              generator=cap_gen)
         if label:
-            print(f"  degree cap K_in={K_in} K_out={K_out} (mode={mode}) "
-                  f"[{label}]: max (in,out) {before} -> "
-                  f"{max_degrees(ei, n_nodes)}, edges {n_raw} -> {ei.size(1)}")
+            print(f"  degree cap K_in={K_in_req} K_out={K_out_req} "
+                  f"(mode={mode}, cap_seed={cap_seed}) [{label}]: "
+                  f"max (in,out) {before} -> {max_degrees(ei, n_nodes)}, "
+                  f"edges {n_raw} -> {ei.size(1)}")
         return ei, mode
 
-    edge_index, cap_mode = _simplify_and_cap(edge_index, 'training graph')
+    def _build_graphs(cap_seed, label):
+        """Cap the graph at `cap_seed` and derive everything that depends on it.
 
-    # Reference graph for the second set of metrics: capped but NOT
-    # split-filtered.  Filtering would leave held-out nodes with no edges at
-    # all (on PPI their mean in-degree drops 29.3 -> 0), so the comparison has
-    # to isolate the cap from the inductive filter.
-    if args.inductive and K_in is not None:
-        eval_capped_ei, _ = _simplify_and_cap(data.edge_index, '')
+        The capped graph is a random draw, so it belongs inside the seed loop:
+        holding it fixed makes every seed train on the same graph and hides the
+        cap's contribution to run-to-run variance.
+        """
+        train_ei, mode = _simplify_and_cap(raw_train_ei, label, cap_seed)
+        # Reference graph for the second set of metrics: capped but NOT
+        # split-filtered.  Filtering would leave held-out nodes with no edges at
+        # all (on PPI their mean in-degree drops 29.3 -> 0), so the comparison
+        # has to isolate the cap from the inductive filter.
+        if args.inductive and K_in_req is not None:
+            eval_capped, _ = _simplify_and_cap(data.edge_index, '', cap_seed)
+        else:
+            eval_capped = train_ei
+        k_in, k_out = K_in_req, K_out_req
+        if k_in is None and args.dp:
+            if label:
+                print("  WARNING: --dp without --K_in — the degree-bound "
+                      "assumption (Assumption 5.2) is not enforced; post-hoc "
+                      "epsilon will use the graph's raw max degrees.")
+            k_in, k_out = max_degrees(train_ei, n_nodes)
+        achieved = max_degrees(train_ei, n_nodes)
+        return {'train_ei': train_ei, 'eval_capped': eval_capped,
+                'cap_mode': mode, 'K_in': k_in, 'K_out': k_out,
+                'cap_seed': cap_seed, 'achieved': achieved,
+                'adj': build_adjacency(train_ei, n_nodes,
+                                       direction=args.direction)}
+
+    # One capped graph per seed, unless --cap_seed pins it (which reproduces the
+    # old behaviour: identical graph for every seed, so the reported spread
+    # isolates model/sampling/noise variance from the cap's).
+    if args.cap_seed is None:
+        graphs = {s: _build_graphs(s, 'training graph' if s == 0 else '')
+                  for s in range(args.seeds)}
     else:
-        eval_capped_ei = edge_index
+        shared = _build_graphs(args.cap_seed, 'training graph')
+        graphs = {s: shared for s in range(args.seeds)}
 
-    if K_in is None:
-        if args.dp:
-            print("  WARNING: --dp without --K_in — the degree-bound "
-                  "accounting assumption (Assumption 3.1 / 6.2) is not "
-                  "enforced; post-hoc epsilon will use the graph's raw max "
-                  "degrees.")
-            K_in, K_out = max_degrees(edge_index, int(data.num_nodes))
-
-    # The adjacency is deterministic; build once and reuse across all runs.
-    adj = build_adjacency(edge_index, int(data.num_nodes),
-                          direction=args.direction)
+    adj = graphs[0]['adj']          # for the subgraph-size report only
 
     candidate_nodes = None
     if args.roots_from == 'train':
@@ -407,6 +450,14 @@ def main():
                     'direction', 'p1', 'p2', 'r', 'sigma', 'clip', 'K_in',
                     'K_out', 'cap_mode', 'eval_graph', 'optimizer', 'lr',
                     'momentum', 'T', 'L', 'dp', 'seed', 'step',
+                    # Provenance: everything else needed to reproduce a row.
+                    # cap_seed is per-row because the cap now follows the run
+                    # seed; K_*_achieved are the capped graph's actual max
+                    # degrees, which can sit below the requested K_in/K_out
+                    # (the accountant uses the requested, i.e. conservative,
+                    # values).
+                    'roots_from', 'hidden', 'dropout', 'weight_decay', 'seeds',
+                    'cap_seed', 'K_in_achieved', 'K_out_achieved',
                     'train_acc', 'val_acc', 'test_acc', 'trivial_baseline',
                     # Secondary, threshold-free metric where the mechanism
                     # reports one (multilabel).  Blank otherwise.
@@ -424,6 +475,7 @@ def main():
             tests, vals = [], []
             for seed in range(args.seeds):
                 _set_seed(seed)
+                gph = graphs[seed]
                 Mechanism = _MECHANISMS[args.model]
                 extra = {} if args.model == 'mlp' else {'aggr': args.aggr}
                 mech = Mechanism(
@@ -432,17 +484,17 @@ def main():
                     dropout=args.dropout, device=device, **extra,
                 )
                 if args.eval_graph == 'train':
-                    mech.eval_edge_index = edge_index.to(device)
+                    mech.eval_edge_index = gph['train_ei'].to(device)
                     alt_ei = data.edge_index                  # uncapped
                 else:
-                    alt_ei = eval_capped_ei.to(device)        # capped
+                    alt_ei = gph['eval_capped'].to(device)    # capped
                 opt_kind = (args.optimizer if args.optimizer != 'auto'
                             else ('sgd' if args.dp else 'adam'))
                 mech.build_optimizer(lr=args.lr, weight_decay=args.weight_decay,
                                      kind=opt_kind, momentum=args.momentum)
 
                 accs = train_sparse_gnn(
-                    mech, data, adj=adj, direction=args.direction,
+                    mech, data, adj=gph['adj'], direction=args.direction,
                     p1=p1, p2=p2, r=r, T=args.T,
                     candidate_nodes=candidate_nodes,
                     dp=args.dp, clip=args.clip, sigma=sigma,
@@ -461,11 +513,15 @@ def main():
                                 '' if args.model == 'mlp' else args.aggr,
                                 mech.metric_name, args.inductive,
                                 args.direction, p1, p2, r, sigma, args.clip,
-                                K_in if K_in is not None else '',
-                                K_out if K_out is not None else '',
-                                cap_mode, args.eval_graph,
+                                gph['K_in'] if gph['K_in'] is not None else '',
+                                gph['K_out'] if gph['K_out'] is not None else '',
+                                gph['cap_mode'], args.eval_graph,
                                 opt_kind, args.lr, args.momentum,
                                 args.T, args.num_layers, args.dp, seed, step,
+                                args.roots_from, args.hidden, args.dropout,
+                                args.weight_decay, args.seeds,
+                                gph['cap_seed'], gph['achieved'][0],
+                                gph['achieved'][1],
                                 f"{m['train']:.5f}", f"{m['val']:.5f}",
                                 f"{m['test']:.5f}", f"{trivial:.5f}",
                                 *(f"{m[k]:.5f}" if k in m else ''

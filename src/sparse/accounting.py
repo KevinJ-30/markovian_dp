@@ -25,6 +25,7 @@ denominator mass is num_mass * exp(-loss) <= the true mass, and all trimmed
 mass becomes an infinite-loss outcome.
 """
 
+from dataclasses import asdict, dataclass
 import math
 from typing import List, Optional, Sequence, Tuple
 
@@ -229,10 +230,8 @@ def _pld_from_fibers(
 
 # ══ epsilon entry points ══════════════════════════════════════════════════════
 
-def _substitution_pld(p1, p2, r, K_in, K_out, sigma, direction, grid,
-                      n_sigma, atoms_per_sigma):
-    """Single-step PLD for the substitution pair (Thm 6.4 / Thm 1-2)."""
-    pi = sparsegnn_mixture_weights(p1, p2, r, K_in, K_out, direction=direction)
+def _substitution_pld_from_weights(pi, sigma, grid, n_sigma, atoms_per_sigma):
+    """Single-step substitution PLD from already-prepared mixture weights."""
     kept = np.flatnonzero(pi >= _COMPONENT_MASS_FLOOR)
     weights = [float(pi[k]) for k in kept]
     p_means = [-2.0 * float(k) for k in kept]
@@ -240,6 +239,14 @@ def _substitution_pld(p1, p2, r, K_in, K_out, sigma, direction, grid,
     fibers = [(1.0, p_means, weights, q_means, weights)]
     return _pld_from_fibers(fibers, sigma, discretization=grid,
                             n_sigma=n_sigma, atoms_per_sigma=atoms_per_sigma)
+
+
+def _substitution_pld(p1, p2, r, K_in, K_out, sigma, direction, grid,
+                      n_sigma, atoms_per_sigma):
+    """Single-step PLD for the substitution pair (Thm 6.4 / Thm 1-2)."""
+    pi = sparsegnn_mixture_weights(p1, p2, r, K_in, K_out, direction=direction)
+    return _substitution_pld_from_weights(
+        pi, sigma, grid, n_sigma, atoms_per_sigma)
 
 
 def _compose_schedule(base_plds, steps, eval_fn):
@@ -314,9 +321,8 @@ def sparsegnn_substitution_epsilon(
     return pld.self_compose(steps).get_epsilon_for_delta(delta)
 
 
-def _thm4_plds(p1, p2, r, K_in, K_out, sigma, grid, n_sigma, atoms_per_sigma):
-    """Single-step PLDs (insertion direction, removal direction) for Thm 4.5."""
-    pi = thm4_fiber_weights(p1, p2, r, K_in, K_out)
+def _thm4_plds_from_weights(pi, p1, sigma, grid, n_sigma, atoms_per_sigma):
+    """Theorem 4.5 PLDs from already-prepared marked-mixture weights."""
     kept = [(j, float(pij)) for j, pij in enumerate(pi)
             if pij >= _COMPONENT_MASS_FLOOR]
     plds = []
@@ -331,6 +337,13 @@ def _thm4_plds(p1, p2, r, K_in, K_out, sigma, grid, n_sigma, atoms_per_sigma):
                                      n_sigma=n_sigma,
                                      atoms_per_sigma=atoms_per_sigma))
     return plds
+
+
+def _thm4_plds(p1, p2, r, K_in, K_out, sigma, grid, n_sigma, atoms_per_sigma):
+    """Single-step PLDs (insertion direction, removal direction) for Thm 4.5."""
+    pi = thm4_fiber_weights(p1, p2, r, K_in, K_out)
+    return _thm4_plds_from_weights(
+        pi, p1, sigma, grid, n_sigma, atoms_per_sigma)
 
 
 def sparsegnn_thm4_epsilon_schedule(
@@ -378,6 +391,197 @@ def sparsegnn_thm4_epsilon(
                       atoms_per_sigma)
     return max(p.self_compose(steps).get_epsilon_for_delta(delta)
                for p in plds)
+
+
+def resolve_sparsegnn_theorem(direction: str, theorem: str = "auto") -> str:
+    """Resolve the applicable SparseGNN dominating-pair theorem selector."""
+    if direction not in ("in", "out"):
+        raise ValueError(f"direction must be 'in' or 'out', got {direction!r}")
+    if theorem not in ("auto", "substitution", "thm45"):
+        raise ValueError(
+            "theorem must be 'auto', 'substitution', or 'thm45', "
+            f"got {theorem!r}")
+    resolved = "substitution" if theorem == "auto" and direction == "in" else theorem
+    if theorem == "auto" and direction == "out":
+        resolved = "thm45"
+    if resolved == "thm45" and direction != "out":
+        raise ValueError(
+            "Theorem 4.5 is stated for out-expansion (Algorithm 4) only; "
+            "use theorem='substitution' for in-expansion.")
+    return resolved
+
+
+def sparsegnn_theorem_label(direction: str, theorem: str = "auto") -> str:
+    """Reporting label for the selected applicable SparseGNN theorem."""
+    resolved = resolve_sparsegnn_theorem(direction, theorem)
+    if resolved == "thm45":
+        return "thm4.5-insertion-removal"
+    return ("thm6.4-substitution" if direction == "in"
+            else "thm1.2-substitution")
+
+
+def sparsegnn_epsilon_schedule(
+    p1: float,
+    p2: float,
+    r: int,
+    K_in: int,
+    sigma: float,
+    steps,
+    delta: float,
+    K_out: Optional[int] = None,
+    direction: str = "in",
+    theorem: str = "auto",
+    grid: float = 1e-4,
+    n_sigma: float = 10.0,
+    atoms_per_sigma: float = 400.0,
+):
+    """Checkpoint epsilon schedule under the selected applicable theorem."""
+    if resolve_sparsegnn_theorem(direction, theorem) == "thm45":
+        return sparsegnn_thm4_epsilon_schedule(
+            p1, p2, r, K_in, sigma, steps, delta, K_out=K_out, grid=grid,
+            n_sigma=n_sigma, atoms_per_sigma=atoms_per_sigma)
+    return sparsegnn_substitution_epsilon_schedule(
+        p1, p2, r, K_in, sigma, steps, delta, K_out=K_out,
+        direction=direction, grid=grid, n_sigma=n_sigma,
+        atoms_per_sigma=atoms_per_sigma)
+
+
+def sparsegnn_epsilon(
+    p1: float,
+    p2: float,
+    r: int,
+    K_in: int,
+    sigma: float,
+    steps: int,
+    delta: float,
+    K_out: Optional[int] = None,
+    direction: str = "in",
+    theorem: str = "auto",
+    grid: float = 1e-4,
+    n_sigma: float = 10.0,
+    atoms_per_sigma: float = 400.0,
+) -> float:
+    """Final-iterate epsilon under the selected applicable theorem."""
+    if resolve_sparsegnn_theorem(direction, theorem) == "thm45":
+        return sparsegnn_thm4_epsilon(
+            p1, p2, r, K_in, sigma, steps, delta, K_out=K_out, grid=grid,
+            n_sigma=n_sigma, atoms_per_sigma=atoms_per_sigma)
+    return sparsegnn_substitution_epsilon(
+        p1, p2, r, K_in, sigma, steps, delta, K_out=K_out,
+        direction=direction, grid=grid, n_sigma=n_sigma,
+        atoms_per_sigma=atoms_per_sigma)
+
+
+@dataclass(frozen=True)
+class SparseGNNNoiseCalibration:
+    """Noise calibration from a certified SparseGNN PLD inversion."""
+
+    noise_multiplier: float
+    noise_std: float
+    noise_variance: float
+    epsilon: float
+    target_epsilon: float
+    delta: float
+    theorem: str
+    evaluations: int
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+def _positive_finite(name: str, value: float) -> float:
+    value = float(value)
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError(f"{name} must be finite and positive")
+    return value
+
+
+def calibrate_sparsegnn_noise(
+    *, target_epsilon: float, target_delta: float,
+    p1: float, p2: float, r: int, K_in: int, K_out: int,
+    steps: int, clip: float = 1.0, direction: str = "in",
+    theorem: str = "auto", grid: float = 1e-4,
+    sigma_rtol: float = 1e-3, sigma_atol: float = 1e-6,
+    max_sigma: float = 1e6,
+) -> SparseGNNNoiseCalibration:
+    """Find the smallest known-safe multiplier for a SparseGNN privacy budget."""
+    target_epsilon = _positive_finite("target_epsilon", target_epsilon)
+    target_delta = float(target_delta)
+    if not math.isfinite(target_delta) or not 0.0 < target_delta < 1.0:
+        raise ValueError("target_delta must be finite and lie in (0, 1)")
+    if not isinstance(steps, int) or isinstance(steps, bool) or steps < 1:
+        raise ValueError("steps must be a positive integer")
+    clip = _positive_finite("clip", clip)
+    grid = _positive_finite("grid", grid)
+    sigma_rtol = _positive_finite("sigma_rtol", sigma_rtol)
+    sigma_atol = _positive_finite("sigma_atol", sigma_atol)
+    max_sigma = _positive_finite("max_sigma", max_sigma)
+    if max_sigma < 1.0:
+        raise ValueError("max_sigma must be at least 1")
+
+    resolved = resolve_sparsegnn_theorem(direction, theorem)
+    if resolved == "substitution":
+        weights = sparsegnn_mixture_weights(
+            p1, p2, r, K_in, K_out, direction=direction)
+
+        def build(sigma):
+            return _substitution_pld_from_weights(
+                weights, sigma, grid, n_sigma=10.0, atoms_per_sigma=400.0)
+
+        def epsilon_from_pld(pld):
+            return pld.self_compose(steps).get_epsilon_for_delta(target_delta)
+    else:
+        weights = thm4_fiber_weights(p1, p2, r, K_in, K_out)
+
+        def build(sigma):
+            return _thm4_plds_from_weights(
+                weights, p1, sigma, grid, n_sigma=10.0, atoms_per_sigma=400.0)
+
+        def epsilon_from_pld(plds):
+            return max(p.self_compose(steps).get_epsilon_for_delta(target_delta)
+                       for p in plds)
+
+    values = {}
+
+    def epsilon_at(sigma):
+        if sigma not in values:
+            epsilon = float(epsilon_from_pld(build(sigma)))
+            if math.isnan(epsilon):
+                raise RuntimeError(
+                    f"SparseGNN accountant returned NaN at sigma={sigma}")
+            values[sigma] = epsilon
+        return values[sigma]
+
+    low, high = 0.0, 1.0
+    high_epsilon = epsilon_at(high)
+    while math.isinf(high_epsilon) or high_epsilon > target_epsilon:
+        low = high
+        if high >= max_sigma:
+            raise RuntimeError(
+                "failed to bracket a SparseGNN noise multiplier at "
+                f"max_sigma={max_sigma}")
+        high = min(high * 2.0, max_sigma)
+        high_epsilon = epsilon_at(high)
+
+    while high - low > max(sigma_atol, sigma_rtol * high):
+        mid = (low + high) / 2.0
+        mid_epsilon = epsilon_at(mid)
+        if math.isinf(mid_epsilon) or mid_epsilon > target_epsilon:
+            low = mid
+        else:
+            high, high_epsilon = mid, mid_epsilon
+
+    noise_std = high * clip
+    return SparseGNNNoiseCalibration(
+        noise_multiplier=high,
+        noise_std=noise_std,
+        noise_variance=noise_std ** 2,
+        epsilon=high_epsilon,
+        target_epsilon=target_epsilon,
+        delta=target_delta,
+        theorem=sparsegnn_theorem_label(direction, resolved),
+        evaluations=len(values),
+    )
 
 
 def naive_opacus_epsilon(sigma: float, sample_rate: float, steps: int,
