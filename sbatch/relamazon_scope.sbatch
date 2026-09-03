@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -A coc
+#SBATCH -A coc-ice
 #SBATCH -p ice-cpu
 #SBATCH -N1 --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
@@ -40,16 +40,7 @@
 set -u
 cd $SLURM_SUBMIT_DIR
 
-# Env layout copied from sbatch/facebook_tune_ice.sbatch, the proven ICE setup.
-SCRATCH=${SCRATCH:-$HOME/scratch}
-source $SCRATCH/venvs/markovian/bin/activate
-PY=${PY:-python}
-# RelBench caches multi-GB databases; keep them off $HOME.
-export RELBENCH_CACHE_DIR=$SCRATCH/relbench_cache
-export HF_HOME=$SCRATCH/hf_cache
-export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-8}
-export TORCH_HOME=$SCRATCH/.torch MPLCONFIGDIR=$SCRATCH/.mpl \
-       XDG_CACHE_HOME=$SCRATCH/.cache
+source scripts/_ice_env.sh
 
 DS_NAME=${DS_NAME:-rel-amazon}
 TASK=${TASK:-user-churn}
