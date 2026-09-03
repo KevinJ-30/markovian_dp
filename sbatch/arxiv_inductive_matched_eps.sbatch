@@ -1,5 +1,6 @@
 #!/bin/bash
-#SBATCH -A coc-ice
+#SBATCH -Jarx_meps
+#SBATCH -A coc
 #SBATCH -p ice-cpu
 #SBATCH -N1 --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
