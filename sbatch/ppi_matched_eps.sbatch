@@ -83,21 +83,12 @@ run_cell() {   # out_dir, then extra flags
 echo "=== PPI matched-epsilon sweep $(date) ==="
 echo "    hidden=$HIDDEN K=$K T=$T p1=$P1 seeds=$SEEDS delta=n^-1.01 (n=$N_NODES)"
 
-# ── A. DP-GNN arm: r=1, sigma solved per (p2, eps) ────────────────────────────
-echo "--- calibrating GNN arm (r=1) ---"
-$PY scripts/calibrate_grid.py --eps $EPS_LIST --p2 $P2_LIST --p1 $P1 --r 1 \
-    --K $K --T $T --grid $GRID --delta_from_n $N_NODES \
-    > "$OUT_ROOT/sigma_gnn.txt"
-cat "$OUT_ROOT/sigma_gnn.txt"
-
-grep -v '^#' "$OUT_ROOT/sigma_gnn.txt" | while read -r P2 EPS SIGMA; do
-  [ "$SIGMA" = "SKIP" ] && { echo "  [skip] p2=$P2 eps=$EPS unreachable"; continue; }
-  run_cell "$OUT_ROOT/gnn_p2${P2}_eps${EPS}" \
-      --p2 "$P2" --r 1 --K_in $K --K_out $K --dp --sigma "$SIGMA" --lr 0.3
-done
-
-# ── B. DP-MLP arm: the same mechanism at r=0, so the ONLY difference is the
-#      graph.  Its epsilon is far cheaper, hence far less noise at matched eps.
+# ── A. DP-MLP arm FIRST: the same mechanism at r=0, so the ONLY difference from
+#      the GNN arm is the graph.  This is the arm that answers the falsifiable
+#      question (does the graph's edge survive matched-eps noise), it is the
+#      cheaper of the two (r=0, no expansion), and the first run of this script
+#      hit its 8h wallclock before reaching it at all -- 0/4 cells landed.  Runs
+#      first now so a second timeout cannot repeat that.
 echo "--- calibrating blind arm (r=0) ---"
 $PY scripts/calibrate_grid.py --eps $EPS_LIST --p2 1.0 --p1 $P1 --r 0 \
     --K $K --T $T --grid $GRID --delta_from_n $N_NODES \
@@ -108,6 +99,20 @@ grep -v '^#' "$OUT_ROOT/sigma_blind.txt" | while read -r P2 EPS SIGMA; do
   [ "$SIGMA" = "SKIP" ] && continue
   run_cell "$OUT_ROOT/blind_eps${EPS}" \
       --p2 1.0 --r 0 --K_in $K --K_out $K --dp --sigma "$SIGMA" --lr 0.3
+done
+
+# ── B. DP-GNN arm: r=1, sigma solved per (p2, eps).  16 cells; 9 already landed
+#      on the first submission and run_cell's skip-guard picks up from there.
+echo "--- calibrating GNN arm (r=1) ---"
+$PY scripts/calibrate_grid.py --eps $EPS_LIST --p2 $P2_LIST --p1 $P1 --r 1 \
+    --K $K --T $T --grid $GRID --delta_from_n $N_NODES \
+    > "$OUT_ROOT/sigma_gnn.txt"
+cat "$OUT_ROOT/sigma_gnn.txt"
+
+grep -v '^#' "$OUT_ROOT/sigma_gnn.txt" | while read -r P2 EPS SIGMA; do
+  [ "$SIGMA" = "SKIP" ] && { echo "  [skip] p2=$P2 eps=$EPS unreachable"; continue; }
+  run_cell "$OUT_ROOT/gnn_p2${P2}_eps${EPS}" \
+      --p2 "$P2" --r 1 --K_in $K --K_out $K --dp --sigma "$SIGMA" --lr 0.3
 done
 
 echo
