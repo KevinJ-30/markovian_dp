@@ -54,12 +54,26 @@ EPS_LIST="1 2 4 8"
 
 mkdir -p "$OUT_ROOT" results/logs
 
+# relbench is an extra dependency that PPI and arxiv do not need, so the shared
+# preflight in _ice_env.sh does not check for it.  Check here, before the job
+# spends anything, rather than failing inside the loader.
+$PY -c 'import relbench' 2>/dev/null || {
+  echo "FATAL: relbench is not installed in $VENV" >&2
+  echo "       fix:  source $VENV/bin/activate && pip install relbench" >&2
+  exit 1
+}
+
 echo "=== STAGE 0: scope $DS $(date) ==="
-$PY scripts/relbench_scope.py --dataset "$DS_NAME" --task "$TASK" \
-    --batch 512 --T $T --eps $EPS_LIST --r 2 --grid $GRID \
-    > "$OUT_ROOT/scope.env" 2> "$OUT_ROOT/scope.txt"
+if ! $PY scripts/relbench_scope.py --dataset "$DS_NAME" --task "$TASK" \
+        --batch 512 --T $T --eps $EPS_LIST --r 2 --grid $GRID \
+        > "$OUT_ROOT/scope.env" 2> "$OUT_ROOT/scope.txt"; then
+  cat "$OUT_ROOT/scope.txt" >&2
+  echo "FATAL: scoping failed; nothing downstream can run without its p1/K" >&2
+  exit 1
+fi
 cat "$OUT_ROOT/scope.txt"
 eval "$(cat "$OUT_ROOT/scope.env")"
+: "${SCOPE_P1:?scope.env did not define SCOPE_P1}"
 echo "  -> p1=$SCOPE_P1  K_in=$SCOPE_K_IN  K_out=$SCOPE_K_OUT  n=$SCOPE_N_NODES"
 
 # ── STAGE 1: references.  AUROC's floor is 0.5 (chance), so a graph-blind r=0
