@@ -71,7 +71,15 @@ def _encode_table(df: pd.DataFrame, skip_cols: set, max_categories: int
             v[s.isna().to_numpy()] = np.nan
             v = v / (365.25 * 24 * 3600 * 1e9)
         else:
-            if s.nunique(dropna=True) > max_categories:
+            try:
+                n_unique = s.nunique(dropna=True)
+            except (TypeError, ValueError):
+                # Some RelBench tables (e.g. rel-amazon's product categories)
+                # store a list/array per cell, which pandas' hash-based
+                # unique() cannot handle. Same treatment as free text /
+                # identifiers below: drop the column rather than crash.
+                continue
+            if n_unique > max_categories:
                 continue                       # identifier / free text
             codes = pd.Categorical(s).codes    # -1 for NaN
             n_cat = int(codes.max()) + 1
