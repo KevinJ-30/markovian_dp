@@ -25,6 +25,7 @@ denominator mass is num_mass * exp(-loss) <= the true mass, and all trimmed
 mass becomes an infinite-loss outcome.
 """
 
+from dataclasses import asdict, dataclass
 import math
 from dataclasses import asdict, dataclass
 from typing import List, Optional, Sequence, Tuple
@@ -249,6 +250,14 @@ def _substitution_pld(p1, p2, r, K_in, K_out, sigma, direction, grid,
         sigma, grid, n_sigma, atoms_per_sigma)
 
 
+def _substitution_pld(p1, p2, r, K_in, K_out, sigma, direction, grid,
+                      n_sigma, atoms_per_sigma):
+    """Single-step PLD for the substitution pair (Thm 6.4 / Thm 1-2)."""
+    pi = sparsegnn_mixture_weights(p1, p2, r, K_in, K_out, direction=direction)
+    return _substitution_pld_from_weights(
+        pi, sigma, grid, n_sigma, atoms_per_sigma)
+
+
 def _compose_schedule(base_plds, steps, eval_fn):
     """{t: eval_fn(compositions)} over sorted checkpoints.
 
@@ -341,9 +350,9 @@ def _thm4_plds_from_weights(pi, p1, sigma, grid, n_sigma, atoms_per_sigma):
 
 def _thm4_plds(p1, p2, r, K_in, K_out, sigma, grid, n_sigma, atoms_per_sigma):
     """Single-step PLDs (insertion direction, removal direction) for Thm 4.5."""
+    pi = thm4_fiber_weights(p1, p2, r, K_in, K_out)
     return _thm4_plds_from_weights(
-        thm4_fiber_weights(p1, p2, r, K_in, K_out), p1, sigma, grid,
-        n_sigma, atoms_per_sigma)
+        pi, p1, sigma, grid, n_sigma, atoms_per_sigma)
 
 
 def sparsegnn_thm4_epsilon_schedule(
@@ -421,9 +430,19 @@ def sparsegnn_theorem_label(direction: str, theorem: str = "auto") -> str:
 
 
 def sparsegnn_epsilon_schedule(
-    p1: float, p2: float, r: int, K_in: int, sigma: float, steps, delta: float,
-    K_out: Optional[int] = None, direction: str = "in", theorem: str = "auto",
-    grid: float = 1e-4, n_sigma: float = 10.0, atoms_per_sigma: float = 400.0,
+    p1: float,
+    p2: float,
+    r: int,
+    K_in: int,
+    sigma: float,
+    steps,
+    delta: float,
+    K_out: Optional[int] = None,
+    direction: str = "in",
+    theorem: str = "auto",
+    grid: float = 1e-4,
+    n_sigma: float = 10.0,
+    atoms_per_sigma: float = 400.0,
 ):
     """Checkpoint epsilon schedule under the selected applicable theorem."""
     if resolve_sparsegnn_theorem(direction, theorem) == "thm45":
@@ -437,9 +456,18 @@ def sparsegnn_epsilon_schedule(
 
 
 def sparsegnn_epsilon(
-    p1: float, p2: float, r: int, K_in: int, sigma: float, steps: int,
-    delta: float, K_out: Optional[int] = None, direction: str = "in",
-    theorem: str = "auto", grid: float = 1e-4, n_sigma: float = 10.0,
+    p1: float,
+    p2: float,
+    r: int,
+    K_in: int,
+    sigma: float,
+    steps: int,
+    delta: float,
+    K_out: Optional[int] = None,
+    direction: str = "in",
+    theorem: str = "auto",
+    grid: float = 1e-4,
+    n_sigma: float = 10.0,
     atoms_per_sigma: float = 400.0,
 ) -> float:
     """Final-iterate epsilon under the selected applicable theorem."""
@@ -505,23 +533,28 @@ def calibrate_sparsegnn_noise(
         weights = sparsegnn_mixture_weights(
             p1, p2, r, K_in, K_out, direction=direction)
 
-        def epsilon_for_sigma(sigma):
+        def build(sigma):
             return _substitution_pld_from_weights(
-                weights, sigma, grid, 10.0, 400.0).self_compose(
-                    steps).get_epsilon_for_delta(target_delta)
+                weights, sigma, grid, n_sigma=10.0, atoms_per_sigma=400.0)
+
+        def epsilon_from_pld(pld):
+            return pld.self_compose(steps).get_epsilon_for_delta(target_delta)
     else:
         weights = thm4_fiber_weights(p1, p2, r, K_in, K_out)
 
-        def epsilon_for_sigma(sigma):
-            return max(pld.self_compose(steps).get_epsilon_for_delta(target_delta)
-                       for pld in _thm4_plds_from_weights(
-                           weights, p1, sigma, grid, 10.0, 400.0))
+        def build(sigma):
+            return _thm4_plds_from_weights(
+                weights, p1, sigma, grid, n_sigma=10.0, atoms_per_sigma=400.0)
+
+        def epsilon_from_pld(plds):
+            return max(p.self_compose(steps).get_epsilon_for_delta(target_delta)
+                       for p in plds)
 
     values = {}
 
-    def epsilon_at(sigma: float) -> float:
+    def epsilon_at(sigma):
         if sigma not in values:
-            epsilon = float(epsilon_for_sigma(sigma))
+            epsilon = float(epsilon_from_pld(build(sigma)))
             if math.isnan(epsilon):
                 raise RuntimeError(
                     f"SparseGNN accountant returned NaN at sigma={sigma}")

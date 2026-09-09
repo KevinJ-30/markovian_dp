@@ -19,11 +19,13 @@ import torch
 
 
 UPSTREAM_METHODS = {
+
     "progap": {
         "repository": "https://github.com/sisaman/ProGAP",
         "revision": "3ccad59e29e49949b8f0984381a6e6e5d5257cdf",
         "local_source": "third_party/ProGAP",
     },
+
     "heterpoisson": {
         "repository": "https://github.com/zihangxiang/PNPiGNNs",
         "revision": "9a06332147532d0cd163b484c95d4e347ff1c285",

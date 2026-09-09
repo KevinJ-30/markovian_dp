@@ -19,7 +19,7 @@ from collections import defaultdict
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt   # noqa: E402
-from matplotlib.ticker import (FixedFormatter, FixedLocator,   # noqa: E402
+from matplotlib.ticker import (FixedFormatter, FixedLocator, NullLocator,  # noqa: E402
                                NullFormatter)
 
 # Validated categorical slots 1, 2, 3, 7.
@@ -100,13 +100,15 @@ def main():
                 xycoords=('axes fraction', 'data'), textcoords='offset points',
                 xytext=(0, -11), color=MUTED, fontsize=8)
 
-    ax.set_xscale('log')
-    allx = [e for pts in curves.values() for e, _ in pts]
-    ticks = [t for t in (0.1, 0.3, 1, 3, 10, 30)
-             if min(allx) * 0.9 <= t <= max(allx) * 1.1]
-    ax.xaxis.set_major_locator(FixedLocator(ticks))
-    ax.xaxis.set_major_formatter(FixedFormatter([f'{t:g}' for t in ticks]))
-    ax.xaxis.set_minor_formatter(NullFormatter())
+    ax.set_xscale('log', base=2)
+    _allx = [e for pts in curves.values() for e, _ in pts]
+    _lo, _hi = min(_allx), max(_allx)
+    ax.set_xlim(_lo * 0.8, _hi * 1.25)
+    _t = [t for t in (0.0625, 0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64)
+          if _lo * 0.7 <= t <= _hi * 1.4]
+    ax.xaxis.set_major_locator(FixedLocator(_t))
+    ax.xaxis.set_major_formatter(FixedFormatter([f'{v:g}' for v in _t]))
+    ax.xaxis.set_minor_locator(NullLocator())
     ax.set_xlabel('privacy budget  ε   (δ = 10⁻⁶)', fontsize=9, color=INK)
     ax.set_ylabel(ref['label'], fontsize=9, color=INK)
     ax.set_title('PPI: privacy–utility tradeoff by sparsification level',
@@ -120,10 +122,6 @@ def main():
     ax.tick_params(colors=MUTED, labelsize=8)
     ax.legend(frameon=False, fontsize=9, loc='lower right', labelcolor=INK)
 
-    fig.text(0.01, 0.005,
-             'p₂ is the fraction of edges kept.  2 seeds, r=1, L=2, K=5, '
-             'p₁=0.01; ε grows with the number of training steps.',
-             fontsize=8, color=MUTED)
     fig.tight_layout(rect=(0, 0.03, 1, 1))
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     fig.savefig(args.out, dpi=200, bbox_inches='tight', facecolor='white')

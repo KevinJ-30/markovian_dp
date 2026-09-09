@@ -78,11 +78,24 @@ case $_ds in
     P1=0.05; T=900
     CAP=(--K_in 20 --K_out 3)
     ;;
+  facebook)
+    # FB100 UIllinois20, the GAP/ProGAP comparison graph.  Transductive: it is a
+    # single social graph with no natural inductive split, so --inductive is left
+    # off and eval_graph=auto scores on the training graph.  p1 and lr come from
+    # the tuning sweep in sbatch/facebook_tune_ice.sbatch, not the shared
+    # defaults.
+    MODEL=(--aggr mean); BLIND=(--model mlp --r 0)
+    INDUCTIVE=()
+    P1=0.013; T=500
+    CAP=(--K_in 5 --K_out 5)
+    LR_DP=0.3
+    ;;
   reddit)
     MODEL=(--aggr mean); BLIND=(--model mlp --r 0)
     INDUCTIVE=(--inductive)
     P1=0.002; T=500
     CAP=(--K_in 5 --K_out 5)
+    LR_DP=0.3
     ;;
   *)
     # ogbn-arxiv, flickr, and any other single-label transductive graph converted
@@ -100,7 +113,9 @@ SIGMA_GRID=(2.0 5.0 10.0 20.0)
 SEEDS=3
 CLIP=1.0
 LR_NONDP=0.01      # Adam
-LR_DP=1.0          # SGD; the DP path divides the noisy sum by the expected batch
+# SGD; the DP path divides the noisy sum by the expected batch.  Datasets that
+# tuned their own value set it in the case block above, so this is a fallback.
+LR_DP=${LR_DP:-1.0}
 DELTA=${DELTA:-1e-6}
 
 # relbench:<db>/<task> contains characters that are not filename-safe.

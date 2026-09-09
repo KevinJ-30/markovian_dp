@@ -191,7 +191,11 @@ def _load_ppi():
 
 
 def _load_cora_ml():
-    """Load the Cora-ML sparse graph distributed with DPAR."""
+    """Load the Cora-ML sparse graph distributed with DPAR.
+
+    The upstream archive is intentionally used rather than silently substituting
+    Planetoid Cora, which is a different graph and feature matrix.
+    """
     import numpy as np
     import scipy.sparse as sp
     from torch_geometric.data import download_url

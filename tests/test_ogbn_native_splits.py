@@ -1,3 +1,4 @@
+import json
 import sys
 import types
 
@@ -6,12 +7,11 @@ import torch
 from torch_geometric.data import Data
 
 from src.datasets import _load_ogb_node
+from src.experiments.baselines import BaselineConfig, BaselineTrainer
+import src.experiments.dpar as dpar
 from src.experiments.inductive import load_or_create_inductive_split
 import src.experiments.run as experiment_runner
-from src.experiments.baselines import BaselineConfig, BaselineTrainer
-from src.experiments.dpar import DPARMLP
 from src.experiments.upstream import export_partitions
-import json
 
 
 def _native_graph():
@@ -31,6 +31,11 @@ def _native_graph():
     return data
 
 
+def _held_out_class_graph():
+    data = _native_graph()
+    data.y = torch.tensor([0, 1, 2, 2, 2, 2])
+    return data
+
 def test_native_split_preserves_masks_and_removes_cross_edges(tmp_path):
     split = load_or_create_inductive_split(
         _native_graph(), "native-unit", root=tmp_path, seed=7, split_strategy="native"
@@ -49,6 +54,30 @@ def test_native_split_preserves_masks_and_removes_cross_edges(tmp_path):
     ]
 
 
+def test_global_class_space_includes_held_out_labels(monkeypatch, tmp_path):
+    split = load_or_create_inductive_split(
+        _held_out_class_graph(), "held-out-class", root=tmp_path / "splits", split_strategy="native"
+    )
+    assert split.num_classes == 3
+
+    baseline = BaselineTrainer(BaselineConfig(method="mlp", layers=1), "cpu")
+    assert baseline._model(split.train.data, split.num_classes).layers[-1].out_features == 3
+
+    captured = {}
+    dpar_mlp = dpar.DPARMLP
+
+    def capture_dpar_mlp(inputs, classes, hidden, layers, dropout):
+        captured["classes"] = classes
+        return dpar_mlp(inputs, classes, hidden, layers, dropout)
+
+    monkeypatch.setattr(dpar, "DPARMLP", capture_dpar_mlp)
+    dpar.DPARTrainer(dpar.DPARConfig(epochs=1, hidden_size=4, topk=2, batch_size=8, dropout=0.0), "cpu").fit(
+        split
+    )
+    assert captured["classes"] == 3
+
+    manifest = export_partitions(split, tmp_path / "partitions")
+    assert json.loads(manifest.read_text())["num_classes"] == 3
 @pytest.mark.parametrize("case", ["missing", "overlap", "gap", "non_boolean", "wrong_length"])
 def test_native_split_rejects_invalid_masks(tmp_path, case):
     data = _native_graph()
@@ -141,20 +170,3 @@ def test_runner_reports_native_split_strategy(monkeypatch, tmp_path):
         "test": 2,
     }
 
-
-def test_native_split_preserves_global_class_count_for_held_out_class(tmp_path):
-    data = _native_graph()
-    data.y = torch.tensor([0, 1, 2, 0, 1, 2])
-    split = load_or_create_inductive_split(
-        data, "native-held-out-class", root=tmp_path, split_strategy="native")
-
-    assert split.num_classes == 3
-    baseline = BaselineTrainer(
-        BaselineConfig(method="mlp", hidden_size=4, layers=1), device="cpu")
-    assert baseline._model(
-        split.train.data, split.num_classes).layers[-1].out_features == 3
-    assert DPARMLP(
-        split.train.data.x.size(1), split.num_classes, 4, 2, 0.0
-    ).layers[-1].out_features == 3
-    manifest = export_partitions(split, tmp_path / "manifest")
-    assert json.loads(manifest.read_text())["num_classes"] == 3
