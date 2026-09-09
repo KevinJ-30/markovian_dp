@@ -130,6 +130,27 @@ def test_parse_relbench_name():
         parse_relbench_name('relbench:rel-f1')
 
 
+def test_encode_table_skips_unhashable_columns():
+    """rel-amazon's product table stores list/array values per cell (e.g.
+    categories), which pandas' hash-based nunique()/unique() cannot handle
+    and raises TypeError -- reproduces the crash hit scoping rel-amazon on
+    ICE 2026-09-09. Such a column should be dropped like any other
+    unencodable column, not crash the whole table."""
+    import numpy as np
+    import pandas as pd
+    from src.sparse.relbench_data import _encode_table
+
+    df = pd.DataFrame({
+        'id': range(5),
+        'price': [1.0, 2.0, np.nan, 4.0, 5.0],
+        'category': [np.array(['a', 'b']), np.array(['c']), np.array(['a']),
+                     np.array(['d', 'e']), np.array(['a'])],
+    })
+    out = _encode_table(df, skip_cols={'id'}, max_categories=50)
+    assert out.shape == (5, 1)              # only `price` survives
+    assert np.isfinite(out).all()
+
+
 # ── large-graph evaluation ────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("aggr", ["mean", "gcn"])

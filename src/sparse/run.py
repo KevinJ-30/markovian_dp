@@ -25,6 +25,7 @@ from src.sparse.gnn_mechanism import GNNMechanism           # noqa: E402
 from src.sparse.mlp_mechanism import MLPMechanism           # noqa: E402
 from src.sparse.multilabel_mechanism import MultiLabelGNNMechanism  # noqa: E402
 from src.sparse.binary_mechanism import BinaryGNNMechanism  # noqa: E402
+from src.sparse.regression_mechanism import RegressionGNNMechanism  # noqa: E402
 from src.sparse.sparse_expand import (                      # noqa: E402
     build_adjacency, cap_degrees, cap_degrees_undirected, dedup_arcs,
     edge_set_is_symmetric,
@@ -39,7 +40,14 @@ _MECHANISMS = {
     'mlp': MLPMechanism,
     'multilabel_gnn': MultiLabelGNNMechanism,
     'binary_gnn': BinaryGNNMechanism,
+    'regression_gnn': RegressionGNNMechanism,
 }
+
+# metric_name -> whether a larger value is better.  accuracy/micro_f1/auroc are
+# scores (higher = better); mae is a loss (lower = better).  Console sorting and
+# the "below trivial baseline" comparison both need to know which.
+_HIGHER_IS_BETTER = {'accuracy': True, 'micro_f1': True, 'auroc': True,
+                    'mae': False}
 
 
 def _set_seed(seed):
@@ -85,10 +93,15 @@ def trivial_baseline(data, metric):
       accuracy  -> most frequent training class, evaluated on test
       micro_f1  -> predict every label positive: 2p/(1+p) at positive rate p
       auroc     -> 0.5 by definition
+      mae       -> MAE of "always predict the train mean" on test.  Targets are
+                   z-scored on train statistics (relbench_data.load_relbench),
+                   so the train mean is exactly 0 in z-space and this is
+                   mean(|y_test|) * target_std -- see RegressionGNNMechanism.
 
-    Recorded in the CSV as the floor every result must clear.  Note micro_f1's
-    floor is high but has no ranking ability (its AUROC is 0.5), so a model
-    below it may still be learning — compare AUROC too.
+    Recorded in the CSV as the floor every result must clear (for mae, the
+    ceiling every result must undercut -- see _HIGHER_IS_BETTER).  Note
+    micro_f1's floor is high but has no ranking ability (its AUROC is 0.5), so
+    a model below it may still be learning — compare AUROC too.
     """
     import torch as _t
     if metric == "auroc":
@@ -97,6 +110,9 @@ def trivial_baseline(data, metric):
     if metric == "micro_f1":
         p = float(y[te].float().mean())
         return 2 * p / (1 + p) if p > 0 else float("nan")
+    if metric == "mae":
+        target_std = float(getattr(data, 'target_std', 1.0))
+        return float(y[te].view(-1).float().abs().mean()) * target_std
     tr_counts = _t.bincount(y[data.train_mask].view(-1))
     majority = int(tr_counts.argmax())
     return float((y[te].view(-1) == majority).float().mean())
@@ -151,12 +167,16 @@ def parse_args():
     p.add_argument('--dataset', default='citeseer',
                    help='cora | citeseer | pubmed | ...')
     p.add_argument('--model',
-                   choices=['gnn', 'mlp', 'multilabel_gnn', 'binary_gnn'],
+                   choices=['gnn', 'mlp', 'multilabel_gnn', 'binary_gnn',
+                           'regression_gnn'],
                    default='gnn',
                    help="base mechanism g0: 'gnn' (GCN, single-label), 'mlp' "
                         "(graph-blind Stage-0 baseline; use with --r 0), "
-                        "'multilabel_gnn' (BCE + micro-F1, for PPI), or "
-                        "'binary_gnn' (BCE + AUROC, for RelBench entity tasks)")
+                        "'multilabel_gnn' (BCE + micro-F1, for PPI), "
+                        "'binary_gnn' (BCE + AUROC, for RelBench binary entity "
+                        "tasks), or 'regression_gnn' (MSE + MAE/RMSE, for "
+                        "RelBench REGRESSION entity tasks e.g. rel-f1/"
+                        "driver-position, rel-amazon/user-ltv)")
     p.add_argument('--aggr', choices=['mean', 'gcn'], default='mean',
                    help="message-passing aggregator: 'mean' (GraphSAGE) makes "
                         "the rooted-subgraph computation agree EXACTLY with "
@@ -491,6 +511,7 @@ def main():
     _probe = _MECHANISMS[args.model]
     _metric = getattr(_probe, 'metric_name', 'accuracy')
     trivial = trivial_baseline(data, _metric)
+    _better_high = _HIGHER_IS_BETTER.get(_metric, True)
     print(f"  trivial baseline ({_metric}) on test: {trivial:.4f} "
           f"— every result below must clear this")
 
@@ -517,6 +538,14 @@ def main():
                     'cap_seed', 'K_in_achieved', 'K_out_achieved',
                     'train_acc', 'val_acc', 'test_acc', 'trivial_baseline',
                     'train_auroc', 'val_auroc', 'test_auroc',
+                    # Secondary metric for regression (RegressionGNNMechanism
+                    # reports MAE as the primary train/val/test columns above,
+                    # RMSE here).  Blank otherwise.
+                    'train_rmse', 'val_rmse', 'test_rmse',
+                    # Same metrics on the OTHER graph: the training graph when
+                    # eval_graph=full, the full graph when eval_graph=train.
+                    # They differ by the degree cap (and, for inductive runs,
+                    # the split filter), so both are recorded.
                     'train_acc_alt', 'val_acc_alt', 'test_acc_alt',
                     'train_auroc_alt', 'val_auroc_alt', 'test_auroc_alt'])
 
@@ -614,6 +643,8 @@ def main():
                                 *(f"{m[k]:.5f}" if k in m else ''
                                   for k in ('train_auroc', 'val_auroc',
                                             'test_auroc',
+                                            'train_rmse', 'val_rmse',
+                                            'test_rmse',
                                             'train_alt', 'val_alt', 'test_alt',
                                             'train_auroc_alt', 'val_auroc_alt',
                                             'test_auroc_alt'))])
@@ -627,17 +658,20 @@ def main():
             tm, ts = _mean_std(tests)
             vm, vs = _mean_std(vals)
             summary.append((p1, p2, r, sigma, tm, ts, vm, vs))
-            mark = "" if tm > trivial else "   <-- BELOW TRIVIAL BASELINE"
+            beats_trivial = (tm > trivial) if _better_high else (tm < trivial)
+            mark = "" if beats_trivial else "   <-- BELOW TRIVIAL BASELINE"
             print(f"  >> test {tm:.4f} +/- {ts:.4f}   "
                   f"val {vm:.4f} +/- {vs:.4f}{mark}")
 
     os.replace(partial_path, csv_path)
 
-    # Sweep summary table (sorted by test accuracy, best first)
+    # Sweep summary table (sorted by test metric, best first)
     print(f"\n{'='*66}")
     print(f"{'p1':>5} {'p2':>5} {'r':>3} {'sigma':>6} {'test':>16} {'val':>16}")
     print('-'*66)
-    for p1, p2, r, sigma, tm, ts, vm, vs in sorted(summary, key=lambda s: -s[4]):
+    _sort_sign = -1 if _better_high else 1
+    for p1, p2, r, sigma, tm, ts, vm, vs in sorted(
+            summary, key=lambda s: _sort_sign * s[4]):
         print(f"{p1:>5} {p2:>5} {r:>3} {sigma:>6}   {tm:.4f} +/- {ts:.4f}   "
               f"{vm:.4f} +/- {vs:.4f}")
     print(f"\nresults written to {csv_path}")

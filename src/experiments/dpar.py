@@ -51,6 +51,7 @@ class DPARConfig:
     epochs: int = 100
     inference_steps: int = 2
     seed: int = 0
+    multilabel: bool = False
 
 
 class DPARMLP(nn.Module):
@@ -201,6 +202,45 @@ def _accuracy_and_macro_f1(logits: Tensor, labels: Tensor) -> tuple[float, float
     return accuracy, sum(f1s) / len(f1s)
 
 
+def _multilabel_micro_f1(logits: Tensor, labels: Tensor) -> tuple[float, float]:
+    """Micro-F1 over every (node, label) pair, thresholding logits at 0.
+
+    Returned in both slots of the (accuracy, macro_f1) tuple both trainers
+    already unpack: neither "accuracy" nor "macro-F1" means the same thing for
+    a multi-hot target that it does for a single class index.  Micro-F1 is the
+    metric src.sparse.multilabel_mechanism already reports for this exact
+    label shape (PPI's 121 binary functional labels), kept identical here so a
+    baseline and the SparseGNN mechanism are judged the same way.
+    """
+    predictions = (logits > 0).float()
+    labels = labels.float()
+    tp = float((predictions * labels).sum())
+    fp = float((predictions * (1 - labels)).sum())
+    fn = float(((1 - predictions) * labels).sum())
+    denom = 2 * tp + fp + fn
+    micro_f1 = 2 * tp / denom if denom > 0 else float("nan")
+    return micro_f1, micro_f1
+
+
+def _task_loss(logits: Tensor, target: Tensor, multilabel: bool) -> Tensor:
+    """The loss each config's label shape needs -- not a change to either
+    method's private mechanism.
+
+    DPAR's ISTA/PPR/propagation and the plain MLP/GraphSAGE clip-and-noise loop
+    both operate on whatever gradient this loss produces; neither looks at the
+    loss's type.  Swapping softmax cross-entropy for per-label BCE changes what
+    task is being fit, not what either method does with the resulting gradient.
+    """
+    if multilabel:
+        return F.binary_cross_entropy_with_logits(logits, target.float())
+    return F.cross_entropy(logits, target)
+
+
+def _task_metric(logits: Tensor, labels: Tensor, multilabel: bool) -> tuple[float, float]:
+    return (_multilabel_micro_f1(logits, labels) if multilabel
+           else _accuracy_and_macro_f1(logits, labels))
+
+
 def _sample_train_partition(partition: Any, requested_nodes: int | None,
                             generator: torch.Generator, device: torch.device) -> tuple[Any, dict[str, Any]]:
     """Sample the outer DPAR training graph and return its reproducible statistics."""
@@ -235,7 +275,7 @@ class DPARTrainer:
         model.eval()
         with torch.no_grad():
             logits = propagate_logits(model(data.x), data.edge_index, self.config.alpha, self.config.inference_steps)
-        return _accuracy_and_macro_f1(logits, data.y)
+        return _task_metric(logits, data.y, self.config.multilabel)
 
     def fit(self, split: Any) -> dict[str, Any]:
         """Train, choose by validation accuracy, and evaluate the held-out graph."""
@@ -287,7 +327,7 @@ class DPARTrainer:
                 else:
                     optimizer.zero_grad(set_to_none=True)
                     logits = torch.sparse.mm(_select_ppr_rows(ppr, root_indices), model(train_data.x))
-                    F.cross_entropy(logits, train_data.y[root_indices]).backward()
+                    _task_loss(logits, train_data.y[root_indices], effective_config.multilabel).backward()
                     optimizer.step()
             val_accuracy, _ = self._evaluate(model, split.val)
             if val_accuracy > best_val:
@@ -317,8 +357,9 @@ class DPARTrainer:
         logits = model(x)
         root_logits = torch.sparse.mm(_select_ppr_rows(ppr, roots), logits)
         for row, target in zip(root_logits, y[roots]):
-            gradients = torch.autograd.grad(F.cross_entropy(row.unsqueeze(0), target.unsqueeze(0)), parameters,
-                                            retain_graph=True)
+            gradients = torch.autograd.grad(
+                _task_loss(row.unsqueeze(0), target.unsqueeze(0), config.multilabel),
+                parameters, retain_graph=True)
             norm = torch.sqrt(sum(gradient.square().sum() for gradient in gradients)).clamp_min(1e-12)
             scale = min(1.0, config.sgd_clip / float(norm))
             for accumulator, gradient in zip(clipped, gradients):

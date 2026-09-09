@@ -1,6 +1,6 @@
 """
-Meeting figures, 2026-09-03: facebook (local, complete), PPI (ICE, partial —
-wallclock exceeded), ogbn-arxiv inductive (ICE, complete).
+Meeting figures, 2026-09-03: facebook (local, complete), PPI (ICE, complete),
+ogbn-arxiv inductive (ICE, complete).
 
     python scripts/_meeting_figures_20260903.py
 
@@ -120,7 +120,8 @@ def load_matched_frontier(root, gnn_glob_csv, blind_glob_csv=None):
 
 
 def plot_frontier(gnn, blind, ceiling, ceiling_label, title, out_name,
-                  ylim=None, blind_ceiling=None, blind_ceiling_label=None):
+                  ylim=None, blind_ceiling=None, blind_ceiling_label=None,
+                  ylabel='test accuracy'):
     fig, ax = plt.subplots(figsize=(7.0, 4.5))
     all_eps = [e for pts in gnn.values() for e, _ in pts] + list(blind.keys())
 
@@ -162,7 +163,7 @@ def plot_frontier(gnn, blind, ceiling, ceiling_label, title, out_name,
         title = title + '\n(off-scale: ' + '; '.join(omitted) + ')'
 
     ax.set_xlabel('privacy budget  ε', fontsize=9, color=INK)
-    ax.set_ylabel('test accuracy', fontsize=9, color=INK)
+    ax.set_ylabel(ylabel, fontsize=9, color=INK)
     ax.set_title(title, fontsize=12, color=INK, loc='left', pad=10)
     _style_axes(ax)
     ax.legend(frameon=False, fontsize=9, loc='lower right', labelcolor=INK)
@@ -170,7 +171,7 @@ def plot_frontier(gnn, blind, ceiling, ceiling_label, title, out_name,
 
 
 def plot_grouped_bars(groups, series, title, out_name, ylim=None,
-                      ref_line=None, ref_label=None):
+                      ref_line=None, ref_label=None, ylabel='test accuracy'):
     fig, ax = plt.subplots(figsize=(7.0, 4.3))
     n_groups, n_series = len(groups), len(series)
     bar_w = 0.8 / n_series
@@ -195,7 +196,7 @@ def plot_grouped_bars(groups, series, title, out_name, ylim=None,
     ax.set_xticklabels(groups, fontsize=8.5, color=INK)
     if ylim:
         ax.set_ylim(*ylim)
-    ax.set_ylabel('test accuracy', fontsize=9, color=INK)
+    ax.set_ylabel(ylabel, fontsize=9, color=INK)
     ax.set_title(title, fontsize=12, color=INK, loc='left', pad=10)
     _style_axes(ax)
     # Below the axes, not inside it: with a truncated ylim (bars filling most
@@ -299,10 +300,11 @@ plot_grouped_bars(
     [('r = 1', r1_vals, '#2a78d6'), ('r = 2', r2_vals, '#4a3aa7')],
     'PPI: capacity ablation (non-DP, p2=1.0)',
     'ppi_capacity_ablation.png', ylim=(0.40, 0.82),
-    ref_line=blind_acc, ref_label=f'graph-blind (r=0), hidden=256 ({blind_acc:.3f})')
+    ref_line=blind_acc, ref_label=f'graph-blind (r=0), hidden=256 ({blind_acc:.3f})',
+    ylabel='test micro-F1')
 
 # ══════════════════════════════════════════════════════════════════════════
-# 4. PPI — matched-epsilon frontier (PARTIAL: 9/24 cells, blind arm missing)
+# 4. PPI — matched-epsilon frontier (complete: 20/20 cells)
 # ══════════════════════════════════════════════════════════════════════════
 ppi_gnn, ppi_blind = load_matched_frontier(
     'results/ppi_matched_eps', 'gnn_p2*/sparse_gnn_ppi_dp_results.csv',
@@ -311,12 +313,19 @@ _rows = list(csv.DictReader(open('results/ppi_stage1/h256_K5/sparse_gnn_ppi_resu
 _T = max(int(float(r['step'])) for r in _rows)
 _r1 = [float(r['test_acc']) for r in _rows if int(float(r['step'])) == _T and int(float(r['r'])) == 1]
 ppi_ceiling = sum(_r1) / len(_r1)
+_blind_rows = list(csv.DictReader(open('results/ppi_stage1/blind_h256/sparse_gnn_ppi_results.csv')))
+_bT = max(int(float(r['step'])) for r in _blind_rows)
+_b0 = [float(r['test_acc']) for r in _blind_rows if int(float(r['step'])) == _bT]
+ppi_blind_ceiling = sum(_b0) / len(_b0)
 
 plot_frontier(
     ppi_gnn, ppi_blind, ppi_ceiling, f'no privacy, GNN ({ppi_ceiling:.3f})',
-    'PPI: sparsification frontier at matched ε — partial (9/24 cells)\n'
+    'PPI: sparsification frontier at matched ε\n'
     '(hidden=256, K=5, r=1)',
-    'ppi_matched_eps_frontier_partial.png', ylim=(0.35, 0.68))
+    'ppi_matched_eps_frontier.png', ylim=(0.35, 0.68),
+    blind_ceiling=ppi_blind_ceiling,
+    blind_ceiling_label=f'no privacy, blind ({ppi_blind_ceiling:.3f})',
+    ylabel='test micro-F1')
 
 # ══════════════════════════════════════════════════════════════════════════
 # 5. PPI — supplementary: K/p2 trade at matched eps~1.5 (legacy hidden, DP)
@@ -339,7 +348,7 @@ for i, (K, v, p2) in enumerate(zip(xs, ys, (1.0, 0.5, 0.25, 0.1))):
                 xytext=(0, 4), ha='center', fontsize=8, color=MUTED)
 ax.set_ylim(0.40, 0.50)
 ax.set_xlabel('K (K_in = K_out)', fontsize=9, color=INK)
-ax.set_ylabel('test accuracy', fontsize=9, color=INK)
+ax.set_ylabel('test micro-F1', fontsize=9, color=INK)
 ax.set_title(f'PPI: K vs p₂ trade at matched ε≈{sum(eps_seen)/len(eps_seen):.2f}\n'
             '(hidden=64)',
             fontsize=11.5, color=INK, loc='left', pad=10)

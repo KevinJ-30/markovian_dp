@@ -49,11 +49,24 @@ def _num_nodes(data: Any) -> int:
     return int(data.x.size(0))
 
 
-def _num_classes(data: Any) -> int:
-    """Return the categorical class space of the full source graph."""
+def _num_classes(data: Any, multilabel: bool = False) -> int:
+    """Return the label space of the full source graph.
+
+    Single-label (default): the categorical class count, from an integer
+    class-index target.  Multilabel (e.g. PPI's 121 binary functional labels
+    per node): the number of label columns, from a 2-D 0/1 target -- there is
+    no shared "class index" across nodes to take a max over.
+    """
+    if multilabel:
+        if data.y.dim() != 2:
+            raise ValueError(
+                "multilabel targets must be 2-D (num_nodes, num_labels), got "
+                f"shape {tuple(data.y.shape)}")
+        return int(data.y.size(1))
     labels = data.y.detach().cpu().reshape(-1)
     if labels.dtype.is_floating_point:
-        raise ValueError("inductive node classification requires categorical labels")
+        raise ValueError("inductive node classification requires categorical "
+                         "labels (pass multilabel=True for a 0/1 label matrix)")
     return int(labels.max()) + 1
 
 
@@ -170,22 +183,35 @@ def _induce(data: Any, mask: torch.Tensor) -> tuple[Any, torch.Tensor]:
 
 
 def graph_statistics(data: Any) -> dict[str, Any]:
-    """Comparable directed-edge statistics for one already-induced partition."""
+    """Comparable directed-edge statistics for one already-induced partition.
+
+    Multilabel targets (2-D) have no single "class" to distribute over, so
+    their entry reports per-label positive rate instead -- detected from
+    `data.y`'s shape directly, since this is a read-only diagnostic rather
+    than a training-behavior switch.
+    """
     n = _num_nodes(data)
     edge_index = data.edge_index.cpu()
     degree = torch.bincount(edge_index[0], minlength=n) if n else torch.empty(0, dtype=torch.long)
-    labels = data.y.detach().cpu().reshape(-1).to(torch.long)
-    classes, counts = torch.unique(labels, sorted=True, return_counts=True)
     isolated = int((degree == 0).sum())
-    return {
+    stats = {
         "nodes": n,
         "edges": int(edge_index.size(1)),
         "average_degree": float(degree.float().mean()) if n else 0.0,
         "maximum_degree": int(degree.max()) if n else 0,
         "isolated_nodes": isolated,
         "isolated_fraction": isolated / n if n else 0.0,
-        "class_distribution": {str(int(label)): int(count) for label, count in zip(classes, counts)},
     }
+    y = data.y.detach().cpu()
+    if y.dim() == 2:
+        rates = y.float().mean(dim=0) if n else torch.zeros(y.size(1))
+        stats["label_positive_rate"] = {str(i): float(r) for i, r in enumerate(rates)}
+    else:
+        labels = y.reshape(-1).to(torch.long)
+        classes, counts = torch.unique(labels, sorted=True, return_counts=True)
+        stats["class_distribution"] = {str(int(label)): int(count)
+                                       for label, count in zip(classes, counts)}
+    return stats
 
 
 def load_or_create_inductive_split(
@@ -194,6 +220,7 @@ def load_or_create_inductive_split(
     root: str | Path = "data/inductive_splits",
     seed: int = 0,
     split_strategy: Literal["stratified", "native"] = "stratified",
+    multilabel: bool = False,
 ) -> InductiveSplit:
     """Load or atomically define a saved graph-disjoint partition.
 
@@ -201,9 +228,20 @@ def load_or_create_inductive_split(
     Native splits retain validated benchmark-provided masks. The saved payload
     contains global indices only; partitions are reconstructed from the current
     dataset so stale serialized PyG objects never become a compatibility boundary.
+
+    multilabel: the target is a 2-D 0/1 label matrix (e.g. PPI's 121 binary
+        functional labels per node) rather than a single class index.  Requires
+        split_strategy='native': the stratified 60/20/20 policy balances a
+        single per-node class value, which a multi-hot row does not have --
+        inventing a multilabel stratification heuristic here would not be
+        faithful to any published method, so it is refused rather than guessed.
     """
     if split_strategy not in {"stratified", "native"}:
         raise ValueError("split_strategy must be 'stratified' or 'native'")
+    if multilabel and split_strategy != "native":
+        raise ValueError(
+            "multilabel targets require split_strategy='native' -- "
+            "stratified splitting has no single per-node class to balance on")
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     suffix = "-native" if split_strategy == "native" else ""
@@ -241,6 +279,6 @@ def load_or_create_inductive_split(
     return InductiveSplit(
         **partitions,
         masks=masks,
-        num_classes=_num_classes(data),
+        num_classes=_num_classes(data, multilabel=multilabel),
         path=path,
     )

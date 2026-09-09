@@ -53,6 +53,13 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     split_strategy = str(config.get("split_strategy", "stratified"))
     if split_strategy not in {"stratified", "native"}:
         raise ValueError("split_strategy must be 'stratified' or 'native'")
+    # One top-level flag controls both split construction (a multi-hot target
+    # has no single per-node class to build num_classes or a stratified split
+    # from) and the trainer's loss/metric (softmax cross-entropy vs per-label
+    # BCE).  Single source of truth: a config that sets this only once still
+    # gets a consistent split AND a consistent loss, rather than needing the
+    # same flag repeated in "parameters" and risking the two disagreeing.
+    multilabel = bool(config.get("multilabel", False))
     seed = int(config.get("seed", 0))
     device = _device(str(config.get("device", "auto")))
     # Dataset loading and split creation run on CPU. Private preprocessing and
@@ -64,10 +71,13 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
         root=config.get("split_root", "data/inductive_splits"),
         seed=seed,
         split_strategy=split_strategy,
+        multilabel=multilabel,
     )
     method = config["method"]
     options = dict(config.get("parameters", {}))
     options.setdefault("seed", seed)
+    if method in {"dpar", "mlp", "dp_mlp", "graphsage"}:
+        options.setdefault("multilabel", multilabel)
     if method == "dpar":
         result = DPARTrainer(_dataclass_config(DPARConfig, options), device=device).fit(split)
     elif method in {"mlp", "dp_mlp", "graphsage"}:

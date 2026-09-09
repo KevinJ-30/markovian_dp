@@ -6,8 +6,11 @@ configuration (and per checkpoint, for CSVs written with --track_every), and
 writes an augmented copy.  Accounting never touches training.
 
 The expansion orientation recorded in the CSV selects the theorem:
-direction='in' uses Theorem 6.4 (node substitution), direction='out' uses
-Theorem 4.5 (node insertion/removal).
+direction='in' uses Theorem 5.4 (node substitution; numbered Theorem 6.4 in
+manuscript v36), direction='out' uses the node insertion/removal result
+(Theorem 4.5 in v36 — the current theory doc has not restated an out-expansion
+theorem under any number since the incoming-edge orientation rewrite, so this
+direction's accounting is unconfirmed against the latest draft).
 
 Columns added:
 
