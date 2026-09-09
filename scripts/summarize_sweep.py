@@ -16,22 +16,38 @@ import glob
 import os
 
 
-def _curve(path, key):
-    rows = list(csv.DictReader(open(path)))
+def _rows(path):
+    return list(csv.DictReader(open(path)))
+
+
+def _curve(rows, key):
     if not rows or key not in rows[0]:
         return None, None
     by, eps = {}, {}
     for r in rows:
         step = int(float(r.get('step') or r['T']))
         try:
-            by.setdefault(step, []).append(float(r[key]))
-        except ValueError:                       # blank metric column
+            value = float(r[key])              # blank metric column raises
+        except ValueError:
             continue
+        by.setdefault(step, []).append(value)
         if r.get('epsilon'):
             eps[step] = float(r['epsilon'])
     if not by:
         return None, None
     return {t: sum(v) / len(v) for t, v in by.items()}, eps
+
+
+def _lower_is_better(rows, metric_arg):
+    # run.py writes every mechanism's primary metric into a column literally
+    # named test_acc regardless of what it measures -- accuracy for
+    # classification, mae for regression_gnn -- so the --metric column name
+    # cannot tell direction. The CSV's own `metric` field (the mechanism's
+    # real metric name, e.g. "mae"/"accuracy"/"auroc"/"micro_f1") can.
+    declared = (rows[0].get('metric') or '').lower() if rows else ''
+    if declared:
+        return declared in ('mae', 'rmse')
+    return any(tag in metric_arg for tag in ('mae', 'rmse'))
 
 
 def main():
@@ -40,16 +56,6 @@ def main():
     ap.add_argument('sweep_dir')
     ap.add_argument('--metric', default='test_acc')
     args = ap.parse_args()
-
-    # mae/rmse are losses (lower = better); every other metric here (accuracy,
-    # micro_f1, auroc) is a score (higher = better).  Picking "best" with the
-    # wrong direction silently reports the worst checkpoint as the best one.
-    lower_is_better = any(tag in args.metric for tag in ('mae', 'rmse'))
-
-    def pick(curve):
-        if lower_is_better:
-            return min(curve, key=curve.get)
-        return max(curve, key=curve.get)
 
     cells = sorted(d for d in glob.glob(os.path.join(args.sweep_dir, '*'))
                    if os.path.isdir(d))
@@ -64,11 +70,19 @@ def main():
                 or sorted(glob.glob(f'{d}/*_results.csv')))
         if not csvs:
             continue
-        curve, eps = _curve(csvs[0], args.metric)
+        rows = _rows(csvs[0])
+        curve, eps = _curve(rows, args.metric)
         if not curve:
             continue
-        best = pick(curve)
-        au, _ = _curve(csvs[0], 'test_auroc')
+        # mae/rmse are losses (lower = better); every other metric here
+        # (accuracy, micro_f1, auroc) is a score (higher = better).  Picking
+        # "best" with the wrong direction silently reports the worst
+        # checkpoint as the best one.
+        if _lower_is_better(rows, args.metric):
+            best = min(curve, key=curve.get)
+        else:
+            best = max(curve, key=curve.get)
+        au, _ = _curve(rows, 'test_auroc')
         au_s = f"{au[best]:.4f}" if au and best in au else '-'
         eps_s = f"{eps[best]:.3f}" if eps.get(best) else '-'
         print(f"{os.path.basename(d):<24} {curve[best]:>8.4f} {best:>6} "

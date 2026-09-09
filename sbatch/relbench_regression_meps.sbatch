@@ -55,8 +55,13 @@ source "${ENV_SCRIPT:-scripts/_ice_env.sh}"
 
 DS_NAME=${DS_NAME:-rel-f1}
 TASK=${TASK:-driver-position}
+# run.py writes every mechanism's primary metric into a column literally named
+# test_acc regardless of what it measures (accuracy for classification, MAE
+# for regression_gnn -- see run.py's CSV header) -- test_mae does not exist as
+# a column and silently summarizes to nothing.  test_rmse is the one metric
+# that IS its own column, for a secondary read.
 MODEL=${MODEL:-regression_gnn}
-METRIC=${METRIC:-test_mae}
+METRIC=${METRIC:-test_acc}
 DS="relbench:${DS_NAME}/${TASK}"
 OUT_ROOT=${OUT_ROOT:-results/relbench/${DS_NAME//-/}_${TASK//-/}_meps}
 R=${R:-2}
