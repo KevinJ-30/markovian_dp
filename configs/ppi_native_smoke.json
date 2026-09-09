@@ -1,0 +1,17 @@
+{
+  "dataset": "ppi",
+  "method": "mlp",
+  "seed": 0,
+  "device": "cpu",
+  "split_strategy": "native",
+  "split_root": "data/inductive_splits/ppi_native",
+  "multilabel": true,
+  "parameters": {
+    "epochs": 5,
+    "hidden_size": 64,
+    "layers": 2,
+    "dropout": 0.0,
+    "learning_rate": 0.01,
+    "weight_decay": 0.0
+  }
+}

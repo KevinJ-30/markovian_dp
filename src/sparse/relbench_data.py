@@ -29,6 +29,19 @@ window an early row may reach a later one — leakage between training examples
 only, never into val/test.  And rel-f1 has 1353 training rows, enough to
 validate the pipeline but too few for a meaningful epsilon; use a large task
 (rel-hm user-churn, rel-stack user-badge) for DP numbers.
+
+Task types.  RelBench ships REGRESSION, BINARY_CLASSIFICATION,
+MULTICLASS_CLASSIFICATION, MULTILABEL_CLASSIFICATION, and LINK_PREDICTION
+(`relbench.base.TaskType`).  The first three map onto this module's existing
+`y` handling (BinaryGNNMechanism / GNNMechanism) with no change here.
+REGRESSION targets are z-scored on TRAIN-split statistics and the scale
+recorded as `data.target_std` / `dataset.target_std`, for RegressionGNNMechanism
+to un-standardize MAE/RMSE back to the label's original units.
+LINK_PREDICTION is not wired: it predicts a (src, dst) pair rather than a
+single node's label, which does not fit the one-root-one-scalar-loss shape
+every mechanism here assumes (see BaseMechanism.subgraph_loss) — supporting it
+means deciding what SparseExpand roots on for a pair task, which changes the
+accounting's shell structure, not just adding a new mechanism class.
 """
 
 import numpy as np
@@ -215,7 +228,9 @@ def load_relbench(dataset_name: str, task_name: str, *,
         src, dst = np.concatenate([src, dst]), np.concatenate([dst, src])
 
     # ── labels, masks, and the two time-filtered edge sets ────────────────────
-    y = np.zeros(n_nodes, dtype=np.int64)
+    from relbench.base import TaskType
+    is_regression = task.task_type == TaskType.REGRESSION
+    y = np.zeros(n_nodes, dtype=np.float64 if is_regression else np.int64)
     masks = {s: np.zeros(n_nodes, dtype=bool) for s in ('train', 'val', 'test')}
     if root == 'row':
         node_of_row = np.arange(len(rows)) + row_offset
@@ -228,8 +243,22 @@ def load_relbench(dataset_name: str, task_name: str, *,
     for i, split in enumerate(('train', 'val', 'test')):
         sel = (rows['_split'].to_numpy() == i) & (node_of_row >= 0)
         nodes = node_of_row[sel]
-        y[nodes] = labels[sel].astype(np.int64)
+        y[nodes] = labels[sel].astype(y.dtype)
         masks[split][nodes] = True
+
+    # Regression targets are z-scored using TRAIN-split statistics only (val/test
+    # rows never inform the scale a model trains against), and the scale alone
+    # -- not the mean -- is kept: MAE/RMSE are translation-invariant, so
+    # un-standardizing a residual only needs to multiply back by target_std,
+    # and "predict the train mean" is exactly "predict 0" in z-space, which is
+    # what the trivial-baseline computation in run.py relies on.
+    target_std = 1.0
+    if is_regression:
+        train_vals = y[masks['train']]
+        target_std = float(train_vals.std())
+        if target_std <= 0:
+            target_std = 1.0
+        y = y / target_std
 
     train_end = float(rows.loc[rows['_split'] == 0, time_col]
                       .astype('int64').max())
@@ -237,18 +266,22 @@ def load_relbench(dataset_name: str, task_name: str, *,
 
     data = Data(
         x=torch.from_numpy(x),
-        y=torch.from_numpy(y),
+        y=torch.from_numpy(y).float() if is_regression else torch.from_numpy(y),
         edge_index=torch.from_numpy(np.stack([src, dst])).long(),
     )
     data.train_edge_index = torch.from_numpy(
         np.stack([src[edge_ok_train], dst[edge_ok_train]])).long()
     data.node_time = torch.from_numpy(node_time)
+    if is_regression:
+        data.target_std = target_std
     for split in ('train', 'val', 'test'):
         setattr(data, f'{split}_mask', torch.from_numpy(masks[split]))
 
-    num_classes = int(y[masks['train'] | masks['val'] | masks['test']].max()) + 1
+    num_classes = (1 if is_regression else
+                  int(y[masks['train'] | masks['val'] | masks['test']].max()) + 1)
     dataset = _RelBenchDataset(data, total_width, num_classes,
-                               task=task, task_type=str(task.task_type))
+                               task=task, task_type=str(task.task_type),
+                               target_std=target_std)
     return dataset, data
 
 

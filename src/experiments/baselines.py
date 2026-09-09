@@ -11,7 +11,7 @@ import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 
-from .dpar import _accuracy_and_macro_f1
+from .dpar import _task_loss, _task_metric
 from .privacy import DPMLPAccountant
 
 
@@ -29,6 +29,7 @@ class BaselineConfig:
     clip: float = 1.0
     delta: float = 1e-5
     seed: int = 0
+    multilabel: bool = False
 
 
 class MLP(nn.Module):
@@ -99,7 +100,7 @@ class BaselineTrainer:
     def _evaluate(self, model: nn.Module, partition: Any) -> tuple[float, float]:
         data = partition.data.to(self.device)
         model.eval()
-        return _accuracy_and_macro_f1(self._forward(model, data), data.y)
+        return _task_metric(self._forward(model, data), data.y, self.config.multilabel)
 
     def fit(self, split: Any) -> dict[str, Any]:
         torch.manual_seed(self.config.seed)
@@ -118,7 +119,7 @@ class BaselineTrainer:
                     self._private_step(model, optimizer, train, generator)
             else:
                 optimizer.zero_grad(set_to_none=True)
-                F.cross_entropy(self._forward(model, train), train.y).backward()
+                _task_loss(self._forward(model, train), train.y, self.config.multilabel).backward()
                 optimizer.step()
             validation, _ = self._evaluate(model, split.val)
             if validation > best_val:
@@ -155,8 +156,9 @@ class BaselineTrainer:
         clipped = [torch.zeros_like(parameter) for parameter in parameters]
         logits = model(data.x)
         for row, target in zip(logits[selected], data.y[selected]):
-            gradients = torch.autograd.grad(F.cross_entropy(row[None], target[None]), parameters,
-                                            retain_graph=True)
+            gradients = torch.autograd.grad(
+                _task_loss(row[None], target[None], self.config.multilabel),
+                parameters, retain_graph=True)
             norm = torch.sqrt(sum(gradient.square().sum() for gradient in gradients)).clamp_min(1e-12)
             scale = min(1.0, self.config.clip / float(norm))
             for accumulator, gradient in zip(clipped, gradients):

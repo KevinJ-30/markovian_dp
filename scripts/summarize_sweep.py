@@ -41,6 +41,16 @@ def main():
     ap.add_argument('--metric', default='test_acc')
     args = ap.parse_args()
 
+    # mae/rmse are losses (lower = better); every other metric here (accuracy,
+    # micro_f1, auroc) is a score (higher = better).  Picking "best" with the
+    # wrong direction silently reports the worst checkpoint as the best one.
+    lower_is_better = any(tag in args.metric for tag in ('mae', 'rmse'))
+
+    def pick(curve):
+        if lower_is_better:
+            return min(curve, key=curve.get)
+        return max(curve, key=curve.get)
+
     cells = sorted(d for d in glob.glob(os.path.join(args.sweep_dir, '*'))
                    if os.path.isdir(d))
     if not cells:
@@ -57,7 +67,7 @@ def main():
         curve, eps = _curve(csvs[0], args.metric)
         if not curve:
             continue
-        best = max(curve, key=curve.get)
+        best = pick(curve)
         au, _ = _curve(csvs[0], 'test_auroc')
         au_s = f"{au[best]:.4f}" if au and best in au else '-'
         eps_s = f"{eps[best]:.3f}" if eps.get(best) else '-'

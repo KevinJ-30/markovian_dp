@@ -1,7 +1,17 @@
 """
-Dominating pairs for one SparseGNN step (manuscript v36).
+Dominating pairs for one SparseGNN step.
 
-Substitution (Theorem 6.4 for in-expansion, Theorem 1/2 for out-expansion):
+NOTE ON THEOREM NUMBERS: this module was written against manuscript v36. The
+theory doc has since been revised and renumbered: the in-expansion
+substitution result below is Theorem 5.4 in the current draft (was Theorem
+6.4 in v36). The out-expansion insertion/removal result (Theorem 4.5 in v36)
+has not been restated under any number in the current draft, which currently
+only covers the incoming-edge orientation — treat --direction='out' accounting
+as unconfirmed against the current theory doc until that section is rewritten.
+The formulas themselves (Eq. 43-47 below) are unchanged by the renumbering.
+
+Substitution (Theorem 5.4, v36: Theorem 6.4, for in-expansion; Theorem 1/2 for
+out-expansion):
 
     K   = min(K_in, K_out)
     q_0 = 1,   q_d = 1 - prod_{l=d..r} (1 - p2^l)^{K^{l-1}}      (Eq. 43)
