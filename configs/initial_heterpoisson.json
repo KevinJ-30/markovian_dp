@@ -1,0 +1,24 @@
+{
+  "dataset": "cora-ml",
+  "method": "heterpoisson",
+  "seed": 0,
+  "device": "cuda:5",
+  "split_root": "data/inductive_splits",
+  "source_dir": "third_party/PNPiGNNs/Preserving_Node_level_Privacy_in_Graph_Neural_Networks",
+  "environment": {
+    "CUDA_VISIBLE_DEVICES": "5",
+    "HETERPOISSON_DEVICE": "cuda"
+  },
+  "command": ["/usr/scratch/asaha92/envs/heterpoisson/bin/python", "inductive_adapter.py"],
+  "parameters": {
+    "target_epsilon": 8.0,
+    "target_delta": 0.0005,
+    "epochs": 100,
+    "expected_batchsize": 32,
+    "K": 1,
+    "num_neighbors": 1,
+    "clip_norm": 1.0,
+    "learning_rate": 0.001,
+    "degree_bound": 8
+  }
+}

@@ -13,9 +13,13 @@ import math
 import pytest
 import torch
 
+from src.experiments.privacy import DPARAccountant, SparseGNNAccountant, calibrate_dpar_noise
+from src.sparse import accounting as sparse_accounting
 from src.sparse.accounting import (
-    naive_opacus_epsilon, shell_sizes, sparsegnn_mixture_weights,
-    sparsegnn_substitution_epsilon, sparsegnn_thm4_epsilon, thm4_fiber_weights,
+    calibrate_sparsegnn_noise, naive_opacus_epsilon,
+    resolve_sparsegnn_theorem, shell_sizes, sparsegnn_epsilon,
+    sparsegnn_mixture_weights, sparsegnn_substitution_epsilon,
+    sparsegnn_thm4_epsilon, thm4_fiber_weights,
 )
 from src.sparse.sparse_expand import (
     cap_degrees, cap_degrees_undirected, edge_set_is_symmetric, max_degrees,
@@ -207,6 +211,209 @@ def test_symmetric_degrees_make_the_two_orientations_agree():
     assert math.isclose(sparsegnn_substitution_epsilon(direction='in', **kw),
                         sparsegnn_substitution_epsilon(direction='out', **kw),
                         rel_tol=1e-12)
+
+
+# ── target-privacy calibration ────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    ("direction", "theorem"),
+    [("in", "auto"), ("out", "auto")],
+)
+def test_calibration_returns_a_safe_noise_multiplier(direction, theorem):
+    params = dict(
+        target_epsilon=1.0, target_delta=1e-5,
+        p1=0.05, p2=0.1, r=1, K_in=2, K_out=2, steps=2,
+        direction=direction, theorem=theorem, grid=1e-3,
+        sigma_rtol=1e-2,
+    )
+    calibration = calibrate_sparsegnn_noise(**params)
+    assert calibration.epsilon <= params["target_epsilon"]
+    assert calibration.theorem == (
+        "thm6.4-substitution" if direction == "in"
+        else "thm4.5-insertion-removal")
+    epsilon = sparsegnn_epsilon(
+        p1=params["p1"], p2=params["p2"], r=params["r"],
+        K_in=params["K_in"], K_out=params["K_out"],
+        sigma=calibration.noise_multiplier, steps=params["steps"],
+        delta=params["target_delta"], direction=direction, theorem=theorem,
+        grid=params["grid"])
+    assert epsilon <= params["target_epsilon"]
+    assert sparsegnn_epsilon(
+        p1=params["p1"], p2=params["p2"], r=params["r"],
+        K_in=params["K_in"], K_out=params["K_out"],
+        sigma=calibration.noise_multiplier * 0.98, steps=params["steps"],
+        delta=params["target_delta"], direction=direction, theorem=theorem,
+        grid=params["grid"]) > params["target_epsilon"]
+
+
+def test_calibration_reports_pre_normalization_noise_scale():
+    calibration = calibrate_sparsegnn_noise(
+        target_epsilon=1.0, target_delta=1e-5,
+        p1=0.05, p2=0.1, r=1, K_in=2, K_out=2, steps=2,
+        clip=3.0, grid=1e-3, sigma_rtol=1e-2)
+    assert calibration.noise_std == calibration.noise_multiplier * 3.0
+    assert calibration.noise_variance == calibration.noise_std ** 2
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"target_epsilon": 0.0},
+        {"target_delta": 0.0},
+        {"sigma_rtol": 0.0},
+        {"sigma_atol": 0.0},
+        {"grid": 0.0},
+        {"max_sigma": 0.5},
+    ],
+)
+def test_calibration_rejects_invalid_inputs(kwargs):
+    params = dict(
+        target_epsilon=1.0, target_delta=1e-5,
+        p1=0.05, p2=0.1, r=1, K_in=2, K_out=2, steps=2)
+    params.update(kwargs)
+    with pytest.raises(ValueError):
+        calibrate_sparsegnn_noise(**params)
+
+
+def test_calibration_rejects_inapplicable_theorem_and_exhausted_bracket():
+    with pytest.raises(ValueError, match="Theorem 4.5"):
+        resolve_sparsegnn_theorem("in", "thm45")
+    with pytest.raises(RuntimeError, match="failed to bracket"):
+        calibrate_sparsegnn_noise(
+            target_epsilon=1e-12, target_delta=1e-5,
+            p1=0.05, p2=0.1, r=1, K_in=2, K_out=2, steps=2,
+            max_sigma=1.0, grid=1e-3)
+
+
+@pytest.mark.parametrize(
+    ("direction", "theorem", "weight_name"),
+    [
+        ("in", "auto", "sparsegnn_mixture_weights"),
+        ("out", "auto", "thm4_fiber_weights"),
+    ],
+)
+def test_calibration_prepares_sigma_independent_weights_once(
+        monkeypatch, direction, theorem, weight_name):
+    original = getattr(sparse_accounting, weight_name)
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(sparse_accounting, weight_name, counted)
+    calibrate_sparsegnn_noise(
+        target_epsilon=1.0, target_delta=1e-5,
+        p1=0.05, p2=0.1, r=1, K_in=2, K_out=2, steps=2,
+        direction=direction, theorem=theorem, grid=1e-3, sigma_rtol=1e-2)
+    assert calls == 1
+
+
+def test_sparsegnn_accountant_calibrates_like_direct_solver():
+    kwargs = dict(
+        p1=0.05, p2=0.1, radius=1, k_in=2, k_out=2, steps=2,
+        clip=1.5, direction="out", theorem="auto", grid=1e-3,
+        sigma_rtol=1e-2)
+    direct = calibrate_sparsegnn_noise(
+        target_epsilon=1.0, target_delta=1e-5,
+        p1=kwargs["p1"], p2=kwargs["p2"], r=kwargs["radius"],
+        K_in=kwargs["k_in"], K_out=kwargs["k_out"], steps=kwargs["steps"],
+        clip=kwargs["clip"], direction=kwargs["direction"],
+        theorem=kwargs["theorem"], grid=kwargs["grid"],
+        sigma_rtol=kwargs["sigma_rtol"])
+    assert SparseGNNAccountant().calibrate(1.0, 1e-5, **kwargs) == direct.as_dict()
+    result = SparseGNNAccountant().account(
+        p1=kwargs["p1"], p2=kwargs["p2"], radius=kwargs["radius"],
+        k_in=kwargs["k_in"], k_out=kwargs["k_out"],
+        sigma=direct.noise_multiplier, steps=kwargs["steps"], delta=1e-5,
+        direction="out", theorem="auto", grid=kwargs["grid"])
+    assert result.epsilon <= 1.0
+    assert result.parameters["theorem"] == "thm4.5-insertion-removal"
+    assert result.parameters["grid"] == kwargs["grid"]
+
+
+# ── DPAR target-privacy calibration ─────────────────────────────────────────
+
+@pytest.mark.parametrize("ppr_releases", [1, 6])
+def test_dpar_ppr_calibration_reconstructs_equal_component_budget(ppr_releases):
+    params = dict(
+        target_epsilon=8.0, target_delta=5e-4, train_nodes=12,
+        ppr_releases=ppr_releases, ppr_clip=2.0, sgd_clip=3.0,
+        batch_size=1, steps=2,
+    )
+    calibration = calibrate_dpar_noise(**params)
+    amplification = ppr_releases / params["train_nodes"]
+    primitive = math.sqrt(2.0 * math.log(1.25 / calibration.ppr_delta_per_release))
+    primitive *= params["ppr_clip"] / calibration.ppr_noise_std
+    base_delta = 2.0 * calibration.ppr_delta_per_release * ppr_releases
+    reconstructed = DPARAccountant._inverse_composition(primitive, ppr_releases, base_delta)
+    assert math.isclose(reconstructed * amplification, params["target_epsilon"] / 2.0, rel_tol=1e-12)
+    assert calibration.ppr_delta == params["target_delta"] / 2.0
+    first = DPARAccountant().account(
+        ppr_releases=ppr_releases, amplification_rate=amplification,
+        delta=calibration.ppr_delta_per_release, ppr_clip=params["ppr_clip"],
+        ppr_noise=calibration.ppr_noise_std, topk=1,
+    )
+    second = DPARAccountant().account(
+        ppr_releases=ppr_releases, amplification_rate=amplification,
+        delta=calibration.ppr_delta_per_release, ppr_clip=params["ppr_clip"],
+        ppr_noise=calibration.ppr_noise_std, topk=99,
+    )
+    assert first.epsilon == second.epsilon
+    assert math.isclose(first.epsilon, calibration.ppr_epsilon, rel_tol=1e-12)
+    assert first.delta == second.delta == calibration.ppr_delta
+
+
+def test_dpar_sgd_calibration_returns_safe_multiplier_and_final_delta():
+    params = dict(
+        target_epsilon=8.0, target_delta=5e-4, train_nodes=12,
+        ppr_releases=6, ppr_clip=2.0, sgd_clip=3.0, batch_size=3, steps=4,
+    )
+    calibration = calibrate_dpar_noise(**params)
+    accounted = DPARAccountant().account_training(
+        noise_multiplier=calibration.sgd_noise_multiplier,
+        sample_rate=params["batch_size"] / params["ppr_releases"], steps=params["steps"],
+        delta=calibration.sgd_delta, amplification_rate=calibration.amplification_rate,
+    )
+    lower = DPARAccountant().account_training(
+        noise_multiplier=calibration.sgd_noise_multiplier / 2.0,
+        sample_rate=params["batch_size"] / params["ppr_releases"], steps=params["steps"],
+        delta=calibration.sgd_delta, amplification_rate=calibration.amplification_rate,
+    )
+    assert accounted.epsilon <= calibration.sgd_epsilon <= params["target_epsilon"] / 2.0
+    assert lower.epsilon > params["target_epsilon"] / 2.0
+    assert calibration.sgd_noise_std == calibration.sgd_noise_multiplier * params["sgd_clip"]
+    assert calibration.sgd_noise_variance == calibration.sgd_noise_std ** 2
+    assert accounted.delta == calibration.sgd_delta == params["target_delta"] / 2.0
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"target_epsilon": 0.0}, {"target_delta": 1.0}, {"train_nodes": 0},
+        {"ppr_releases": 13}, {"batch_size": 7}, {"steps": 0},
+        {"ppr_clip": 0.0}, {"sgd_clip": 0.0}, {"sigma_rtol": 0.0},
+        {"sigma_atol": 0.0}, {"max_noise_multiplier": 0.0},
+    ],
+)
+def test_dpar_calibration_rejects_invalid_inputs(kwargs):
+    params = dict(
+        target_epsilon=8.0, target_delta=5e-4, train_nodes=12,
+        ppr_releases=6, ppr_clip=2.0, sgd_clip=3.0, batch_size=3, steps=4,
+    )
+    params.update(kwargs)
+    with pytest.raises(ValueError):
+        calibrate_dpar_noise(**params)
+
+
+def test_dpar_calibration_rejects_an_unbracketed_sgd_budget():
+    with pytest.raises(RuntimeError, match="failed to bracket a DPAR DP-SGD noise multiplier"):
+        calibrate_dpar_noise(
+            target_epsilon=1e-12, target_delta=5e-4, train_nodes=12,
+            ppr_releases=6, ppr_clip=2.0, sgd_clip=3.0, batch_size=3, steps=4,
+            max_noise_multiplier=1.0,
+        )
 
 
 # ── degree capping ─────────────────────────────────────────────────────────────

@@ -9,7 +9,8 @@ import pytest
 import torch
 
 from src.sparse.sparse_expand import (
-    build_adjacency, build_out_adjacency, sample_roots, sparse_expand,
+    SparseAdjacency, build_adjacency, build_out_adjacency, sample_roots,
+    sparse_expand,
 )
 
 
@@ -27,7 +28,7 @@ def _reachable(adj, root, r):
     for _ in range(r):
         nxt = []
         for u in frontier:
-            for w in adj[u].tolist():
+            for w in adj.neighbors(u).tolist():
                 if w not in seen:
                     seen.add(w)
                     nxt.append(w)
@@ -112,7 +113,37 @@ def test_build_out_adjacency_alias_matches_build_adjacency():
     edge_index, n = _toy_graph()
     a = build_out_adjacency(edge_index, n)
     b = build_adjacency(edge_index, n, direction='out')
-    assert [t.tolist() for t in a] == [t.tolist() for t in b]
+    assert isinstance(a, SparseAdjacency)
+    assert torch.equal(a.rowptr, b.rowptr)
+    assert torch.equal(a.col, b.col)
+
+
+@pytest.mark.parametrize('direction', ['in', 'out'])
+@pytest.mark.parametrize('p2', [0.0, 0.37, 1.0])
+def test_csr_adjacency_has_seeded_expected_expansions(direction, p2):
+    edge_index = torch.tensor(
+        [[0, 1, 2, 1, 1, 3, 3], [1, 2, 3, 3, 3, 1, 3]],
+        dtype=torch.long)
+    adjacency = build_adjacency(edge_index, 4, direction=direction)
+    assert isinstance(adjacency, SparseAdjacency)
+    first = [sparse_expand(adjacency, root, p2, 3,
+                           generator=torch.Generator().manual_seed(91 + root),
+                           direction=direction)
+             for root in range(4)]
+    second = [sparse_expand(adjacency, root, p2, 3,
+                            generator=torch.Generator().manual_seed(91 + root),
+                            direction=direction)
+              for root in range(4)]
+    for expected, actual in zip(first, second):
+        assert torch.equal(expected.nodes, actual.nodes)
+        assert torch.equal(expected.edge_index, actual.edge_index)
+
+
+def test_csr_adjacency_rejects_direction_mismatch():
+    edge_index, n = _toy_graph()
+    with pytest.raises(ValueError, match='does not match'):
+        sparse_expand(build_adjacency(edge_index, n, direction='in'), 0, .5, 1,
+                      direction='out')
 
 
 def test_direction_out_preserves_legacy_sampling():

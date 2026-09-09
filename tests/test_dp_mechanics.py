@@ -159,6 +159,40 @@ def test_noise_std_is_sigma_times_C(sigma, C):
     assert z.std().item() == pytest.approx(sigma * C, rel=0.05)
 
 
+def test_empty_batch_fast_path_draws_noise_and_steps_once():
+    mech = _FixedGradMechanism({})
+    mech.build_optimizer(lr=0.0, kind='sgd')
+    seen_shapes = []
+    original_noise = mech.gaussian_noise_like
+
+    def count_noise(grads, sigma, C, generator=None):
+        seen_shapes.extend(grad.shape for grad in grads)
+        return original_noise(grads, sigma, C, generator=generator)
+
+    step_calls = 0
+    original_step = mech.optimizer.step
+
+    def count_step():
+        nonlocal step_calls
+        step_calls += 1
+        return original_step()
+
+    mech.gaussian_noise_like = count_noise
+    mech.optimizer.step = count_step
+    seed, sigma, C, expected_batch = 17, 2.0, 0.5, 3.0
+    _step_dp(mech, [], C=C, sigma=sigma,
+             noise_gen=torch.Generator().manual_seed(seed),
+             expected_batch=expected_batch)
+
+    parameter = mech.parameters()[0]
+    expected = (torch.randn(parameter.shape,
+                            generator=torch.Generator().manual_seed(seed))
+                * sigma * C / expected_batch)
+    assert seen_shapes == [parameter.shape]
+    assert step_calls == 1
+    assert torch.allclose(parameter.grad, expected)
+
+
 def test_noise_added_once_per_step_not_per_subgraph():
     """Variance must not grow with batch size: one draw covers the whole sum."""
     sigma, C, B = 3.0, 1.0, 1.0

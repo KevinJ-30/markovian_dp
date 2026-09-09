@@ -130,14 +130,26 @@ class BaseMechanism(ABC):
         """
         ...
 
+    def subgraph_losses(self, subgraphs) -> List[torch.Tensor]:
+        """Return per-root losses in the supplied order."""
+        return [self.subgraph_loss(subgraph) for subgraph in subgraphs]
+
+    def iter_subgraph_loss_batches(self, subgraphs):
+        """Yield loss batches without retaining a mechanism-specific contract."""
+        if subgraphs:
+            yield self.subgraph_losses(subgraphs)
+
     @abstractmethod
     def evaluate(self, data) -> Dict[str, float]:
         """Return a dict of evaluation metrics (e.g. train/val/test accuracy)."""
         ...
 
     def zero_loss(self) -> torch.Tensor:
-        """A differentiable zero, for subgraphs with no supervision signal."""
-        return torch.zeros((), device=self.device)
+        """A differentiable zero for subgraphs with no supervision signal."""
+        params = self.parameters()
+        if params:
+            return params[0].sum() * 0.0
+        return torch.zeros((), device=self.device, requires_grad=True)
 
     # ── shared DP helpers (used by the engine's DP path) ──────────────────────
 
@@ -148,23 +160,38 @@ class BaseMechanism(ABC):
         the per-example clipping in Assumption 3.2 (||g0(H)||_2 <= C).
         """
         total_sq = torch.stack([g.pow(2).sum() for g in grads]).sum()
-        norm = float(total_sq.sqrt())
-        coef = min(1.0, C / (norm + 1e-12))
+        coef = (C / (total_sq.sqrt() + 1e-12)).clamp(max=1.0)
         return [g * coef for g in grads]
 
     def gaussian_noise_like(self, grads: List[torch.Tensor], sigma: float,
                             C: float, generator: torch.Generator = None
                             ) -> List[torch.Tensor]:
-        """Draw N(0, (sigma*C)^2 I) noise shaped like `grads` (Alg adds noise).
+        """Draw N(0, (sigma*C)^2 I) noise shaped like `grads`.
 
-        The Gaussian base mechanism of Assumption 3.2 has covariance sigma^2 C^2 I.
-
-        The draw happens on CPU and is then moved to the gradient's device:
-        `generator` is a CPU torch.Generator, and torch.randn requires the
-        generator's device to match the output device, so drawing directly on
-        CUDA would raise.  CPU draws also make the noise stream identical
-        across CPU and GPU runs for a given seed.
+        CPU generator draws retain the seeded CPU/GPU noise stream. Reusing
+        pinned CPU staging and device buffers removes per-step allocation.
         """
         std = sigma * C
-        return [(torch.randn(g.shape, generator=generator) * std).to(g.device)
-                for g in grads]
+        cache = getattr(self, '_gaussian_noise_buffers', None)
+        if cache is None:
+            cache = self._gaussian_noise_buffers = {}
+        noise = []
+        for grad in grads:
+            key = (tuple(grad.shape), grad.device)
+            buffers = cache.get(key)
+            if buffers is None:
+                cpu = torch.empty(
+                    grad.shape, dtype=torch.get_default_dtype(), device='cpu',
+                    pin_memory=grad.device.type == 'cuda')
+                device = (torch.empty_like(cpu, device=grad.device)
+                          if grad.device.type != 'cpu' else cpu)
+                buffers = cache[key] = (cpu, device)
+            cpu, device = buffers
+            cpu.normal_(generator=generator)
+            if device is cpu:
+                cpu.mul_(std)
+            else:
+                device.copy_(cpu, non_blocking=True)
+                device.mul_(std)
+            noise.append(device)
+        return noise

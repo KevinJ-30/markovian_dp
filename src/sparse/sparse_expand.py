@@ -19,10 +19,27 @@ they differ on directed ones (ogbn-arxiv, RelBench foreign-key graphs).
 """
 
 from dataclasses import dataclass
-from typing import List, Sequence
+from typing import List
 
 import numpy as np
 import torch
+
+
+@dataclass(frozen=True)
+class SparseAdjacency:
+    """Compact CPU CSR neighbour storage for SparseExpand."""
+
+    rowptr: torch.Tensor
+    col: torch.Tensor
+    direction: str
+
+    def neighbors(self, node: int) -> torch.Tensor:
+        start = int(self.rowptr[node])
+        end = int(self.rowptr[node + 1])
+        return self.col[start:end]
+
+    def __len__(self) -> int:
+        return int(self.rowptr.numel() - 1)
 
 
 @dataclass
@@ -52,54 +69,25 @@ class RootedSubgraph:
 
 
 def build_adjacency(edge_index: torch.Tensor, num_nodes: int,
-                    direction: str = 'in') -> List[torch.Tensor]:
-    """Build the per-node neighbour lists that SparseExpand traverses.
-
-    Args:
-        edge_index: LongTensor [2, E] of arcs (edge_index[0] = source,
-                    edge_index[1] = target).
-        num_nodes:  number of vertices.
-        direction:  'in'  -> adj[u] lists the sources w of arcs (w, u)
-                             (Algorithm 5, SparseExpand_in);
-                    'out' -> adj[u] lists the targets w of arcs (u, w)
-                             (legacy Algorithm 2/4).
-
-    Returns a Python list `adj` of length num_nodes of 1-D LongTensors.  Built
-    once per graph and reused across all SparseExpand calls.
-
-    IMPORTANT: `adj` and the `direction` passed to `sparse_expand` must match —
-    the adjacency decides *who* is traversed, `direction` decides how the
-    resulting arc is oriented in the returned subgraph.
-
-    Self-loops are kept if present in edge_index (SparseExpand handles them
-    naturally: a retained self-loop adds an edge but never a new vertex).
-    """
+                    direction: str = 'in') -> SparseAdjacency:
+    """Build compact CPU CSR neighbours for SparseExpand."""
     if direction not in ('in', 'out'):
         raise ValueError(f"direction must be 'in' or 'out', got {direction!r}")
     edge_index = edge_index.cpu()
-    # Group by the endpoint we expand FROM: for in-expansion a root u collects
-    # the arcs whose target is u, so we key on edge_index[1].
     key_row, val_row = (1, 0) if direction == 'in' else (0, 1)
     key, val = edge_index[key_row], edge_index[val_row]
     order = torch.argsort(key, stable=True)
     key_sorted = key[order]
-    val_sorted = val[order]
+    col = val[order]
     counts = torch.bincount(key_sorted, minlength=num_nodes)
-    adj: List[torch.Tensor] = []
-    ptr = 0
-    for u in range(num_nodes):
-        c = int(counts[u].item())
-        adj.append(val_sorted[ptr:ptr + c].clone())
-        ptr += c
-    return adj
+    rowptr = torch.empty(num_nodes + 1, dtype=torch.long)
+    rowptr[0] = 0
+    rowptr[1:] = counts.cumsum(0)
+    return SparseAdjacency(rowptr=rowptr, col=col, direction=direction)
 
 
-def build_out_adjacency(edge_index: torch.Tensor, num_nodes: int) -> List[torch.Tensor]:
-    """Out-adjacency: adj[u] lists the targets w of every arc (u, w).
-
-    Thin alias for `build_adjacency(..., direction='out')`, kept for the GAD
-    pipeline (`src/sparse/gad/`) which aggregates over forward neighbourhoods.
-    """
+def build_out_adjacency(edge_index: torch.Tensor, num_nodes: int) -> SparseAdjacency:
+    """Out-adjacency for SparseExpand and GAD."""
     return build_adjacency(edge_index, num_nodes, direction='out')
 
 
@@ -116,7 +104,7 @@ def _bernoulli_keep(n: int, p2: float, generator) -> torch.Tensor:
 
 
 def sparse_expand(
-    adj: Sequence[torch.Tensor],
+    adj: SparseAdjacency,
     root: int,
     p2: float,
     r: int,
@@ -142,6 +130,10 @@ def sparse_expand(
     """
     if direction not in ('in', 'out'):
         raise ValueError(f"direction must be 'in' or 'out', got {direction!r}")
+    if adj.direction != direction:
+        raise ValueError(
+            f"adjacency direction {adj.direction!r} does not match "
+            f"expansion direction {direction!r}")
     expand_in = direction == 'in'
     # V_v <- {v};  E_v <- empty;  Q_0 <- {v}
     visited = {root: 0}          # original id -> local index
@@ -152,7 +144,7 @@ def sparse_expand(
     for _ell in range(r):
         next_frontier: List[int] = []
         for u in frontier:
-            out = adj[u]
+            out = adj.neighbors(u)
             keep = _bernoulli_keep(int(out.numel()), p2, generator)
             if not bool(keep.any()):
                 continue

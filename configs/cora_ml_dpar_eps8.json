@@ -1,0 +1,16 @@
+{
+  "dataset": "cora-ml",
+  "method": "dpar",
+  "seed": 0,
+  "device": "auto",
+  "split_root": "data/inductive_splits",
+  "parameters": {
+    "epochs": 100,
+    "topk": 16,
+    "sampled_train_nodes": 70,
+    "batch_size": 70,
+    "hidden_size": 32,
+    "target_epsilon": 8.0,
+    "target_delta": 0.0005
+  }
+}

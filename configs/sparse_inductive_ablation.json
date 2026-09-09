@@ -1,0 +1,13 @@
+{
+  "seed": 0,
+  "device": "cuda:4",
+  "datasets": ["reddit", "facebook", "cora-ml", "pubmed"],
+  "method": "sparse_gnn",
+  "training_epochs": 100,
+  "root_sampling_probabilities": [0.001, 0.002, 0.005, 0.01, 0.02],
+  "edge_retention_probabilities": [0.1, 0.25, 0.5, 0.75, 1.0],
+  "radius": 1,
+  "degree_caps": {"k_in": 5, "k_out": 5},
+  "privacy": {"enabled": true, "sigma": 5.0, "clip": 1.0, "delta": 1e-5},
+  "notes": "T is derived per root probability so the expected number of root updates per training node is approximately 100."
+}

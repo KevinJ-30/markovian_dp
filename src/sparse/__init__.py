@@ -18,15 +18,22 @@ subgraphs grow along INCOMING edges so that messages flow toward the root.
 """
 
 from .sparse_expand import (
-    RootedSubgraph, build_adjacency, build_out_adjacency, cap_degrees,
-    cap_degrees_undirected, edge_set_is_symmetric, max_degrees, sparse_expand,
+    RootedSubgraph, SparseAdjacency, build_adjacency, build_out_adjacency,
+    cap_degrees, cap_degrees_undirected, edge_set_is_symmetric, max_degrees,
+    sparse_expand,
 )
-from .sparse_gnn import train_sparse_gnn
+from .sparse_gnn import train_sparse_gnn, train_sparse_gnn_with_budget
 from .base_mechanism import BaseMechanism
 from .gnn_mechanism import GNNMechanism
+from .accounting import (
+    SparseGNNNoiseCalibration, calibrate_sparsegnn_noise,
+    resolve_sparsegnn_theorem, sparsegnn_epsilon, sparsegnn_epsilon_schedule,
+    sparsegnn_theorem_label,
+)
 
 __all__ = [
     "RootedSubgraph",
+    "SparseAdjacency",
     "build_adjacency",
     "build_out_adjacency",
     "cap_degrees",
@@ -35,6 +42,13 @@ __all__ = [
     "max_degrees",
     "sparse_expand",
     "train_sparse_gnn",
+    "train_sparse_gnn_with_budget",
     "BaseMechanism",
+    "SparseGNNNoiseCalibration",
+    "calibrate_sparsegnn_noise",
+    "resolve_sparsegnn_theorem",
+    "sparsegnn_epsilon",
+    "sparsegnn_epsilon_schedule",
+    "sparsegnn_theorem_label",
     "GNNMechanism",
 ]

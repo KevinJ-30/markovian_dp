@@ -1,0 +1,20 @@
+{
+  "dataset": "pubmed",
+  "method": "dpar",
+  "seed": 0,
+  "device": "cuda:6",
+  "split_root": "data/inductive_splits",
+  "parameters": {
+    "epochs": 100,
+    "topk": 16,
+    "sampled_train_nodes": 70,
+    "batch_size": 256,
+    "hidden_size": 32,
+    "dp_ppr": true,
+    "ppr_noise": 0.0067,
+    "ppr_clip": 0.01,
+    "dp_sgd": true,
+    "sgd_noise": 0.95,
+    "sgd_clip": 1.0
+  }
+}

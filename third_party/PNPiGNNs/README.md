@@ -1,0 +1,56 @@
+# Preserving Node-level Privacy in Graph Neural Networks
+Accepted by IEEE S&P 2024
+
+## Running Environment
+Install all packages as specified in `requirements.txt`.
+
+`pip install -r requirements.txt`
+
+## Usage
+
+1. Run experiments
+
+    `cd Preserving_Node_level_Privacy_in_Graph_Neural_Networks`
+    
+    Execute the experiment scripts:
+    
+    `run_xxx.sh` 
+
+    corresponding to different graph datasets.
+
+2. Privacy accouting for node-level privacy
+
+    Privacy accounting implementation is located at 
+    
+    `Preserving_Node_level_Privacy_in_Graph_Neural_Networks/pirivacy/mix.py`
+
+    which is the implementation of Theorem 2 of the paper. Some use case is provided in the file.
+
+3. Node Sampling for Privacy
+
+    Node sampling implementation is located at 
+    
+    `Preserving_Node_level_Privacy_in_Graph_Neural_Networks/pirivacy/sampling.py`
+
+    which is the implementation of Figure 3 of the paper.
+
+## Reference
+Kindly cite our work if you find it useful for your research and work ：）
+```tex
+@inproceedings{DBLP:conf/sp/XiangWW24,
+  author       = {Zihang Xiang and
+                  Tianhao Wang and
+                  Di Wang},
+  title        = {Preserving Node-level Privacy in Graph Neural Networks},
+  booktitle    = {{IEEE} Symposium on Security and Privacy, {SP} 2024, San Francisco,
+                  CA, USA, May 19-23, 2024},
+  pages        = {4714--4732},
+  publisher    = {{IEEE}},
+  year         = {2024},
+  url          = {https://doi.org/10.1109/SP54263.2024.00270},
+  doi          = {10.1109/SP54263.2024.00270},
+  timestamp    = {Sun, 06 Oct 2024 21:15:04 +0200},
+  biburl       = {https://dblp.org/rec/conf/sp/XiangWW24.bib},
+  bibsource    = {dblp computer science bibliography, https://dblp.org}
+}
+```

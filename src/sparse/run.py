@@ -30,6 +30,7 @@ from src.sparse.sparse_expand import (                      # noqa: E402
     edge_set_is_symmetric,
     max_degrees, sparse_expand,
 )
+from src.sparse.accounting import calibrate_sparsegnn_noise  # noqa: E402
 from src.sparse.sparse_gnn import train_sparse_gnn          # noqa: E402
 
 
@@ -171,6 +172,13 @@ def parse_args():
                    help='train on the train-induced subgraph only (expansion '
                         'never touches val/test nodes — the privacy-honest '
                         'setting); evaluate with full-graph inductive inference')
+    p.add_argument('--common_inductive_split', action='store_true',
+                   help='use the saved deterministic 60/20/20 split and delete '
+                        'all inter-partition edges before private training')
+    p.add_argument('--split_root', default='data/inductive_splits',
+                   help='directory holding common saved inductive split indices')
+    p.add_argument('--split_seed', type=int, default=0,
+                   help='seed identifying the common saved inductive split')
     p.add_argument('--direction', choices=['in', 'out'], default='in',
                    help="SparseExpand orientation: 'in' = Algorithm 5, expand "
                         "along incoming edges so messages flow toward the root "
@@ -209,9 +217,24 @@ def parse_args():
     # DP (off by default)
     p.add_argument('--dp', action='store_true', help='enable DP clip+noise path')
     p.add_argument('--clip', type=float, default=1.0, help='clipping norm C (DP)')
-    p.add_argument('--sigma', type=float, nargs='+', default=[1.0],
-                   help='noise multiplier(s); pass several to sweep, e.g. '
-                        '--sigma 2 5 10 (only swept when --dp)')
+    noise_selection = p.add_mutually_exclusive_group()
+    noise_selection.add_argument(
+        '--sigma', type=float, nargs='+',
+        help='noise multiplier(s); pass several to sweep, e.g. --sigma 2 5 10')
+    noise_selection.add_argument(
+        '--target_epsilon', type=float,
+        help='calibrate one noise multiplier per (p1, p2, r) configuration')
+    p.add_argument('--target_delta', type=float,
+                   help='target delta required with --target_epsilon')
+    p.add_argument('--accounting_theorem',
+                   choices=['auto', 'substitution', 'thm45'], default='auto',
+                   help='SparseGNN dominating-pair theorem used for calibration')
+    p.add_argument('--accounting_grid', type=float, default=1e-4,
+                   help='dp_accounting value discretization interval')
+    p.add_argument('--calibration_rtol', type=float, default=1e-3,
+                   help='relative tolerance for calibrated noise multiplier')
+    p.add_argument('--calibration_atol', type=float, default=1e-6,
+                   help='absolute tolerance for calibrated noise multiplier')
     p.add_argument('--K_in', type=int, default=None,
                    help='cap max in-degree before training (required for a '
                         'valid Theorem 6.4 guarantee; recorded in the CSV for '
@@ -246,8 +269,20 @@ def parse_args():
     p.add_argument('--plot', action='store_true',
                    help='save a sweep plot (test acc vs p2, line per r, subplot per p1)')
     p.add_argument('--verbose', action='store_true')
+    p.add_argument('--progress_every', type=int,
+                   help='verbose progress/evaluation interval; defaults to '
+                        '--eval_every and has no effect without --verbose')
     p.add_argument('--eval_every', type=int, default=50)
-    return p.parse_args()
+    args = p.parse_args()
+    if args.target_epsilon is None and args.target_delta is not None:
+        p.error("--target_delta requires --target_epsilon")
+    if args.target_epsilon is not None and args.target_delta is None:
+        p.error("--target_epsilon requires --target_delta")
+    if args.target_epsilon is not None and not args.dp:
+        p.error("--target_epsilon requires --dp")
+    if args.sigma is None:
+        args.sigma = [1.0]
+    return args
 
 
 def main():
@@ -260,15 +295,21 @@ def main():
     csv_path = os.path.join(args.out_dir,
                             f'sparse_gnn_{ds_slug}{tag}_results.csv')
 
+    target_mode = args.target_epsilon is not None
     sigmas = args.sigma if args.dp else [args.sigma[0]]
-    grid = list(itertools.product(args.p1, args.p2, args.r, sigmas))
+    grid = list(itertools.product(args.p1, args.p2, args.r))
+    if not target_mode:
+        grid = [(*cell, sigma) for cell in grid for sigma in sigmas]
+    noise_description = (
+        f"target_epsilon={args.target_epsilon} target_delta={args.target_delta}"
+        if target_mode else f"sigma={sigmas}")
 
     print(f"\n{'='*66}")
     print(f"SparseGNN  dataset={args.dataset}  device={device}  "
           f"direction={args.direction}  aggr={args.aggr}")
-    print(f"  p1={args.p1}  p2={args.p2}  r={args.r}  sigma={sigmas}  T={args.T}  "
-          f"L={args.num_layers}  dp={args.dp}  seeds={args.seeds}")
-    print(f"  sweep: {len(grid)} (p1,p2,r,sigma) combo(s) x {args.seeds} seed(s)")
+    print(f"  p1={args.p1}  p2={args.p2}  r={args.r}  {noise_description}  "
+          f"T={args.T}  L={args.num_layers}  dp={args.dp}  seeds={args.seeds}")
+    print(f"  sweep: {len(grid)} configuration(s) x {args.seeds} seed(s)")
     print('='*66)
 
     dataset, data = load_dataset(
@@ -279,6 +320,24 @@ def main():
     data = data.to(device)
     num_features = dataset.num_features
     num_classes = dataset.num_classes
+    if args.common_inductive_split:
+        from src.experiments.inductive import load_or_create_inductive_split
+        split = load_or_create_inductive_split(
+            data.clone().cpu(), args.dataset, root=args.split_root,
+            seed=args.split_seed)
+        masks = split.masks
+        data.train_mask = masks['train'].to(device)
+        data.val_mask = masks['val'].to(device)
+        data.test_mask = masks['test'].to(device)
+        full_edge_index = data.edge_index
+        within_partition = (
+            (data.train_mask[full_edge_index[0]] & data.train_mask[full_edge_index[1]])
+            | (data.val_mask[full_edge_index[0]] & data.val_mask[full_edge_index[1]])
+            | (data.test_mask[full_edge_index[0]] & data.test_mask[full_edge_index[1]])
+        )
+        data.edge_index = full_edge_index[:, within_partition]
+        print(f"  common inductive split: {split.path}; removed "
+              f"{int((~within_partition).sum())} crossing edges")
 
     # Model/task guard: fail fast on pairings that would crash deep in a shape
     # error (single-label GNN on multilabel PPI) or silently report a
@@ -406,21 +465,51 @@ def main():
         w.writerow(['dataset', 'model', 'aggr', 'metric', 'inductive',
                     'direction', 'p1', 'p2', 'r', 'sigma', 'clip', 'K_in',
                     'K_out', 'cap_mode', 'eval_graph', 'optimizer', 'lr',
-                    'momentum', 'T', 'L', 'dp', 'seed', 'step',
+                    'momentum', 'T', 'L', 'dp',
+                    'target_epsilon', 'target_delta', 'calibrated_epsilon',
+                    'accounting_theorem', 'accounting_grid',
+                    'calibration_rtol', 'calibration_evaluations',
+                    'noise_std', 'noise_variance', 'seed', 'step',
                     'train_acc', 'val_acc', 'test_acc', 'trivial_baseline',
-                    # Secondary, threshold-free metric where the mechanism
-                    # reports one (multilabel).  Blank otherwise.
                     'train_auroc', 'val_auroc', 'test_auroc',
-                    # Same metrics on the OTHER graph: the training graph when
-                    # eval_graph=full, the full graph when eval_graph=train.
-                    # They differ by the degree cap (and, for inductive runs,
-                    # the split filter), so both are recorded.
                     'train_acc_alt', 'val_acc_alt', 'test_acc_alt',
                     'train_auroc_alt', 'val_auroc_alt', 'test_auroc_alt'])
 
-        for p1, p2, r, sigma in grid:
-            print(f"\n[p1={p1} p2={p2} r={r}" +
-                  (f" sigma={sigma}]" if args.dp else "]"))
+        for cell in grid:
+            calibration = None
+            if target_mode:
+                p1, p2, r = cell
+                calibration = calibrate_sparsegnn_noise(
+                    target_epsilon=args.target_epsilon,
+                    target_delta=args.target_delta, p1=p1, p2=p2, r=r,
+                    K_in=K_in, K_out=K_out, steps=args.T, clip=args.clip,
+                    direction=args.direction, theorem=args.accounting_theorem,
+                    grid=args.accounting_grid,
+                    sigma_rtol=args.calibration_rtol,
+                    sigma_atol=args.calibration_atol,
+                )
+                sigma = calibration.noise_multiplier
+                print(f"\n[p1={p1} p2={p2} r={r}]")
+                print("  calibrated "
+                      f"target=(epsilon={calibration.target_epsilon:g}, "
+                      f"delta={calibration.delta:g}) "
+                      f"epsilon={calibration.epsilon:.6g} "
+                      f"sigma={calibration.noise_multiplier:.6g} "
+                      f"theorem={calibration.theorem} "
+                      f"evaluations={calibration.evaluations}")
+            else:
+                p1, p2, r, sigma = cell
+                print(f"\n[p1={p1} p2={p2} r={r}" +
+                      (f" sigma={sigma}]" if args.dp else "]"))
+            calibration_fields = (
+                [calibration.target_epsilon, calibration.delta,
+                 calibration.epsilon, calibration.theorem,
+                 args.accounting_grid, args.calibration_rtol,
+                 calibration.evaluations]
+                if calibration is not None else [""] * 7)
+            noise_fields = (
+                [sigma * args.clip, (sigma * args.clip) ** 2]
+                if args.dp else ["", ""])
             tests, vals = [], []
             for seed in range(args.seeds):
                 _set_seed(seed)
@@ -441,12 +530,15 @@ def main():
                 mech.build_optimizer(lr=args.lr, weight_decay=args.weight_decay,
                                      kind=opt_kind, momentum=args.momentum)
 
+                progress_every = (args.progress_every
+                                  if args.verbose and args.progress_every is not None
+                                  else args.eval_every)
                 accs = train_sparse_gnn(
                     mech, data, adj=adj, direction=args.direction,
                     p1=p1, p2=p2, r=r, T=args.T,
                     candidate_nodes=candidate_nodes,
                     dp=args.dp, clip=args.clip, sigma=sigma,
-                    seed=seed, eval_every=args.eval_every,
+                    seed=seed, eval_every=progress_every,
                     track_every=args.track_every, eval_alt_edge_index=alt_ei,
                     verbose=args.verbose,
                 )
@@ -465,7 +557,8 @@ def main():
                                 K_out if K_out is not None else '',
                                 cap_mode, args.eval_graph,
                                 opt_kind, args.lr, args.momentum,
-                                args.T, args.num_layers, args.dp, seed, step,
+                                args.T, args.num_layers, args.dp,
+                                *calibration_fields, *noise_fields, seed, step,
                                 f"{m['train']:.5f}", f"{m['val']:.5f}",
                                 f"{m['test']:.5f}", f"{trivial:.5f}",
                                 *(f"{m[k]:.5f}" if k in m else ''

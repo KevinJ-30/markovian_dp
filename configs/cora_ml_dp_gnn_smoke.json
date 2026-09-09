@@ -1,0 +1,12 @@
+{
+  "dataset": "cora-ml",
+  "method": "dp_gnn",
+  "seed": 0,
+  "device": "cpu",
+  "split_root": "data/inductive_splits",
+  "parameters": {
+    "steps": 1,
+    "batch_size": 32,
+    "noise_multiplier": 2.0
+  }
+}

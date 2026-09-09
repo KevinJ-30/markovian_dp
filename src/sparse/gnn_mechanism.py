@@ -11,7 +11,7 @@ Evaluation is standard full-graph transductive inference on the (unsparsified)
 graph, reporting train/val/test accuracy on the Planetoid masks.
 """
 
-from typing import Dict
+from typing import Dict, Iterable, List, Sequence
 
 import torch
 import torch.nn as nn
@@ -54,14 +54,18 @@ class GNNMechanism(BaseMechanism):
     """
 
     def __init__(self, data, num_features, num_classes, *, hidden=64,
-                 num_layers=2, dropout=0.5, aggr='mean', device=None):
+                 num_layers=2, dropout=0.5, aggr='mean', device=None,
+                 max_batched_subgraph_nodes: int = 8192):
         module = _NodeGNN(num_features, hidden, num_classes,
-                      dropout=dropout, num_layers=num_layers, aggr=aggr)
+                          dropout=dropout, num_layers=num_layers, aggr=aggr)
         super().__init__(module, device=device)
+        if max_batched_subgraph_nodes <= 0:
+            raise ValueError("max_batched_subgraph_nodes must be positive")
+        self.max_batched_subgraph_nodes = int(max_batched_subgraph_nodes)
         self.data = data
-        # Precompute which nodes carry a training label (only these produce a
-        # non-zero g0 loss when sampled as roots).
-        self._train_mask = data.train_mask
+        # Root ids originate in CPU SparseExpand. Keeping the lookup on CPU
+        # avoids synchronizing CUDA once per sampled root.
+        self._train_mask = data.train_mask.cpu()
 
     def subgraph_loss(self, subgraph) -> torch.Tensor:
         root = subgraph.root
@@ -76,6 +80,71 @@ class GNNMechanism(BaseMechanism):
         root_logits = out[0:1]
         root_y = self.data.y[root].view(1)
         return F.nll_loss(root_logits, root_y)
+
+    def _is_supervised(self, subgraph) -> bool:
+        return bool(self._train_mask[subgraph.root])
+
+    def _batched_loss_chunk(self, subgraphs: Sequence) -> List[torch.Tensor]:
+        """Evaluate supervised disconnected components in one GNN forward."""
+        losses = [self.zero_loss() for _ in subgraphs]
+        supervised = [(i, subgraph) for i, subgraph in enumerate(subgraphs)
+                      if self._is_supervised(subgraph)]
+        if not supervised:
+            return losses
+
+        offsets_list = []
+        offset = 0
+        for _, subgraph in supervised:
+            offsets_list.append(offset)
+            offset += subgraph.num_nodes
+        offsets = torch.tensor(offsets_list, dtype=torch.long,
+                               device=self.device)
+        nodes = torch.cat([subgraph.nodes for _, subgraph in supervised]).to(
+            self.device)
+        edge_parts = []
+        offset = 0
+        for _, subgraph in supervised:
+            if subgraph.num_edges:
+                edge_parts.append(subgraph.edge_index + offset)
+            offset += subgraph.num_nodes
+        edge_index = (torch.cat(edge_parts, dim=1).to(self.device)
+                      if edge_parts else torch.zeros(
+                          (2, 0), dtype=torch.long, device=self.device))
+
+        out = self.module(self.data.x[nodes], edge_index)
+        roots = torch.tensor([subgraph.root for _, subgraph in supervised],
+                             dtype=torch.long, device=self.device)
+        labels = self.data.y[roots].view(-1)
+        root_losses = F.nll_loss(out[offsets], labels, reduction='none')
+        for (i, _), loss in zip(supervised, root_losses.unbind()):
+            losses[i] = loss
+        return losses
+
+    def iter_subgraph_loss_batches(self, subgraphs: Sequence
+                                   ) -> Iterable[List[torch.Tensor]]:
+        """Yield bounded batches without retaining prior forward graphs."""
+        chunk = []
+        chunk_nodes = 0
+        for subgraph in subgraphs:
+            n_nodes = subgraph.num_nodes
+            if n_nodes > self.max_batched_subgraph_nodes:
+                if chunk:
+                    yield self._batched_loss_chunk(chunk)
+                    chunk, chunk_nodes = [], 0
+                yield [self.subgraph_loss(subgraph)]
+                continue
+            if chunk and chunk_nodes + n_nodes > self.max_batched_subgraph_nodes:
+                yield self._batched_loss_chunk(chunk)
+                chunk, chunk_nodes = [], 0
+            chunk.append(subgraph)
+            chunk_nodes += n_nodes
+        if chunk:
+            yield self._batched_loss_chunk(chunk)
+
+    def subgraph_losses(self, subgraphs: Sequence) -> List[torch.Tensor]:
+        """Return one loss per input root using disconnected GNN batches."""
+        return [loss for batch in self.iter_subgraph_loss_batches(subgraphs)
+                for loss in batch]
 
     @torch.no_grad()
     def evaluate(self, data=None) -> Dict[str, float]:

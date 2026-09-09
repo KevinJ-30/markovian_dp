@@ -12,6 +12,7 @@ from torch_geometric.datasets import Planetoid
 SUPPORTED_DATASETS = {
     # Planetoid (transductive node classification)
     'cora': 'Cora',
+    'cora-ml': 'Cora-ML',
     'citeseer': 'CiteSeer',
     'pubmed': 'PubMed',
     # OGB node classification
@@ -40,6 +41,31 @@ SUPPORTED_DATASETS = {
 }
 
 
+def _validated_ogb_node_split_indices(name, split_idx, num_nodes):
+    """Validate OGB's complete, disjoint official node split."""
+    if not isinstance(split_idx, dict):
+        raise ValueError(f"OGB dataset {name} has an invalid official split: expected a mapping")
+    indices, membership = {}, torch.zeros(num_nodes, dtype=torch.bool)
+    for local_name, ogb_name in (("train", "train"), ("val", "valid"), ("test", "test")):
+        if ogb_name not in split_idx:
+            raise ValueError(f"OGB dataset {name} has an invalid official split: missing {ogb_name}")
+        index = split_idx[ogb_name]
+        if not isinstance(index, torch.Tensor) or index.ndim != 1:
+            raise ValueError(f"OGB dataset {name} has an invalid official split: {ogb_name} must be one-dimensional")
+        if index.dtype.is_floating_point or index.dtype == torch.bool:
+            raise ValueError(f"OGB dataset {name} has an invalid official split: {ogb_name} must contain integer node IDs")
+        index = index.detach().cpu().to(torch.long)
+        if torch.any(index < 0) or torch.any(index >= num_nodes):
+            raise ValueError(f"OGB dataset {name} has an invalid official split: {ogb_name} contains out-of-range node IDs")
+        if torch.any(membership[index]):
+            raise ValueError(f"OGB dataset {name} has an invalid official split: node IDs overlap")
+        membership[index] = True
+        indices[local_name] = index
+    if not torch.all(membership):
+        raise ValueError(f"OGB dataset {name} has an invalid official split: node IDs do not cover every node")
+    return indices
+
+
 def _load_ogb_node(name):
     """Load an OGB node-property dataset, returning (dataset, data) with bool masks."""
     from ogb.nodeproppred import PygNodePropPredDataset
@@ -55,11 +81,10 @@ def _load_ogb_node(name):
     data = dataset[0]
     # OGB node labels are (N, 1) — squeeze to (N,)
     data.y = data.y.squeeze(-1)
-    split_idx = dataset.get_idx_split()
-    num_nodes = data.x.size(0)
-    for split_name in ['train', 'val', 'test']:
-        mask = torch.zeros(num_nodes, dtype=torch.bool)
-        mask[split_idx[split_name if split_name != 'val' else 'valid']] = True
+    indices = _validated_ogb_node_split_indices(name, dataset.get_idx_split(), data.x.size(0))
+    for split_name, index in indices.items():
+        mask = torch.zeros(data.x.size(0), dtype=torch.bool)
+        mask[index] = True
         setattr(data, f'{split_name}_mask', mask)
     return dataset, data
 
@@ -163,6 +188,39 @@ def _load_ppi():
     num_classes = int(data.y.size(1))
     return _SimpleDataset(data, num_features, num_classes,
                           multilabel=True), data
+
+
+def _load_cora_ml():
+    """Load the Cora-ML sparse graph distributed with DPAR."""
+    import numpy as np
+    import scipy.sparse as sp
+    from torch_geometric.data import download_url
+
+    root = os.environ.get('CORA_ML_DATA_ROOT', 'data/cora_ml')
+    os.makedirs(root, exist_ok=True)
+    path = os.path.join(root, 'cora_ml.npz')
+    if not os.path.exists(path):
+        download_url('https://raw.githubusercontent.com/Emory-AIMS/DPAR/'
+                     'b31f371522af8a5142f4c6b34f712cff30623b31/data/cora_ml.npz', root)
+    with np.load(path, allow_pickle=True) as archive:
+        raw = dict(archive)
+
+    def csr(prefix):
+        for separator in ('.', '_'):
+            key = f'{prefix}{separator}data'
+            if key in raw:
+                return sp.csr_matrix((raw[key], raw[f'{prefix}{separator}indices'],
+                                      raw[f'{prefix}{separator}indptr']),
+                                     shape=raw[f'{prefix}{separator}shape'])
+        raise KeyError(f'Cora-ML archive lacks {prefix} CSR fields')
+
+    adjacency = csr('adj_matrix') if 'adj_matrix.data' in raw or 'adj_matrix_data' in raw else csr('adj')
+    attributes = csr('attr_matrix') if 'attr_matrix.data' in raw or 'attr_matrix_data' in raw else csr('attr')
+    labels = torch.from_numpy(raw['labels']).long()
+    coo = adjacency.tocoo()
+    data = Data(x=torch.from_numpy(attributes.toarray()).float(), y=labels,
+                edge_index=torch.from_numpy(np.vstack((coo.row, coo.col))).long())
+    return _SimpleDataset(data, int(data.x.size(1)), int(labels.max()) + 1), data
 
 
 def _load_facebook(name='UIllinois20', target='year', min_count=1000,
@@ -489,6 +547,10 @@ def load_dataset(name, device='cpu', split_idx=0, **relbench_kwargs):
         dataset, data = _load_heterophilous(SUPPORTED_DATASETS[key], split_idx=split_idx)
         data = data.to(device)
         return dataset, data
+
+    if key == 'cora-ml':
+        dataset, data = _load_cora_ml()
+        return dataset, data.to(device)
 
     if key in ('ogbn-products', 'ogbn-arxiv'):
         dataset, data = _load_ogb_node(key)

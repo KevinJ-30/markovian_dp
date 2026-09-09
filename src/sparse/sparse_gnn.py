@@ -19,12 +19,13 @@ The engine only talks to a BaseMechanism, so it is identical for the GNN node
 classifier and a future non-GNN anomaly detector.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import torch
 
 from .base_mechanism import BaseMechanism
-from .sparse_expand import build_adjacency, sample_roots, sparse_expand
+from .sparse_expand import SparseAdjacency, build_adjacency, sample_roots, sparse_expand
+from .accounting import SparseGNNNoiseCalibration, calibrate_sparsegnn_noise
 
 
 def _make_generator(seed):
@@ -41,13 +42,11 @@ def _step_nondp(mechanism: BaseMechanism, subgraphs: List) -> float:
     opt = mechanism.optimizer
     opt.zero_grad()
 
+    losses = mechanism.subgraph_losses(subgraphs)
     total = mechanism.zero_loss()
-    n_supervised = 0
-    for H in subgraphs:
-        loss_H = mechanism.subgraph_loss(H)
+    for loss_H in losses:
         total = total + loss_H
-        n_supervised += 1
-    if n_supervised == 0:
+    if not losses:
         return 0.0
 
     total.backward()
@@ -67,30 +66,42 @@ def _step_dp(mechanism: BaseMechanism, subgraphs: List, *, C: float,
     """
     mechanism.train_mode()
     params = mechanism.parameters()
-    grad_accum = [torch.zeros_like(p) for p in params]
-
-    running = 0.0
-    for H in subgraphs:
-        loss_H = mechanism.subgraph_loss(H)
-        if float(loss_H.detach()) == 0.0 and not loss_H.requires_grad:
-            continue
-        grads = torch.autograd.grad(loss_H, params, retain_graph=False,
-                                    allow_unused=True)
-        grads = [g if g is not None else torch.zeros_like(p)
-                 for g, p in zip(grads, params)]
-        clipped = mechanism.clip_flat_grad(grads, C)
-        for acc, g in zip(grad_accum, clipped):
-            acc.add_(g)
-        running += float(loss_H.detach())
-
-    noise = mechanism.gaussian_noise_like(grad_accum, sigma, C, generator=noise_gen)
     opt = mechanism.optimizer
-    opt.zero_grad()
     denom = max(float(expected_batch), 1.0)
+
+    if not subgraphs:
+        noise = mechanism.gaussian_noise_like(
+            params, sigma, C, generator=noise_gen)
+        opt.zero_grad()
+        for p, z in zip(params, noise):
+            p.grad = z / denom
+        opt.step()
+        return 0.0
+
+    grad_accum = [torch.zeros_like(p) for p in params]
+    running = None
+    for losses in mechanism.iter_subgraph_loss_batches(subgraphs):
+        batch_running = None
+        for i, loss_H in enumerate(losses):
+            grads = torch.autograd.grad(
+                loss_H, params, retain_graph=i < len(losses) - 1,
+                allow_unused=True)
+            grads = [g if g is not None else torch.zeros_like(p)
+                     for g, p in zip(grads, params)]
+            clipped = mechanism.clip_flat_grad(grads, C)
+            for acc, g in zip(grad_accum, clipped):
+                acc.add_(g)
+            batch_running = (loss_H.detach() if batch_running is None
+                             else batch_running + loss_H.detach())
+        running = (batch_running if running is None else running + batch_running)
+
+    noise = mechanism.gaussian_noise_like(
+        grad_accum, sigma, C, generator=noise_gen)
+    opt.zero_grad()
     for p, acc, z in zip(params, grad_accum, noise):
         p.grad = (acc + z) / denom
     opt.step()
-    return running
+    return float(running) if running is not None else 0.0
 
 
 def _evaluate(mechanism, data, alt_edge_index):
@@ -110,7 +121,7 @@ def train_sparse_gnn(
     p2: float,
     r: int,
     T: int,
-    adj: Optional[List[torch.Tensor]] = None,
+    adj: Optional[SparseAdjacency] = None,
     direction: str = 'in',
     candidate_nodes: Optional[torch.Tensor] = None,
     dp: bool = False,
@@ -121,6 +132,7 @@ def train_sparse_gnn(
     track_every: int = 0,
     eval_alt_edge_index=None,
     verbose: bool = False,
+    checkpoint_callback: Optional[Callable[[Dict[str, float]], None]] = None,
 ) -> Dict[str, float]:
     """Run T steps of SparseGNN and return the final evaluation metrics.
 
@@ -194,8 +206,11 @@ def train_sparse_gnn(
             loss = _step_nondp(mechanism, subgraphs)
 
         if track_every and (t % track_every == 0 or t == T):
-            history.append({'step': t, **_evaluate(mechanism, data,
-                                                   eval_alt_edge_index)})
+            checkpoint = {'step': t, **_evaluate(mechanism, data,
+                                                 eval_alt_edge_index)}
+            history.append(checkpoint)
+            if checkpoint_callback is not None:
+                checkpoint_callback(checkpoint)
 
         if verbose and eval_every and (t % eval_every == 0 or t == 1):
             accs = mechanism.evaluate(data)
@@ -207,3 +222,51 @@ def train_sparse_gnn(
         final = dict(final)
         final['history'] = history
     return final
+
+
+def train_sparse_gnn_with_budget(
+    mechanism: BaseMechanism,
+    data,
+    *,
+    target_epsilon: float,
+    target_delta: float,
+    K_in: int,
+    K_out: int,
+    p1: float,
+    p2: float,
+    r: int,
+    T: int,
+    clip: float,
+    direction: str = "in",
+    theorem: str = "auto",
+    accounting_grid: float = 1e-4,
+    calibration_rtol: float = 1e-3,
+    calibration_atol: float = 1e-6,
+    max_sigma: float = 1e6,
+    adj=None,
+    candidate_nodes=None,
+    seed: int = 0,
+    eval_every: int = 0,
+    track_every: int = 0,
+    eval_alt_edge_index=None,
+    verbose: bool = False,
+    checkpoint_callback=None,
+) -> tuple[dict[str, Any], SparseGNNNoiseCalibration]:
+    """Calibrate one certified noise multiplier, then train with it once."""
+
+    calibration = calibrate_sparsegnn_noise(
+        target_epsilon=target_epsilon, target_delta=target_delta,
+        p1=p1, p2=p2, r=r, K_in=K_in, K_out=K_out, steps=T, clip=clip,
+        direction=direction, theorem=theorem, grid=accounting_grid,
+        sigma_rtol=calibration_rtol, sigma_atol=calibration_atol,
+        max_sigma=max_sigma,
+    )
+    metrics = train_sparse_gnn(
+        mechanism, data, p1=p1, p2=p2, r=r, T=T, adj=adj,
+        direction=direction, candidate_nodes=candidate_nodes, dp=True,
+        clip=clip, sigma=calibration.noise_multiplier, seed=seed,
+        eval_every=eval_every, track_every=track_every,
+        eval_alt_edge_index=eval_alt_edge_index, verbose=verbose,
+        checkpoint_callback=checkpoint_callback,
+    )
+    return metrics, calibration
