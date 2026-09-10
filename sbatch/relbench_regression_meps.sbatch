@@ -21,9 +21,12 @@
 #   sbatch --export=ALL,DS_NAME=rel-hm,TASK=user-churn,MODEL=binary_gnn,METRIC=test_auroc \
 #       sbatch/relbench_regression_meps.sbatch                        # classification, AUROC
 #
-# DEFAULTS point at rel-f1/driver-position on purpose (2026-09-09: rel-amazon/
-# rel-hm hit a download issue on ICE that there wasn't time to chase tonight;
-# rel-f1 has run successfully here before -- see results/relbench/relf1_*).
+# DEFAULTS point at rel-f1/driver-position as the known-safe smoke test.
+# rel-amazon and rel-hm both hit real bugs on 2026-09-09 (missing `pooch`
+# dependency on ICE; an unhashable list-valued column in rel-amazon's product
+# table crashing _encode_table) -- both are fixed now, and both datasets have
+# since completed full grids; see results/relbench/relhm_itemsales_meps and
+# results/relbench/relamazon_userltv_meps.
 # ENV_SCRIPT lets the same file run locally: ENV_SCRIPT=scripts/_local_env.sh
 # bash sbatch/relbench_regression_meps.sbatch (the #SBATCH lines are just
 # comments to plain bash).
@@ -55,6 +58,7 @@ source "${ENV_SCRIPT:-scripts/_ice_env.sh}"
 
 DS_NAME=${DS_NAME:-rel-f1}
 TASK=${TASK:-driver-position}
+BATCH=${BATCH:-256}   # matches Facebook/ProGAP; PPI/arxiv stay at 512 (GraphSAGE)
 # run.py writes every mechanism's primary metric into a column literally named
 # test_acc regardless of what it measures (accuracy for classification, MAE
 # for regression_gnn -- see run.py's CSV header) -- test_mae does not exist as
@@ -81,7 +85,7 @@ $PY -c 'import relbench' 2>/dev/null || {
 
 echo "=== STAGE 0: scope $DS $(date) ==="
 if ! $PY scripts/relbench_scope.py --dataset "$DS_NAME" --task "$TASK" \
-        --batch 512 --T $T --eps $EPS_LIST --r $R --grid $GRID \
+        --batch $BATCH --T $T --eps $EPS_LIST --r $R --grid $GRID \
         > "$OUT_ROOT/scope.env" 2> "$OUT_ROOT/scope.txt"; then
   cat "$OUT_ROOT/scope.txt" >&2
   echo "FATAL: scoping failed; nothing downstream can run without its p1/K" >&2

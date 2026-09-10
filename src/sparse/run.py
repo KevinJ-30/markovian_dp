@@ -388,6 +388,12 @@ def main():
             f"{args.dataset} is multilabel — use --model multilabel_gnn "
             f"(got --model {args.model})")
     task_type = str(getattr(dataset, 'task_type', ''))
+    if 'REGRESSION' in task_type.upper() and args.model != 'regression_gnn':
+        raise SystemExit(
+            f"{args.dataset} is a regression task ({task_type}) — use "
+            f"--model regression_gnn (got --model {args.model}); every "
+            f"other mechanism expects integer class labels and will crash "
+            f"on this task's float targets")
     if 'BINARY' in task_type.upper() and args.model != 'binary_gnn':
         print(f"  WARNING: {args.dataset} is a binary task "
               f"({task_type}) — --model binary_gnn (AUROC) is recommended, "

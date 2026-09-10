@@ -38,8 +38,10 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--dataset', default='rel-amazon')
     p.add_argument('--task', default='user-churn')
-    p.add_argument('--batch', type=int, default=512,
-                   help='target roots per step; p1 = batch / n_train')
+    p.add_argument('--batch', type=int, default=256,
+                   help='target roots per step; p1 = batch / n_train. 256 to '
+                        'match Facebook/ProGAP; PPI/arxiv still use 512 '
+                        '(GraphSAGE-matching) and were not changed.')
     p.add_argument('--T', type=int, default=500)
     p.add_argument('--eps', type=float, nargs='+', default=[1, 2, 4, 8])
     p.add_argument('--r', type=int, default=2,
