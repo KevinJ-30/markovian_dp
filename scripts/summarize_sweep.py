@@ -46,6 +46,13 @@ def _curve(rows, key):
 
 
 def _lower_is_better(rows, metric_arg):
+    # r2 is always higher-is-better, regardless of the mechanism's primary
+    # metric -- a regression_gnn run's declared metric is "mae" (lower-is-
+    # better), but its secondary test_r2/val_r2 columns are not. Check the
+    # column name for this special case before falling back to the
+    # mechanism-wide declared metric.
+    if metric_arg.endswith('_r2') or metric_arg == 'r2':
+        return False
     # run.py writes every mechanism's primary metric into a column literally
     # named test_acc regardless of what it measures -- accuracy for
     # classification, mae for regression_gnn -- so the --metric column name
