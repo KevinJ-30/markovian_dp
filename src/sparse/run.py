@@ -538,10 +538,15 @@ def main():
                     'cap_seed', 'K_in_achieved', 'K_out_achieved',
                     'train_acc', 'val_acc', 'test_acc', 'trivial_baseline',
                     'train_auroc', 'val_auroc', 'test_auroc',
-                    # Secondary metric for regression (RegressionGNNMechanism
+                    # Secondary metrics for regression (RegressionGNNMechanism
                     # reports MAE as the primary train/val/test columns above,
-                    # RMSE here).  Blank otherwise.
+                    # RMSE and R^2 here).  Blank otherwise.  R^2 uses the
+                    # evaluated split's own mean as the baseline (RelBench's
+                    # and sklearn's convention), not the trivial_baseline
+                    # column above, which predicts the TRAIN mean -- R^2=0
+                    # means "no better than predicting this split's own mean".
                     'train_rmse', 'val_rmse', 'test_rmse',
+                    'train_r2', 'val_r2', 'test_r2',
                     # Same metrics on the OTHER graph: the training graph when
                     # eval_graph=full, the full graph when eval_graph=train.
                     # They differ by the degree cap (and, for inductive runs,
@@ -645,6 +650,7 @@ def main():
                                             'test_auroc',
                                             'train_rmse', 'val_rmse',
                                             'test_rmse',
+                                            'train_r2', 'val_r2', 'test_r2',
                                             'train_alt', 'val_alt', 'test_alt',
                                             'train_auroc_alt', 'val_auroc_alt',
                                             'test_auroc_alt'))])

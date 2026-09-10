@@ -85,8 +85,14 @@ class RegressionGNNMechanism(BaseMechanism):
             if not n:
                 metrics[split] = float("nan")
                 metrics[f"{split}_rmse"] = float("nan")
+                metrics[f"{split}_r2"] = float("nan")
                 continue
             residual = (pred[mask] - target[mask]) * self._target_std
             metrics[split] = float(residual.abs().mean())
             metrics[f"{split}_rmse"] = float(residual.pow(2).mean().sqrt())
+            y_true = target[mask] * self._target_std
+            ss_tot = (y_true - y_true.mean()).pow(2).sum()
+            metrics[f"{split}_r2"] = (
+                float(1.0 - residual.pow(2).sum() / ss_tot)
+                if ss_tot > 0 else float("nan"))
         return metrics
