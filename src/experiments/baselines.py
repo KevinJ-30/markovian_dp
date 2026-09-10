@@ -29,6 +29,7 @@ class BaselineConfig:
     delta: float = 1e-5
     seed: int = 0
     multilabel: bool = False
+    regression: bool = False
 
 
 class MLP(nn.Module):
@@ -99,7 +100,8 @@ class BaselineTrainer:
     def _evaluate(self, model: nn.Module, partition: Any) -> tuple[float, float]:
         data = partition.data.to(self.device)
         model.eval()
-        return _task_metric(self._forward(model, data), data.y, self.config.multilabel)
+        return _task_metric(self._forward(model, data), data.y, self.config.multilabel,
+                           regression=self.config.regression)
 
     def fit(self, split: Any) -> dict[str, Any]:
         torch.manual_seed(self.config.seed)
@@ -118,7 +120,8 @@ class BaselineTrainer:
                     self._private_step(model, optimizer, train, generator)
             else:
                 optimizer.zero_grad(set_to_none=True)
-                _task_loss(self._forward(model, train), train.y, self.config.multilabel).backward()
+                _task_loss(self._forward(model, train), train.y, self.config.multilabel,
+                          regression=self.config.regression).backward()
                 optimizer.step()
             validation, _ = self._evaluate(model, split.val)
             if validation > best_val:
@@ -156,7 +159,8 @@ class BaselineTrainer:
         logits = model(data.x)
         for row, target in zip(logits[selected], data.y[selected]):
             gradients = torch.autograd.grad(
-                _task_loss(row[None], target[None], self.config.multilabel),
+                _task_loss(row[None], target[None], self.config.multilabel,
+                          regression=self.config.regression),
                 parameters, retain_graph=True)
             norm = torch.sqrt(sum(gradient.square().sum() for gradient in gradients)).clamp_min(1e-12)
             scale = min(1.0, self.config.clip / float(norm))

@@ -49,13 +49,14 @@ def _num_nodes(data: Any) -> int:
     return int(data.x.size(0))
 
 
-def _num_classes(data: Any, multilabel: bool = False) -> int:
+def _num_classes(data: Any, multilabel: bool = False, regression: bool = False) -> int:
     """Return the label space of the full source graph.
 
     Single-label (default): the categorical class count, from an integer
     class-index target.  Multilabel (e.g. PPI's 121 binary functional labels
     per node): the number of label columns, from a 2-D 0/1 target -- there is
-    no shared "class index" across nodes to take a max over.
+    no shared "class index" across nodes to take a max over.  Regression
+    (e.g. RelBench's item-ltv): a single continuous output, always 1.
     """
     if multilabel:
         if data.y.dim() != 2:
@@ -63,10 +64,13 @@ def _num_classes(data: Any, multilabel: bool = False) -> int:
                 "multilabel targets must be 2-D (num_nodes, num_labels), got "
                 f"shape {tuple(data.y.shape)}")
         return int(data.y.size(1))
+    if regression:
+        return 1
     labels = data.y.detach().cpu().reshape(-1)
     if labels.dtype.is_floating_point:
         raise ValueError("inductive node classification requires categorical "
-                         "labels (pass multilabel=True for a 0/1 label matrix)")
+                         "labels (pass multilabel=True for a 0/1 label matrix, "
+                         "or regression=True for a continuous target)")
     return int(labels.max()) + 1
 
 
@@ -186,9 +190,12 @@ def graph_statistics(data: Any) -> dict[str, Any]:
     """Comparable directed-edge statistics for one already-induced partition.
 
     Multilabel targets (2-D) have no single "class" to distribute over, so
-    their entry reports per-label positive rate instead -- detected from
-    `data.y`'s shape directly, since this is a read-only diagnostic rather
-    than a training-behavior switch.
+    their entry reports per-label positive rate instead. Regression targets
+    (1-D float) have no classes at all -- truncating them to int and counting
+    "classes" would silently report garbage bins rather than erroring, so
+    they get a mean/std entry instead. Both detected from `data.y`'s shape/
+    dtype directly, since this is a read-only diagnostic rather than a
+    training-behavior switch.
     """
     n = _num_nodes(data)
     edge_index = data.edge_index.cpu()
@@ -206,6 +213,10 @@ def graph_statistics(data: Any) -> dict[str, Any]:
     if y.dim() == 2:
         rates = y.float().mean(dim=0) if n else torch.zeros(y.size(1))
         stats["label_positive_rate"] = {str(i): float(r) for i, r in enumerate(rates)}
+    elif y.dtype.is_floating_point:
+        labels = y.reshape(-1).float()
+        stats["target_mean"] = float(labels.mean()) if n else float("nan")
+        stats["target_std"] = float(labels.std()) if n else float("nan")
     else:
         labels = y.reshape(-1).to(torch.long)
         classes, counts = torch.unique(labels, sorted=True, return_counts=True)
@@ -221,6 +232,7 @@ def load_or_create_inductive_split(
     seed: int = 0,
     split_strategy: Literal["stratified", "native"] = "stratified",
     multilabel: bool = False,
+    regression: bool = False,
 ) -> InductiveSplit:
     """Load or atomically define a saved graph-disjoint partition.
 
@@ -235,12 +247,17 @@ def load_or_create_inductive_split(
         single per-node class value, which a multi-hot row does not have --
         inventing a multilabel stratification heuristic here would not be
         faithful to any published method, so it is refused rather than guessed.
+    regression: the target is a continuous value (e.g. RelBench's item-ltv)
+        rather than a class index. Also requires split_strategy='native' --
+        same reasoning as multilabel, there is no class to stratify on.
     """
     if split_strategy not in {"stratified", "native"}:
         raise ValueError("split_strategy must be 'stratified' or 'native'")
-    if multilabel and split_strategy != "native":
+    if multilabel and regression:
+        raise ValueError("a target cannot be both multilabel and regression")
+    if (multilabel or regression) and split_strategy != "native":
         raise ValueError(
-            "multilabel targets require split_strategy='native' -- "
+            "multilabel/regression targets require split_strategy='native' -- "
             "stratified splitting has no single per-node class to balance on")
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
@@ -279,6 +296,6 @@ def load_or_create_inductive_split(
     return InductiveSplit(
         **partitions,
         masks=masks,
-        num_classes=_num_classes(data, multilabel=multilabel),
+        num_classes=_num_classes(data, multilabel=multilabel, regression=regression),
         path=path,
     )

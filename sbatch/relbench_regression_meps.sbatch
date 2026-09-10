@@ -72,8 +72,10 @@ R=${R:-2}
 T=${T:-500}
 SEEDS=${SEEDS:-3}
 GRID=1e-5
-EPS_LIST="1 2 4 8"
+EPS_LIST=${EPS_LIST:-"1 2 4 8"}
 P2_LIST=${P2_LIST:-"1.0 0.1"}
+DROPOUT=${DROPOUT:-0.0}
+WEIGHT_DECAY=${WEIGHT_DECAY:-0.0}
 
 mkdir -p "$OUT_ROOT" results/logs
 
@@ -100,7 +102,7 @@ echo "  -> p1=$SCOPE_P1  K_in=$SCOPE_K_IN  K_out=$SCOPE_K_OUT  n=$SCOPE_N_NODES"
 
 COMMON=(--dataset "$DS" --direction in --model "$MODEL" --aggr mean
         --inductive --p1 "$SCOPE_P1" --num_layers 2 --hidden 256 --clip 1.0
-        --dropout 0.0 --weight_decay 0.0 --roots_from train
+        --dropout $DROPOUT --weight_decay $WEIGHT_DECAY --roots_from train
         --seeds $SEEDS --T $T --track_every 25
         --K_in "$SCOPE_K_IN" --K_out "$SCOPE_K_OUT")
 

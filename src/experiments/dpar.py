@@ -222,21 +222,37 @@ def _multilabel_micro_f1(logits: Tensor, labels: Tensor) -> tuple[float, float]:
     return micro_f1, micro_f1
 
 
-def _task_loss(logits: Tensor, target: Tensor, multilabel: bool) -> Tensor:
+def _regression_mae(preds: Tensor, target: Tensor) -> tuple[float, float]:
+    """MAE, returned in both slots of the (metric, secondary) tuple every
+    trainer already unpacks -- matches src.sparse.regression_mechanism's
+    metric, so a baseline and the SparseGNN mechanism are judged the same way.
+    """
+    mae = float((preds.view(-1) - target.view(-1).float()).abs().mean())
+    return mae, mae
+
+
+def _task_loss(logits: Tensor, target: Tensor, multilabel: bool,
+               regression: bool = False) -> Tensor:
     """The loss each config's label shape needs -- not a change to either
     method's private mechanism.
 
     DPAR's ISTA/PPR/propagation and the plain MLP/GraphSAGE clip-and-noise loop
     both operate on whatever gradient this loss produces; neither looks at the
-    loss's type.  Swapping softmax cross-entropy for per-label BCE changes what
-    task is being fit, not what either method does with the resulting gradient.
+    loss's type.  Swapping softmax cross-entropy for per-label BCE (or MSE)
+    changes what task is being fit, not what either method does with the
+    resulting gradient.
     """
+    if regression:
+        return F.mse_loss(logits.view(-1), target.view(-1).float())
     if multilabel:
         return F.binary_cross_entropy_with_logits(logits, target.float())
     return F.cross_entropy(logits, target)
 
 
-def _task_metric(logits: Tensor, labels: Tensor, multilabel: bool) -> tuple[float, float]:
+def _task_metric(logits: Tensor, labels: Tensor, multilabel: bool,
+                 regression: bool = False) -> tuple[float, float]:
+    if regression:
+        return _regression_mae(logits, labels)
     return (_multilabel_micro_f1(logits, labels) if multilabel
            else _accuracy_and_macro_f1(logits, labels))
 

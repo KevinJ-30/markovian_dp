@@ -98,4 +98,12 @@ class BinaryGNNMechanism(BaseMechanism):
             mask = getattr(data, f"{split}_mask").cpu().numpy()
             metrics[split] = (_auroc(y[mask], scores[mask]) if mask.any()
                               else float("nan"))
+            # Secondary metric, NOT the primary one -- see the module
+            # docstring: on an imbalanced split (e.g. rel-hm/user-churn's
+            # ~82% positive rate) a constant predictor scores ~0.82 accuracy
+            # while having zero discriminative ability, so this number is
+            # only meaningful read alongside AUROC, never in place of it.
+            metrics[f"{split}_bin_acc"] = (
+                float((((scores[mask] > 0).astype(y.dtype)) == y[mask]).mean())
+                if mask.any() else float("nan"))
         return metrics

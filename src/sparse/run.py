@@ -553,6 +553,10 @@ def main():
                     # means "no better than predicting this split's own mean".
                     'train_rmse', 'val_rmse', 'test_rmse',
                     'train_r2', 'val_r2', 'test_r2',
+                    # Secondary metric for binary_gnn (metric_name="auroc" is
+                    # primary, above): plain accuracy, meaningful only next to
+                    # AUROC on an imbalanced split -- see binary_mechanism.py.
+                    'train_bin_acc', 'val_bin_acc', 'test_bin_acc',
                     # Same metrics on the OTHER graph: the training graph when
                     # eval_graph=full, the full graph when eval_graph=train.
                     # They differ by the degree cap (and, for inductive runs,
@@ -657,6 +661,8 @@ def main():
                                             'train_rmse', 'val_rmse',
                                             'test_rmse',
                                             'train_r2', 'val_r2', 'test_r2',
+                                            'train_bin_acc', 'val_bin_acc',
+                                            'test_bin_acc',
                                             'train_alt', 'val_alt', 'test_alt',
                                             'train_auroc_alt', 'val_auroc_alt',
                                             'test_auroc_alt'))])

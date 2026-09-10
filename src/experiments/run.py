@@ -60,6 +60,13 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     # gets a consistent split AND a consistent loss, rather than needing the
     # same flag repeated in "parameters" and risking the two disagreeing.
     multilabel = bool(config.get("multilabel", False))
+    # regression (e.g. RelBench's item-ltv): only mlp/dp_mlp/graphsage support
+    # it (BaselineConfig has the field); DPARConfig does not, and DPAR's own
+    # ISTA/PPR/propagation is out of scope for this change, so it is
+    # deliberately excluded from the method set below that receives this flag.
+    regression = bool(config.get("regression", False))
+    if multilabel and regression:
+        raise ValueError("a target cannot be both multilabel and regression")
     seed = int(config.get("seed", 0))
     device = _device(str(config.get("device", "auto")))
     # Dataset loading and split creation run on CPU. Private preprocessing and
@@ -72,12 +79,15 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
         seed=seed,
         split_strategy=split_strategy,
         multilabel=multilabel,
+        regression=regression,
     )
     method = config["method"]
     options = dict(config.get("parameters", {}))
     options.setdefault("seed", seed)
     if method in {"dpar", "mlp", "dp_mlp", "graphsage"}:
         options.setdefault("multilabel", multilabel)
+    if method in {"mlp", "dp_mlp", "graphsage"}:
+        options.setdefault("regression", regression)
     if method == "dpar":
         result = DPARTrainer(_dataclass_config(DPARConfig, options), device=device).fit(split)
     elif method in {"mlp", "dp_mlp", "graphsage"}:
