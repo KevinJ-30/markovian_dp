@@ -8,12 +8,19 @@ peak mid-training and then decay under the noise.  When a cell has per-checkpoin
 epsilon (from compute_epsilon on a --track_every CSV), the epsilon at that same
 checkpoint is shown, so cells are read at matched privacy rather than matched
 step count.
+
+The checkpoint is selected by VALIDATION performance, not test -- picking the
+step that scores best on test and then reporting that same test score is
+checkpoint-selection leakage (2026-09-09: caught this after regression runs
+with noisy test curves were showing implausibly good "best" numbers). Select
+on val, report the test value at that step.
 """
 
 import argparse
 import csv
 import glob
 import os
+import sys
 
 
 def _rows(path):
@@ -74,14 +81,32 @@ def main():
         curve, eps = _curve(rows, args.metric)
         if not curve:
             continue
+        # Select the checkpoint on VALIDATION, report TEST at that step --
+        # selecting on test itself is leakage (see module docstring). Fall
+        # back to selecting on test only if there is truly no val column to
+        # select on, and say so, rather than silently picking test's optimum.
+        val_key = ('val_' + args.metric[len('test_'):]
+                  if args.metric.startswith('test_') else None)
+        val_curve, _ = _curve(rows, val_key) if val_key else (None, None)
         # mae/rmse are losses (lower = better); every other metric here
         # (accuracy, micro_f1, auroc) is a score (higher = better).  Picking
         # "best" with the wrong direction silently reports the worst
         # checkpoint as the best one.
-        if _lower_is_better(rows, args.metric):
-            best = min(curve, key=curve.get)
+        lower_is_better = _lower_is_better(rows, args.metric)
+        if val_curve:
+            if lower_is_better:
+                best = min(val_curve, key=val_curve.get)
+            else:
+                best = max(val_curve, key=val_curve.get)
+            if best not in curve:
+                continue
         else:
-            best = max(curve, key=curve.get)
+            print(f"  WARNING: no {val_key or 'val'} column for {d}; "
+                  f"selecting on test itself (leakage)", file=sys.stderr)
+            if lower_is_better:
+                best = min(curve, key=curve.get)
+            else:
+                best = max(curve, key=curve.get)
         au, _ = _curve(rows, 'test_auroc')
         au_s = f"{au[best]:.4f}" if au and best in au else '-'
         eps_s = f"{eps[best]:.3f}" if eps.get(best) else '-'
