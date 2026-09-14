@@ -65,11 +65,25 @@ run_cell() {   # out_dir, then extra flags
   $PY -u -m src.sparse.run $COMMON "$@" --out_dir "$out"
 }
 
-# (K, p2) cells for the GNN arm, swept at r=1.  See the header for why K.
-CELLS=${CELLS:-"5:1.0 25:1.0 25:0.5 50:0.5"}
+# GNN cells as K:p2:r.  r IS PER-CELL -- the previous grid hardcoded --r 1 for
+# every cell, which is why its GNN arms all lost: measured non-privately on
+# PPI-large at K=25, 34 epochs, r=1 sits 8 points BELOW the graph-blind MLP
+# (0.4542 vs 0.5330) and does not improve with more steps, while r=2 beats it
+# by 29 points (0.8227).  One hop is not enough on these graphs.
+#
+# r=2 is what costs K_out^2 in the shells, and p2 is what buys it back --
+# measured sigma for eps=8 at r=2, T=3000:
+#     PPI-large  K=5  p2=1.0 -> 102.25   p2=0.1 ->  8.20   (12.5x)
+#     Amazon     K=5  p2=1.0 ->   3.67   p2=0.1 ->  1.07
+#     Amazon     K=10 p2=1.0 ->  13.23   p2=0.1 ->  1.68
+# and at p2=0.1 larger K stays reachable on Amazon: K=15 -> 4.25, K=20 -> 9.41.
+# (K=25 at p2=1.0 is NOT reachable -- the PLD grid blows up with the component
+# count when sigma is large; aggressive p2 keeps the mixture concentrated.)
+# which is the composite-subsampling claim, only visible at r=2.
+CELLS=${CELLS:-"5:0.1:2 10:0.1:2 15:0.1:2 5:1.0:2"}
 
 # ── non-DP ceilings (no privacy constraint) ──
-run_cell "$OUT_ROOT/nodp_gnn" --model multilabel_gnn --aggr mean --p2 1.0 --r 1 \
+run_cell "$OUT_ROOT/nodp_gnn" --model multilabel_gnn --aggr mean --p2 1.0 --r 2 \
     --num_layers 2 --K_in 25 --K_out 25
 run_cell "$OUT_ROOT/nodp_mlp" --model mlp --p2 1.0 --r 0 --num_layers 2 \
     --K_in 5 --K_out 5
@@ -87,16 +101,18 @@ done
 
 # ── DP-GNN arms: one calibration call per (K, p2) cell ──
 for cell in $CELLS; do
-  K=${cell%%:*}; P2=${cell##*:}
-  echo "--- calibrating GNN r=1 K=$K p2=$P2 ---"
-  $PY scripts/calibrate_grid.py --eps $EPS_LIST --p2 "$P2" --p1 $P1 --r 1 \
+  K=$(echo "$cell" | cut -d: -f1)
+  P2=$(echo "$cell" | cut -d: -f2)
+  R=$(echo "$cell" | cut -d: -f3)
+  echo "--- calibrating GNN r=$R K=$K p2=$P2 ---"
+  $PY scripts/calibrate_grid.py --eps $EPS_LIST --p2 "$P2" --p1 $P1 --r "$R" \
       --K "$K" --T $T --grid $GRID --delta $DELTA \
-      > "$OUT_ROOT/sigma_K${K}_p2${P2}.txt"
-  cat "$OUT_ROOT/sigma_K${K}_p2${P2}.txt"
-  grep -v '^#' "$OUT_ROOT/sigma_K${K}_p2${P2}.txt" | while read -r PP EPS SG; do
-    [ "$SG" = "SKIP" ] && { echo "  [skip] K=$K p2=$PP eps=$EPS unreachable"; continue; }
-    run_cell "$OUT_ROOT/gnn_K${K}_p2${PP}_eps${EPS}" --model multilabel_gnn \
-        --aggr mean --p2 "$PP" --r 1 --num_layers 2 \
+      > "$OUT_ROOT/sigma_K${K}_p2${P2}_r${R}.txt"
+  cat "$OUT_ROOT/sigma_K${K}_p2${P2}_r${R}.txt"
+  grep -v '^#' "$OUT_ROOT/sigma_K${K}_p2${P2}_r${R}.txt" | while read -r PP EPS SG; do
+    [ "$SG" = "SKIP" ] && { echo "  [skip] K=$K p2=$PP r=$R eps=$EPS unreachable"; continue; }
+    run_cell "$OUT_ROOT/gnn_K${K}_p2${PP}_r${R}_eps${EPS}" --model multilabel_gnn \
+        --aggr mean --p2 "$PP" --r "$R" --num_layers 2 \
         --K_in "$K" --K_out "$K" --dp --sigma "$SG"
   done
 done
