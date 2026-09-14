@@ -36,8 +36,17 @@ def _make_generator(seed):
     return g
 
 
-def _step_nondp(mechanism: BaseMechanism, subgraphs: List) -> float:
-    """Non-DP update: sum per-subgraph losses, one backward, one step."""
+def _step_nondp(mechanism: BaseMechanism, subgraphs: List,
+                expected_batch: float = 1.0) -> float:
+    """Non-DP update: mean of per-subgraph losses, one backward, one step.
+
+    Divided by the SAME data-independent `expected_batch = p1 * |pool|` the DP
+    path uses, so both paths present the optimizer with a mean gradient and a
+    single learning rate transfers between them.  Previously this took the raw
+    sum while the DP path took the mean, so at equal --lr the non-DP path
+    stepped ~E[B] times further (~512x on PPI) and the DP-vs-ceiling gap
+    confounded privacy noise with a gradient rescale.
+    """
     mechanism.train_mode()
     opt = mechanism.optimizer
     opt.zero_grad()
@@ -49,7 +58,7 @@ def _step_nondp(mechanism: BaseMechanism, subgraphs: List) -> float:
     if not losses:
         return 0.0
 
-    total.backward()
+    (total / max(float(expected_batch), 1.0)).backward()
     opt.step()
     return float(total.detach())
 
@@ -203,7 +212,7 @@ def train_sparse_gnn(
         else:
             if roots.numel() == 0:
                 continue
-            loss = _step_nondp(mechanism, subgraphs)
+            loss = _step_nondp(mechanism, subgraphs, expected_batch)
 
         if track_every and (t % track_every == 0 or t == T):
             checkpoint = {'step': t, **_evaluate(mechanism, data,

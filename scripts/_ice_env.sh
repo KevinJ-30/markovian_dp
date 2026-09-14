@@ -99,17 +99,29 @@ import torch
 print(f"  torch      = {torch.__version__} (cuda={torch.cuda.is_available()})")
 PREFLIGHT
 
-# The accountant must import and reproduce a known value, or every epsilon this
-# job reports is suspect.  7.2143 is the facebook cell
-# (p1=0.013, p2=1, r=1, K=5, sigma=5, T=500, delta=1e-6, grid=1e-4).
+# The accountant must import and reproduce known values, or every epsilon this
+# job reports is suspect.  Both are the facebook cell
+# (p1=0.013, p2=1, r=1, K=5, sigma=5, T=500, delta=1e-6, grid=1e-4):
+#
+#   14.8303  union-safe shells, n_d = 2*K_out^d -- the DEFAULT since
+#            2026-09-13.  Assumption 5.2 bounds the union g u g', which
+#            cap_degrees cannot enforce on the single graph we hold.
+#    7.2143  legacy shells, n_d = K_out^d, reachable via union_safe=False.
+#
+# Both are pinned deliberately.  Checking only the default would let a future
+# change be "fixed" by re-baselining this number; checking the pair means the
+# 2.06x ratio between them has to survive too.
 $PY -u - <<'REGRESSION' || { echo "FATAL: accountant regression failed" >&2; exit 1; }
 import sys
 sys.path.insert(0, '.')
 from src.sparse.accounting import sparsegnn_substitution_epsilon as EPS
-e = EPS(p1=0.013, p2=1.0, r=1, K_in=5, K_out=5, sigma=5.0,
-        steps=500, delta=1e-6, direction='in', grid=1e-4)
-ok = abs(e - 7.2143) < 1e-3
-print(f"  accountant = {e:.4f} (expect 7.2143) {'OK' if ok else 'MISMATCH'}")
+cell = dict(p1=0.013, p2=1.0, r=1, K_in=5, K_out=5, sigma=5.0,
+            steps=500, delta=1e-6, direction='in', grid=1e-4)
+union  = EPS(**cell)
+legacy = EPS(**cell, union_safe=False)
+ok = abs(union - 14.8303) < 1e-3 and abs(legacy - 7.2143) < 1e-3
+print(f"  accountant = {union:.4f} union-safe (expect 14.8303), "
+      f"{legacy:.4f} legacy (expect 7.2143) {'OK' if ok else 'MISMATCH'}")
 sys.exit(0 if ok else 1)
 REGRESSION
 echo "-----------"

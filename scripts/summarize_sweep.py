@@ -100,23 +100,42 @@ def main():
         # "best" with the wrong direction silently reports the worst
         # checkpoint as the best one.
         lower_is_better = _lower_is_better(rows, args.metric)
-        if val_curve:
+
+        def _pick(c, label):
+            """argmin/argmax over c, skipping NaN.
+
+            min()/max() seed with the first element and every comparison against
+            NaN is False, so a single leading NaN silently returns the EARLIEST
+            step as "best".  NaN is reachable: AUROC on a single-class split,
+            R^2 when ss_tot == 0, any metric on an empty mask.
+            """
+            finite = {s: v for s, v in c.items() if v == v}   # v == v is False for NaN
+            dropped = len(c) - len(finite)
+            if dropped:
+                print(f"  WARNING: {d}: {dropped}/{len(c)} {label} checkpoints "
+                      f"are NaN and were skipped", file=sys.stderr)
+            if not finite:
+                print(f"  WARNING: {d}: all {label} checkpoints are NaN; "
+                      f"skipping cell", file=sys.stderr)
+                return None
             if lower_is_better:
-                best = min(val_curve, key=val_curve.get)
-            else:
-                best = max(val_curve, key=val_curve.get)
-            if best not in curve:
+                return min(finite, key=lambda s: finite[s])
+            return max(finite, key=lambda s: finite[s])
+
+        if val_curve:
+            best = _pick(val_curve, val_key)
+            if best is None or best not in curve:
                 continue
         else:
             print(f"  WARNING: no {val_key or 'val'} column for {d}; "
                   f"selecting on test itself (leakage)", file=sys.stderr)
-            if lower_is_better:
-                best = min(curve, key=curve.get)
-            else:
-                best = max(curve, key=curve.get)
+            best = _pick(curve, args.metric)
+            if best is None:
+                continue
         au, _ = _curve(rows, 'test_auroc')
         au_s = f"{au[best]:.4f}" if au and best in au else '-'
-        eps_s = f"{eps[best]:.3f}" if eps.get(best) else '-'
+        # `if eps.get(best)` would print '-' for a genuine epsilon of 0.0.
+        eps_s = f"{eps[best]:.3f}" if eps.get(best) is not None else '-'
         print(f"{os.path.basename(d):<24} {curve[best]:>8.4f} {best:>6} "
               f"{eps_s:>8} {au_s:>8} {curve[max(curve)]:>8.4f}")
 

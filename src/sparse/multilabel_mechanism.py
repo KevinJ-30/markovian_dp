@@ -60,16 +60,24 @@ def _micro_auroc(scores: torch.Tensor, target: torch.Tensor) -> float:
     it damages the ranking, so micro-F1 understates a private model.  AUROC is
     threshold-free and therefore the honest comparison at low epsilon.
     """
-    s = scores.reshape(-1).float()
-    t = target.reshape(-1).float()
-    n_pos = float(t.sum())
-    n_neg = float((1.0 - t).sum())
+    import numpy as np
+    s = scores.reshape(-1).detach().cpu().numpy().astype(np.float64)
+    t = target.reshape(-1).detach().cpu().numpy()
+    pos = t == 1
+    n_pos, n_neg = int(pos.sum()), int((t == 0).sum())
     if n_pos == 0 or n_neg == 0:
         return float('nan')
-    order = torch.argsort(s)
-    ranks = torch.empty_like(s)
-    ranks[order] = torch.arange(1, s.numel() + 1, dtype=s.dtype)
-    return float((ranks[t == 1].sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg))
+    order = np.argsort(s, kind='mergesort')
+    ranks = np.empty(len(s), dtype=np.float64)
+    ranks[order] = np.arange(1, len(s) + 1)
+    # Average ranks within ties, matching binary_mechanism._auroc.  Without
+    # this a constant predictor scores != 0.5 (measured 0.4988 on a
+    # PPI-shaped target), which is where README's "AUROC 0.4955" floor came
+    # from.  float64 because the flattened (node, label) pool is large.
+    _, inv, counts = np.unique(s, return_inverse=True, return_counts=True)
+    sums = np.bincount(inv, weights=ranks)
+    ranks = (sums / counts)[inv]
+    return float((ranks[pos].sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg))
 
 
 class MultiLabelGNNMechanism(BaseMechanism):

@@ -126,8 +126,18 @@ def test_high_fiber_config_is_finite():
 def test_shell_sizes_pick_the_right_degree_bound():
     # in-expansion: a substituted vertex reaches roots in its FORWARD
     # neighbourhood, whose d-th shell is bounded by K_out^d (Eq. 44).
-    assert shell_sizes(2, K_in=3, K_out=5, direction='in') == [1, 5, 25]
-    assert shell_sizes(2, K_in=3, K_out=5, direction='out') == [1, 3, 9]
+    # Default is union-safe: n_d = 2*K^d for d >= 1, n_0 = 1 (Assumption 5.2
+    # bounds g u g', and only the substituted vertex's own degree doubles).
+    assert shell_sizes(2, K_in=3, K_out=5, direction='in') == [1, 10, 50]
+    assert shell_sizes(2, K_in=3, K_out=5, direction='out') == [1, 6, 18]
+    # union_safe=False recovers the pre-correction bound.
+    assert shell_sizes(2, K_in=3, K_out=5, direction='in',
+                       union_safe=False) == [1, 5, 25]
+    assert shell_sizes(2, K_in=3, K_out=5, direction='out',
+                       union_safe=False) == [1, 3, 9]
+    # n_0 is never doubled: s is one vertex in both graphs.
+    for us in (True, False):
+        assert shell_sizes(3, 4, 4, union_safe=us)[0] == 1
 
 
 def test_mixture_weights_are_a_distribution_of_the_right_length():

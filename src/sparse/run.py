@@ -28,7 +28,6 @@ from src.sparse.binary_mechanism import BinaryGNNMechanism  # noqa: E402
 from src.sparse.regression_mechanism import RegressionGNNMechanism  # noqa: E402
 from src.sparse.sparse_expand import (                      # noqa: E402
     build_adjacency, cap_degrees, cap_degrees_undirected, dedup_arcs,
-    edge_set_is_symmetric,
     max_degrees, sparse_expand,
 )
 from src.sparse.accounting import calibrate_sparsegnn_noise  # noqa: E402
@@ -93,10 +92,17 @@ def trivial_baseline(data, metric):
       accuracy  -> most frequent training class, evaluated on test
       micro_f1  -> predict every label positive: 2p/(1+p) at positive rate p
       auroc     -> 0.5 by definition
-      mae       -> MAE of "always predict the train mean" on test.  Targets are
-                   z-scored on train statistics (relbench_data.load_relbench),
-                   so the train mean is exactly 0 in z-space and this is
-                   mean(|y_test|) * target_std -- see RegressionGNNMechanism.
+      mae       -> MAE of "always predict the train mean" on test, i.e.
+                   mean(|y_test - mean(y_train)|) * target_std.
+
+                   NOTE: targets are scaled by target_std but NOT centred
+                   (relbench_data.load_relbench divides by the train std and
+                   leaves the mean alone), so the train mean is NOT 0 in the
+                   scaled space.  An earlier version computed
+                   mean(|y_test|) * target_std, which is the MAE of the
+                   ALL-ZERO predictor -- a much weaker bar on the non-negative
+                   heavy-tailed targets RelBench regression uses (LTV, sales),
+                   so "beats trivial" was too easy to clear.
 
     Recorded in the CSV as the floor every result must clear (for mae, the
     ceiling every result must undercut -- see _HIGHER_IS_BETTER).  Note
@@ -112,7 +118,8 @@ def trivial_baseline(data, metric):
         return 2 * p / (1 + p) if p > 0 else float("nan")
     if metric == "mae":
         target_std = float(getattr(data, 'target_std', 1.0))
-        return float(y[te].view(-1).float().abs().mean()) * target_std
+        train_mean = float(y[data.train_mask].view(-1).float().mean())
+        return float((y[te].view(-1).float() - train_mean).abs().mean()) * target_std
     tr_counts = _t.bincount(y[data.train_mask].view(-1))
     majority = int(tr_counts.argmax())
     return float((y[te].view(-1) == majority).float().mean())
@@ -221,6 +228,7 @@ def parse_args():
     p.add_argument('--hidden', type=int, default=64)
     p.add_argument('--num_layers', type=int, default=2, help='GCN layers L')
     p.add_argument('--dropout', type=float, default=0.5)
+    # 'auto' = adam, DP or not (see the opt_kind comment in main()).
     p.add_argument('--optimizer', choices=['auto', 'adam', 'sgd'],
                    default='auto',
                    help="'auto' = Adam for non-DP, SGD for DP.  Pin to 'sgd' "
@@ -249,6 +257,9 @@ def parse_args():
     p.add_argument('--accounting_theorem',
                    choices=['auto', 'substitution', 'thm45'], default='auto',
                    help='SparseGNN dominating-pair theorem used for calibration')
+    p.add_argument('--legacy_shells', action='store_true',
+                   help='drop the union-graph correction in the in-process '
+                        'calibration (n_d = K^d instead of 2*K^d)')
     p.add_argument('--accounting_grid', type=float, default=1e-4,
                    help='dp_accounting value discretization interval')
     p.add_argument('--calibration_rtol', type=float, default=1e-3,
@@ -263,12 +274,14 @@ def parse_args():
                    help='cap max out-degree before training (defaults to K_in)')
     p.add_argument('--cap_mode', choices=['auto', 'directed', 'undirected'],
                    default='auto',
-                   help="degree capping: 'directed' caps in- and out-arcs "
-                        "independently (destroys edge symmetry on undirected "
-                        "graphs); 'undirected' caps the undirected degree at "
+                   help="degree capping: 'auto' (default) = 'directed' for "
+                        "every graph -- an undirected graph is treated as a "
+                        "directed arc set, so dropping an arc does not drop "
+                        "its reverse, and in/out degree are capped "
+                        "independently (exactly the two bounds the accounting "
+                        "assumes); 'undirected' caps the undirected degree at "
                         "K_in (=K_out) and keeps both arcs of every surviving "
-                        "edge; 'auto' picks undirected iff the graph is "
-                        "symmetric and K_in == K_out")
+                        "edge, which preserves symmetry but is not required")
     p.add_argument('--cap_seed', type=int, default=None,
                    help='RNG seed for the degree cap.  Default (unset) uses the '
                         'run seed, so each --seed trains on its own capped '
@@ -278,11 +291,11 @@ def parse_args():
                         'noise variance instead).')
     p.add_argument('--eval_graph', choices=['auto', 'full', 'train'],
                    default='auto',
-                   help="graph for `evaluate`.  'auto' (default) = 'train' for "
-                        "a transductive run and 'full' for an inductive one: "
-                        "transductive inference happens on the same graph the "
-                        "model trained on, while an inductive model is scored "
-                        "on the unprocessed full graph it has never seen.  "
+                   help="graph for `evaluate`.  'auto' (default) = 'full' "
+                        "always: no training-side preprocessing (degree cap, "
+                        "dedup, split filter) is applied to the graph a result "
+                        "is measured on.  'train' reproduces the older "
+                        "transductive policy of scoring on the capped graph.  "
                         "'full' = data.edge_index (uncapped, unfiltered; for "
                         "RelBench the test-cutoff graph); 'train' = the exact "
                         "training graph (inductive-filtered, deduplicated, "
@@ -320,12 +333,19 @@ def parse_args():
 def main():
     args = parse_args()
     if args.eval_graph == 'auto':
-        # Transductive: score on the graph the model actually trained on (capped,
-        # deduplicated) — the model never saw a node with degree > K, so scoring
-        # it on the uncapped graph measures it off-distribution.  Inductive: the
-        # whole point is generalizing to unseen nodes, so score on the
-        # unprocessed full graph.
-        args.eval_graph = 'full' if args.inductive else 'train'
+        # ALWAYS the unprocessed full graph, transductive or inductive.  No
+        # preprocessing we apply for training's benefit — degree capping,
+        # deduplication, the inductive split filter — may touch the graph a
+        # result is measured on.
+        #
+        # This reverses an earlier policy under which a transductive run scored
+        # on the CAPPED training graph, on the argument that the model never saw
+        # a node of degree > K so the uncapped graph is off-distribution.  That
+        # argument is real, but it buys in-distribution evaluation by
+        # preprocessing the test set, which is not a protocol we can defend --
+        # and it contradicted what both README.md and the paper already claimed.
+        # The capped-graph number is still recorded, as the `*_alt` columns.
+        args.eval_graph = 'full'
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(args.out_dir, exist_ok=True)
     tag = '_dp' if args.dp else ''
@@ -383,10 +403,15 @@ def main():
     # Model/task guard: fail fast on pairings that would crash deep in a shape
     # error (single-label GNN on multilabel PPI) or silently report a
     # misleading metric (accuracy on an imbalanced binary RelBench task).
-    if getattr(dataset, 'multilabel', False) and args.model != 'multilabel_gnn':
+    # `mlp` is allowed: it handles multilabel too, and it is the ONLY genuinely
+    # graph-blind arm.  Excluding it here is what forced the drivers to use
+    # `--model multilabel_gnn --r 0` for the blind arm on PPI/Yelp/Amazon, which
+    # is not blind (its untrained neighbour weight is still used at evaluation).
+    if (getattr(dataset, 'multilabel', False)
+            and args.model not in ('multilabel_gnn', 'mlp')):
         raise SystemExit(
-            f"{args.dataset} is multilabel — use --model multilabel_gnn "
-            f"(got --model {args.model})")
+            f"{args.dataset} is multilabel — use --model multilabel_gnn, or "
+            f"--model mlp for the graph-blind arm (got --model {args.model})")
     task_type = str(getattr(dataset, 'task_type', ''))
     if 'REGRESSION' in task_type.upper() and args.model != 'regression_gnn':
         raise SystemExit(
@@ -394,6 +419,29 @@ def main():
             f"--model regression_gnn (got --model {args.model}); every "
             f"other mechanism expects integer class labels and will crash "
             f"on this task's float targets")
+    # The graph-blind arm must be `--model mlp`, not a GNN mechanism at --r 0.
+    # At r=0 a rooted subgraph has no edges, so SAGEConv.lin_l receives exactly
+    # zero gradient and never trains -- but evaluate() still runs a full forward
+    # over a REAL graph, multiplying real neighbour means by those weights.
+    # Under --dp lin_l becomes a pure Gaussian random walk.  Measured on
+    # rel-hm/user-churn the arm scores 0.509 AUROC on one eval graph and 0.602
+    # on the other; a genuinely blind model would be identical on both.
+    # r and L are INDEPENDENT knobs and both are legitimate to vary.  r is the
+    # expansion depth and is priced as K_out^r; L is the model depth and does
+    # not enter the accounting at all, so depth is free in epsilon.  Only the
+    # L > r direction has a (small) measured cost -- the subgraph's boundary
+    # nodes have no in-edges during training but do at evaluation, measured at
+    # 0.6% mean / 1.9% max on capped arxiv -- so note it and move on.
+    for _r in args.r:
+        if _r > 0 and args.num_layers > _r:
+            print(f"  note: L={args.num_layers} > r={_r}; the model reads "
+                  f"{args.num_layers} hops but expansion materializes {_r}, so "
+                  f"boundary nodes are aggregated differently at train and "
+                  f"eval time. Not a privacy issue -- L is free in epsilon.")
+    if 0 in args.r and args.model != 'mlp':
+        print(f"  WARNING: --r 0 with --model {args.model} is NOT graph-blind: "
+              f"its neighbour weights never train but are still used at "
+              f"evaluation. Use --model mlp for the blind arm.")
     if 'BINARY' in task_type.upper() and args.model != 'binary_gnn':
         print(f"  WARNING: {args.dataset} is a binary task "
               f"({task_type}) — --model binary_gnn (AUROC) is recommended, "
@@ -439,22 +487,42 @@ def main():
             print(f"  removed {n_raw - ei.size(1)} parallel arc(s): "
                   f"{n_raw} -> {ei.size(1)} (simple-graph assumption)")
         if K_in_req is None:
+            # `--K_out N` alone used to land here and silently apply NO cap at
+            # all, because K_out_req is only consulted below.  Fail instead.
+            if args.K_out is not None:
+                raise SystemExit(
+                    "--K_out requires --K_in: capping is driven by K_in here, "
+                    "so --K_out on its own silently applies no cap at all. "
+                    f"Pass --K_in (e.g. --K_in {args.K_out} --K_out {args.K_out}).")
             return ei, ''
         before = max_degrees(ei, n_nodes)
-        cap_gen = torch.Generator().manual_seed(int(cap_seed))
+        # Offset from the root-sampling stream, which is seeded with the same
+        # integer (sparse_gnn._make_generator(seed), seed == cap_seed by
+        # default).  Two fresh Generators from one seed draw the SAME uniforms,
+        # so which arcs survived the cap and which nodes are roots at step 1
+        # were deterministically coupled.  The amplification argument wants the
+        # Bernoulli root draws independent of graph construction.
+        cap_gen = torch.Generator().manual_seed(int(cap_seed) + 20_000)
         mode = args.cap_mode
         if mode == 'auto':
-            mode = ('undirected' if K_in_req == K_out_req and
-                    edge_set_is_symmetric(ei, n_nodes) else 'directed')
+            # ALWAYS directed, symmetric input or not.  Every graph is treated
+            # as a directed arc set: dropping an arc does not oblige us to drop
+            # its reverse.  This is what the accounting actually assumes --
+            # Assumption 5.2 bounds in- and out-degree of a directed graph, and
+            # cap_degrees enforces exactly those two bounds.
+            #
+            # This reverses an earlier policy that preferred the undirected
+            # variant on a symmetric graph to preserve edge symmetry (capping
+            # the two arcs of an edge independently loses the reverse of ~2/3 of
+            # survivors at K=5).  Symmetry was never required by the mechanism;
+            # preserving it just made in- and out-expansion coincide.  One
+            # capping rule for all graphs is simpler to state and to account.
+            mode = 'directed'
         if mode == 'undirected':
             if K_in_req != K_out_req:
                 raise SystemExit("--cap_mode undirected needs K_in == K_out")
             ei = cap_degrees_undirected(ei, n_nodes, K_in_req, generator=cap_gen)
         else:
-            # On a symmetric graph this caps the two arc directions
-            # independently and so destroys edge symmetry (~2/3 of surviving
-            # arcs lose their reverse at K=5); that is why 'auto' prefers
-            # 'undirected' there.
             ei = cap_degrees(ei, n_nodes, K_in=K_in_req, K_out=K_out_req,
                              generator=cap_gen)
         if label:
@@ -516,6 +584,12 @@ def main():
 
     _probe = _MECHANISMS[args.model]
     _metric = getattr(_probe, 'metric_name', 'accuracy')
+    # MLPMechanism picks its metric from the target shape at CONSTRUCTION
+    # (micro_f1 on a multilabel dataset), which this class-level probe cannot
+    # see — without this, trivial_baseline would take the accuracy branch and
+    # call bincount on a float multi-hot target.
+    if args.model == 'mlp' and getattr(dataset, 'multilabel', False):
+        _metric = 'micro_f1'
     trivial = trivial_baseline(data, _metric)
     _better_high = _HIGHER_IS_BETTER.get(_metric, True)
     print(f"  trivial baseline ({_metric}) on test: {trivial:.4f} "
@@ -562,7 +636,15 @@ def main():
                     # They differ by the degree cap (and, for inductive runs,
                     # the split filter), so both are recorded.
                     'train_acc_alt', 'val_acc_alt', 'test_acc_alt',
-                    'train_auroc_alt', 'val_auroc_alt', 'test_auroc_alt'])
+                    'train_auroc_alt', 'val_auroc_alt', 'test_auroc_alt',
+                    # _evaluate() suffixes EVERY key of the alt-graph pass, so
+                    # these were already computed and then dropped on the floor.
+                    # Without them the "measure the cap gap rather than assume
+                    # it" claim held only for the primary metric and AUROC, not
+                    # for regression or binary accuracy.
+                    'train_rmse_alt', 'val_rmse_alt', 'test_rmse_alt',
+                    'train_r2_alt', 'val_r2_alt', 'test_r2_alt',
+                    'train_bin_acc_alt', 'val_bin_acc_alt', 'test_bin_acc_alt'])
 
         for cell in grid:
             calibration = None
@@ -576,6 +658,7 @@ def main():
                     grid=args.accounting_grid,
                     sigma_rtol=args.calibration_rtol,
                     sigma_atol=args.calibration_atol,
+                    union_safe=not args.legacy_shells,
                 )
                 sigma = calibration.noise_multiplier
                 print(f"\n[p1={p1} p2={p2} r={r}]")
@@ -615,8 +698,23 @@ def main():
                     alt_ei = data.edge_index                  # uncapped
                 else:
                     alt_ei = gph['eval_capped'].to(device)    # capped
+                # Adam everywhere, DP or not.  Three reasons:
+                #   1. Every baseline we compare against is Adam -- DPAR is
+                #      literally DPAdamGaussianOptimizer upstream, ProGAP
+                #      defaults to it, HeterPoisson uses it -- so a same-
+                #      optimizer comparison is the defensible one.
+                #   2. It lets us adopt GraphSAINT's published per-dataset
+                #      config (lr=0.01 and their dropout values) as a package;
+                #      those were grid-searched under Adam.
+                #   3. Under DP it is still free: the optimizer is
+                #      post-processing of the already-noised gradient, so the
+                #      accountant never sees it.
+                # Measured on PPI-large (p2=0.1, r=2, K=5, T=300, sigma=5.25,
+                # eps~2): Adam@0.01 -> 0.4129 vs SGD@1.0 -> 0.4141, a tie
+                # inside seed noise, so this costs nothing in utility.
+                # --optimizer sgd remains available for the ablation.
                 opt_kind = (args.optimizer if args.optimizer != 'auto'
-                            else ('sgd' if args.dp else 'adam'))
+                            else 'adam')
                 mech.build_optimizer(lr=args.lr, weight_decay=args.weight_decay,
                                      kind=opt_kind, momentum=args.momentum)
 
@@ -665,7 +763,14 @@ def main():
                                             'test_bin_acc',
                                             'train_alt', 'val_alt', 'test_alt',
                                             'train_auroc_alt', 'val_auroc_alt',
-                                            'test_auroc_alt'))])
+                                            'test_auroc_alt',
+                                            'train_rmse_alt', 'val_rmse_alt',
+                                            'test_rmse_alt',
+                                            'train_r2_alt', 'val_r2_alt',
+                                            'test_r2_alt',
+                                            'train_bin_acc_alt',
+                                            'val_bin_acc_alt',
+                                            'test_bin_acc_alt'))])
 
                 for h in history:
                     if h['step'] < args.T:   # final checkpoint == the T row
@@ -695,7 +800,7 @@ def main():
     print(f"\nresults written to {csv_path}")
     if args.dp:
         print("compute epsilon post-hoc with:  python -m src.sparse.compute_epsilon "
-              f"--csv {csv_path}")
+              f"--csv {csv_path} --delta <delta> --grid {args.accounting_grid:g}")
 
     if args.plot:
         plot_path = plot_sweep([(s[0], s[1], s[2], s[4], s[5], s[6], s[7])

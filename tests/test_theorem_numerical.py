@@ -116,10 +116,24 @@ def test_real_expansion_reproduces_the_theorem_sampling_law(p1, p2, K_out):
     exact = _true_contribution_law(p1, p2, K_out)
     assert np.abs(empirical - exact).max() < 0.01
 
-    # ... and the accountant's pi is that same law (r=1, q_1 = p2, n_1 = K_out).
+    # ... and the accountant's pi is that same law, once the union-graph
+    # correction is switched off.  union_safe=False gives n_1 = K_out, which is
+    # the count on THIS graph -- which is what the Monte-Carlo above measures,
+    # since it samples a single star rather than a union of two.
     pi = sparsegnn_mixture_weights(p1, p2, r=1, K_in=1, K_out=K_out,
-                                   direction='in')
+                                   direction='in', union_safe=False)
     assert np.abs(np.asarray(pi) - exact).max() < 1e-9
+
+    # With the correction ON (the default) n_1 = 2*K_out, so pi is no longer
+    # equal to the single-graph law -- it must DOMINATE it, which is the
+    # property the guarantee actually rests on.  Check stochastic dominance:
+    # the survival function is pointwise at least as large everywhere.
+    pi_safe = np.asarray(sparsegnn_mixture_weights(
+        p1, p2, r=1, K_in=1, K_out=K_out, direction='in'))
+    m = max(len(pi_safe), len(exact))
+    tail_safe = np.cumsum(np.pad(pi_safe, (0, m - len(pi_safe)))[::-1])[::-1]
+    tail_true = np.cumsum(np.pad(exact, (0, m - len(exact)))[::-1])[::-1]
+    assert (tail_safe >= tail_true - 1e-12).all()
 
 
 # ── 2. the theorem's pair dominates the true mechanism ───────────────────────

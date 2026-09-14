@@ -15,7 +15,10 @@ out-expansion):
 
     K   = min(K_in, K_out)
     q_0 = 1,   q_d = 1 - prod_{l=d..r} (1 - p2^l)^{K^{l-1}}      (Eq. 43)
-    n_0 = 1,   n_d = K_out^d ('in') or K_in^d ('out')            (Eq. 44)
+    n_0 = 1,   n_d = 2*K_out^d ('in') or 2*K_in^d ('out')        (Eq. 44)
+               the factor 2 is the UNION-GRAPH correction: Assumption 5.2
+               bounds g u g', we can only cap g, and only s's own degree
+               doubles.  shell_sizes(..., union_safe=False) drops it.
     sum_k pi_k z^k = prod_{d=0..r} (1 - p1 q_d + p1 q_d z)^{n_d} (Eq. 46)
     P = sum_k pi_k N(-2k, sigma^2),  Q = sum_k pi_k N(+2k, sigma^2)  (Eq. 47)
 
@@ -81,25 +84,55 @@ def _binom_pmf(n: int, p: float) -> np.ndarray:
 
 
 def shell_sizes(r: int, K_in: int, K_out: Optional[int] = None,
-                direction: str = 'in') -> List[int]:
+                direction: str = 'in', union_safe: bool = True) -> List[int]:
     """n_0..n_r, the per-distance shell sizes of the substitution pairs.
 
     n_0 = 1 always (the substituted vertex itself as a root).  For d >= 1:
 
-        direction='in'   n_d = K_out^d   (Theorem 6.4, Eq. 44) — a substituted
-                         vertex s reaches a root v only if v is in s's FORWARD
+        direction='in'   n_d = K_out^d   (Eq. 44) — a substituted vertex s
+                         reaches a root v only if v is in s's FORWARD
                          neighbourhood, whose d-th shell has size <= K_out^d.
-        direction='out'  n_d = K_in^d    (Theorem 1/2) — the mirror statement.
+        direction='out'  n_d = K_in^d    — the mirror statement.
+
+    UNION-GRAPH CORRECTION (`union_safe`, the default)
+    --------------------------------------------------
+    Assumption 5.2 bounds the degrees of the UNION H = g u g', not of the single
+    graph we hold.  `cap_degrees` can only enforce a bound on g; g' is the
+    counterfactual.  If both are K-capped then H is 2K-capped at the substituted
+    vertex s, so the bound the theorem consumes is 2K, not K.
+
+    The correction is a factor of 2 per shell, NOT (2K)^d.  Definition 5.1 puts
+    E(sym-diff)E' inside ({s} x V) u (V x {s}), so for u,w != s the arc (u,w) is
+    in E iff it is in E' — every arc of H between two non-s vertices is common,
+    and only s's own out-degree doubles.  A shortest path from s never revisits
+    s, so only its FIRST step sees the inflated degree:
+
+        n_d <= 2*K_out * K_out^(d-1) = 2*K_out^d
+
+    n_0 stays 1: s is a single vertex in both graphs.  q_d is unaffected
+    whenever K_in <= K_out, because the backward path count from v never steps
+    out of s and so carries no factor of 2.
+
+    Cost, measured: 1.35x-2.69x epsilon depending on p2 and r (the sparse arm
+    pays least), equivalently a (1+2A)/(1+A) multiplier on the required sigma
+    with A = sum_{d>=1} n_d q_d.  At r=1 it is exactly one step down the p2
+    grid: doubling K and halving p2 leave epsilon identical.
+
+    Pass union_safe=False to recover the pre-correction bound.  That is the
+    right choice only for reproducing older numbers, or if the theory is
+    restated to bound g rather than g u g'.
     """
     if direction not in ('in', 'out'):
         raise ValueError(f"direction must be 'in' or 'out', got {direction!r}")
     base = (K_out if K_out is not None else K_in) if direction == 'in' else K_in
-    return [1] + [base ** d for d in range(1, r + 1)]
+    factor = 2 if union_safe else 1
+    return [1] + [factor * base ** d for d in range(1, r + 1)]
 
 
 def sparsegnn_mixture_weights(p1: float, p2: float, r: int, K_in: int,
                               K_out: Optional[int] = None,
-                              direction: str = 'in') -> np.ndarray:
+                              direction: str = 'in',
+                              union_safe: bool = True) -> np.ndarray:
     """Mixture weights of the substitution pairs (Eq. 46).
 
     pi is the law of J = sum_d Binomial(n_d, p1 q_d); length N_r + 1.
@@ -110,7 +143,8 @@ def sparsegnn_mixture_weights(p1: float, p2: float, r: int, K_in: int,
         raise ValueError("need r >= 0 and K_in >= 1")
     K = min(K_in, K_out if K_out is not None else K_in)
     q = _q_products(p2, r, K)
-    n = shell_sizes(r, K_in, K_out, direction=direction)
+    n = shell_sizes(r, K_in, K_out, direction=direction,
+                    union_safe=union_safe)
 
     pi = np.array([1.0])
     for d in range(0, r + 1):
@@ -260,9 +294,10 @@ def _substitution_pld(p1, p2, r, K_in, K_out, sigma, direction, grid,
 
 
 def _substitution_pld(p1, p2, r, K_in, K_out, sigma, direction, grid,
-                      n_sigma, atoms_per_sigma):
-    """Single-step PLD for the substitution pair (Thm 6.4 / Thm 1-2)."""
-    pi = sparsegnn_mixture_weights(p1, p2, r, K_in, K_out, direction=direction)
+                      n_sigma, atoms_per_sigma, union_safe=True):
+    """Single-step PLD for the substitution pair (Thm 5.4 / Thm 1-2)."""
+    pi = sparsegnn_mixture_weights(p1, p2, r, K_in, K_out, direction=direction,
+                                   union_safe=union_safe)
     return _substitution_pld_from_weights(
         pi, sigma, grid, n_sigma, atoms_per_sigma)
 
@@ -302,6 +337,7 @@ def sparsegnn_substitution_epsilon_schedule(
     grid: float = 1e-4,
     n_sigma: float = 10.0,
     atoms_per_sigma: float = 400.0,
+    union_safe: bool = True,
 ):
     """{t: epsilon} per checkpoint under node substitution.
 
@@ -309,7 +345,7 @@ def sparsegnn_substitution_epsilon_schedule(
     at step t.
     """
     base = _substitution_pld(p1, p2, r, K_in, K_out, sigma, direction, grid,
-                             n_sigma, atoms_per_sigma)
+                             n_sigma, atoms_per_sigma, union_safe=union_safe)
     return _compose_schedule(
         [base], steps, lambda cur: cur[0].get_epsilon_for_delta(delta))
 
@@ -327,6 +363,7 @@ def sparsegnn_substitution_epsilon(
     grid: float = 1e-4,
     n_sigma: float = 10.0,
     atoms_per_sigma: float = 400.0,
+    union_safe: bool = True,
 ) -> float:
     """(eps, delta) for T steps under node substitution.
 
@@ -335,7 +372,7 @@ def sparsegnn_substitution_epsilon(
     reverse.  `grid` is dp_accounting's value_discretization_interval.
     """
     pld = _substitution_pld(p1, p2, r, K_in, K_out, sigma, direction, grid,
-                            n_sigma, atoms_per_sigma)
+                            n_sigma, atoms_per_sigma, union_safe=union_safe)
     return pld.self_compose(steps).get_epsilon_for_delta(delta)
 
 
@@ -452,6 +489,7 @@ def sparsegnn_epsilon_schedule(
     grid: float = 1e-4,
     n_sigma: float = 10.0,
     atoms_per_sigma: float = 400.0,
+    union_safe: bool = True,
 ):
     """Checkpoint epsilon schedule under the selected applicable theorem."""
     if resolve_sparsegnn_theorem(direction, theorem) == "thm45":
@@ -461,7 +499,7 @@ def sparsegnn_epsilon_schedule(
     return sparsegnn_substitution_epsilon_schedule(
         p1, p2, r, K_in, sigma, steps, delta, K_out=K_out,
         direction=direction, grid=grid, n_sigma=n_sigma,
-        atoms_per_sigma=atoms_per_sigma)
+        atoms_per_sigma=atoms_per_sigma, union_safe=union_safe)
 
 
 def sparsegnn_epsilon(
@@ -478,6 +516,7 @@ def sparsegnn_epsilon(
     grid: float = 1e-4,
     n_sigma: float = 10.0,
     atoms_per_sigma: float = 400.0,
+    union_safe: bool = True,
 ) -> float:
     """Final-iterate epsilon under the selected applicable theorem."""
     if resolve_sparsegnn_theorem(direction, theorem) == "thm45":
@@ -487,7 +526,7 @@ def sparsegnn_epsilon(
     return sparsegnn_substitution_epsilon(
         p1, p2, r, K_in, sigma, steps, delta, K_out=K_out,
         direction=direction, grid=grid, n_sigma=n_sigma,
-        atoms_per_sigma=atoms_per_sigma)
+        atoms_per_sigma=atoms_per_sigma, union_safe=union_safe)
 
 
 @dataclass(frozen=True)
@@ -520,7 +559,7 @@ def calibrate_sparsegnn_noise(
     steps: int, clip: float = 1.0, direction: str = "in",
     theorem: str = "auto", grid: float = 1e-4,
     sigma_rtol: float = 1e-3, sigma_atol: float = 1e-6,
-    max_sigma: float = 1e6,
+    max_sigma: float = 1e6, union_safe: bool = True,
 ) -> SparseGNNNoiseCalibration:
     """Find the smallest known-safe multiplier for a SparseGNN privacy budget."""
     target_epsilon = _positive_finite("target_epsilon", target_epsilon)
@@ -540,7 +579,8 @@ def calibrate_sparsegnn_noise(
     resolved = resolve_sparsegnn_theorem(direction, theorem)
     if resolved == "substitution":
         weights = sparsegnn_mixture_weights(
-            p1, p2, r, K_in, K_out, direction=direction)
+            p1, p2, r, K_in, K_out, direction=direction,
+            union_safe=union_safe)
 
         def build(sigma):
             return _substitution_pld_from_weights(

@@ -44,7 +44,16 @@ def parse_args():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--csv', required=True,
                    help='results CSV from `python -m src.sparse.run --dp`')
-    p.add_argument('--delta', type=float, default=1e-5)
+    # No default: the repo has used 1e-6, 1e-5 and n^-1.01 in different
+    # drivers, and a silent default here produced runs whose delta matched
+    # none of them.  Requiring it forces the choice to be recorded.
+    p.add_argument('--delta', type=float, required=True,
+                   help='target delta; must satisfy delta << 1/n for '
+                        'node-level DP to be meaningful')
+    p.add_argument('--assume_direction', choices=['in', 'out'], default=None,
+                   help="orientation to assume for rows whose `direction` "
+                        "column is missing or blank (pre-orientation-fix CSVs "
+                        "used 'out'); without this such rows are an error")
     p.add_argument('--theorem', choices=['auto', 'substitution', 'thm45'],
                    default='auto',
                    help="which dominating pair drives the `epsilon` column; "
@@ -53,6 +62,10 @@ def parse_args():
     p.add_argument('--grid', type=float, default=1e-4,
                    help="dp_accounting value_discretization_interval "
                         "(pessimistic rounding; smaller = tighter but slower)")
+    p.add_argument('--legacy_shells', action='store_true',
+                   help="drop the union-graph correction (n_d = K^d instead of "
+                        "2*K^d). Only for reproducing pre-2026-09-13 numbers; "
+                        "Assumption 5.2 bounds g u g', not g")
     p.add_argument('--out', default=None,
                    help='output CSV (default: <input>_with_eps.csv)')
     return p.parse_args()
@@ -60,6 +73,10 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if not 0.0 < args.delta < 1.0:
+        # Previously unvalidated: --delta 1.5 wrote eps=0.0000 for every row
+        # (plus a negative eps_naive from Opacus), and --delta 0 wrote inf.
+        raise SystemExit(f"--delta must lie in (0, 1), got {args.delta}")
     out_path = args.out or args.csv.replace('.csv', '_with_eps.csv')
 
     with open(args.csv, newline='') as fh:
@@ -75,8 +92,21 @@ def main():
     # share one incremental composition schedule, so eps(t) for 40 checkpoints
     # costs about as much as a single full-length composition.
     def _row_key(row):
-        # Pre-orientation-fix CSVs have no `direction`; they used Algorithm 4.
-        direction = row.get('direction') or 'out'
+        # A missing or blank `direction` used to silently default to 'out',
+        # which does not just change the number -- it switches the ADJACENCY
+        # RELATION, from node substitution (Thm 5.4) to insertion/removal
+        # (Thm 4.5).  Measured on one synthetic row: 4.85 with direction=in vs
+        # 7.79 with the column absent, and at p1=0.3 the ordering even flips.
+        # Pre-orientation-fix CSVs genuinely lack the column; they used
+        # Algorithm 4, so pass --assume_direction out to process them.
+        direction = row.get('direction') or args.assume_direction or ''
+        if not direction:
+            raise SystemExit(
+                "this CSV has no `direction` value, and defaulting it would "
+                "silently pick a different neighbouring relation (substitution "
+                "vs insertion/removal). Pass --assume_direction {in,out} to "
+                "state which orientation produced it; pre-orientation-fix CSVs "
+                "used 'out'.")
         return (direction, float(row['p1']), float(row['p2']),
                 int(row['r']), float(row['sigma']), int(row['T']),
                 int(row['K_in']), int(row['K_out']))
@@ -107,7 +137,7 @@ def main():
         sub_sched = sparsegnn_substitution_epsilon_schedule(
             p1=p1, p2=p2, r=r, K_in=K_in, K_out=K_out, sigma=sigma,
             steps=steps, delta=args.delta, direction=direction,
-            grid=args.grid)
+            grid=args.grid, union_safe=not args.legacy_shells)
 
         theorem = args.theorem
         if theorem == 'auto':
@@ -152,6 +182,30 @@ def main():
         row['epsilon_substitution'] = f"{sub_cache[(key, t)]:.5f}"
         row['epsilon_naive_opacus'] = f"{naive_cache[(key, t)]:.5f}"
         row['delta'] = f"{args.delta:g}"
+        # Record the discretization the epsilon was computed at.  Without it a
+        # reader cannot tell whether this eps is comparable to a sigma that was
+        # calibrated at a different grid -- the matched-eps drivers calibrate at
+        # 1e-5 while every compute_epsilon call site uses the 1e-4 default.
+        row['epsilon_grid'] = f"{args.grid:g}"
+        row['union_safe_shells'] = str(not args.legacy_shells)
+
+    # Warn if the run recorded an in-process calibration at a different
+    # discretization than the one used here, since the two epsilons then are
+    # not the same quantity.
+    mismatched = set()
+    for r in rows:
+        g = r.get('accounting_grid')
+        if not g:
+            continue
+        try:
+            if abs(float(g) - args.grid) > 1e-15:
+                mismatched.add(float(g))
+        except ValueError:
+            continue
+    if mismatched:
+        print(f"WARNING: rows were calibrated at grid={sorted(mismatched)} but "
+              f"epsilon here is computed at grid={args.grid:g}; the reported "
+              f"epsilon and the recorded calibrated_epsilon are not comparable.")
 
     fieldnames = list(rows[0].keys())
     with open(out_path, 'w', newline='') as fh:
