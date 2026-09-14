@@ -4,8 +4,8 @@
 #SBATCH -p ice-cpu
 #SBATCH -N1 --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=180G
-#SBATCH -t24:00:00
+#SBATCH --mem=128G
+#SBATCH -t8:00:00
 #SBATCH -oReport-amazon-meps-%j.out
 #SBATCH --mail-type=END,FAIL
 #
@@ -24,14 +24,16 @@
 #   NOTE the paper's Table 1 says 1,598,960 nodes and .85/.05/.10 -- the
 #   released files disagree on both.  We report what we run on.
 #
-# WHY 180G.  This is the memory-critical job.  edge_index alone is
+# WHY 128G.  This is the memory-critical job.  edge_index alone is
 # 262.8M arcs x 2 x int64 = 4.2 GB, and train_edge_index is another ~3.4 GB.
 # Add features (1.26 GB), labels (672 MB), the per-seed capped copy, and the
 # CSR adjacency, and loading alone is ~15 GB.  The full-graph evaluation
 # forward over 262.8M arcs x 200 features is the real spike -- it exceeds
 # base_mechanism's 250M arc-feature threshold so it takes the CSR path, but
 # that still materializes large intermediates.  180G is deliberately generous;
-# if it lands comfortably, drop it and re-submit.
+# if it OOMs, raise TRACK_EVERY first -- the spike is the full-graph eval, not
+# training.  -t is 8h; the run resumes
+# on resubmit (run_cell skips completed cells).
 #
 # WHY NOT GPU.  Expansion and the adjacency build are CPU-side, and the
 # multilabel head runs one forward per root rather than a batched one, so the

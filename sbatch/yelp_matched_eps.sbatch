@@ -5,7 +5,7 @@
 #SBATCH -N1 --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH -t12:00:00
+#SBATCH -t8:00:00
 #SBATCH -oReport-yelp-meps-%j.out
 #SBATCH --mail-type=END,FAIL
 #
