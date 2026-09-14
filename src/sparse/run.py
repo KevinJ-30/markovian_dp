@@ -426,19 +426,18 @@ def main():
     # Under --dp lin_l becomes a pure Gaussian random walk.  Measured on
     # rel-hm/user-churn the arm scores 0.509 AUROC on one eval graph and 0.602
     # on the other; a genuinely blind model would be identical on both.
-    # r = L is the main-experiment policy: an L-layer mean-GNN reads exactly the
-    # radius-L ball, so matching them makes the rooted computation equal
-    # full-graph inference.  L > r trains on a truncated receptive field and
-    # evaluates on a full one; r > L pays epsilon for hops the model never
-    # reads.  Ablations vary them deliberately, hence a warning not an error.
+    # r and L are INDEPENDENT knobs and both are legitimate to vary.  r is the
+    # expansion depth and is priced as K_out^r; L is the model depth and does
+    # not enter the accounting at all, so depth is free in epsilon.  Only the
+    # L > r direction has a (small) measured cost -- the subgraph's boundary
+    # nodes have no in-edges during training but do at evaluation, measured at
+    # 0.6% mean / 1.9% max on capped arxiv -- so note it and move on.
     for _r in args.r:
-        if _r > 0 and _r != args.num_layers:
-            print(f"  NOTE: r={_r} != L={args.num_layers}. Main experiments use "
-                  f"r = L (= 2); "
-                  + ("the model reads fewer hops than epsilon paid for."
-                     if _r > args.num_layers else
-                     "training sees a truncated neighbourhood that evaluation "
-                     "does not."))
+        if _r > 0 and args.num_layers > _r:
+            print(f"  note: L={args.num_layers} > r={_r}; the model reads "
+                  f"{args.num_layers} hops but expansion materializes {_r}, so "
+                  f"boundary nodes are aggregated differently at train and "
+                  f"eval time. Not a privacy issue -- L is free in epsilon.")
     if 0 in args.r and args.model != 'mlp':
         print(f"  WARNING: --r 0 with --model {args.model} is NOT graph-blind: "
               f"its neighbour weights never train but are still used at "

@@ -21,21 +21,23 @@
 #   REG          --dropout / --weight_decay
 #
 #
-# DEPTH: r = L = 2 FOR THE MAIN EXPERIMENTS
-# -----------------------------------------
-# Main runs use r = L = 2.  Matching them is what makes the rooted computation
-# EXACT: an L-layer mean-GNN reads exactly the radius-L ball, so r = L
-# materializes precisely what the model consumes -- no hop is paid for in
-# epsilon and then discarded (r > L), and no hop is consumed that the sampler
-# never provided (L > r, which trains on a truncated receptive field and then
-# evaluates on a full one).
+# DEPTH: L FIXED AT 2, r SWEPT INDEPENDENTLY
+# ------------------------------------------
+# r and L are separate knobs and are NOT tied together.  r is the expansion
+# depth and prices epsilon as K_out^r; L is the model depth and does not enter
+# the accounting at all, so depth is FREE in epsilon.  Tying them throws that
+# away: at r=1 it would force a one-layer model, which measures capacity rather
+# than sparsification.
 #
-#     r=2 L=2  EXACT   rooted computation = full-graph inference; eps ~ K_out^2
+# r=2 IS REQUIRED for the graph to be worth anything.  Measured non-privately on
+# PPI-large at K=25 over 34 epochs, against a graph-blind MLP at 0.5330 micro-F1:
+#     r=1 L=1   0.4542   -- 8 points BELOW blind, and flat in T
+#     r=2 L=2   0.8227   -- 29 points above, crossing over by ~3 epochs
+# One hop carries less than the node's own features on these graphs.
 #
-# An earlier policy pinned L=2 and swept r in {1,2}, on the grounds that a
-# one-layer model at r=1 measured capacity rather than sparsification.  That
-# fix was right about L but left r=1/L=2 mismatched.  r is now varied only in
-# the ABLATIONS (where L moves with it); r=3 would cost K_out^3.
+# r=2 is also what makes sparsification worth something: sigma for eps=8 at
+# T=3000 on PPI-large K=5 is 102.25 at p2=1.0 against 8.20 at p2=0.1, a 12.5x
+# saving, where at r=1 the same move bought 1.3-2x.  r=3 would cost K_out^3.
 #
 #
 # REGULARIZATION
@@ -50,8 +52,8 @@
 _ds=$1
 
 REG=(--dropout 0.0 --weight_decay 0.0)
-R_VALUES=(2)
-L=2          # GNN depth; kept EQUAL to r for the main runs (see DEPTH above)
+R_VALUES=(2)   # r=1 does not beat the graph-blind arm; see DEPTH above
+L=2            # GNN depth, fixed and INDEPENDENT of r (free in epsilon)
 CEIL_R=2
 
 case $_ds in

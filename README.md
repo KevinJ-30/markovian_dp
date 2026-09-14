@@ -23,7 +23,8 @@ Poisson subsampling alone gives, which is what the dominating pairs in
 
 ```
 src/
-  datasets.py              loader: Planetoid, OGB, Reddit, Flickr, PPI, RelBench
+  datasets.py              loader: Planetoid, OGB, Reddit, Flickr, PPI, RelBench,
+                           GraphSAINT (see "Datasets" below)
   sparse/
     sparse_expand.py       SparseExpand, root sampling, degree capping
     sparse_gnn.py          training engine (non-DP and DP paths)
@@ -40,6 +41,7 @@ src/
     gad/                   graph anomaly detection (XGBoost, GADBench) — side pipeline
 
 scripts/                   drivers and figures (see scripts/README.md)
+  setup_graphsaint.sh      unpack the manually-downloaded GraphSAINT graphs
 sbatch/                    SLURM jobs for the cluster runs
 tests/                     106 tests; see "Tests" below
 results/                   experiment output, grouped by dataset (results/README.md)
@@ -54,6 +56,61 @@ pip install torch torch_geometric ogb opacus dp_accounting scipy pandas matplotl
 
 `relbench` is needed only for RelBench datasets, and `xgboost` + `scikit-learn`
 only for `src/sparse/gad/` (its test skips when absent).
+
+## Datasets
+
+Most datasets download themselves on first use, into `data/` (gitignored):
+Planetoid, OGB, PyG's Reddit/Flickr/PPI, and the GADBench graphs need no setup,
+and RelBench pulls its databases through the `relbench` package.
+
+**The four large GraphSAINT graphs are the exception and need a manual
+download.** Zeng et al. distribute them as a Google Drive folder with no
+programmatic endpoint, so nothing in this repo can fetch them for you, and a
+fresh clone will fail on `--dataset ppi-large` until you do this:
+
+```bash
+# 1. Download from the Google Drive link in github.com/GraphSAINT/GraphSAINT
+#    (README, "Dataset"). Drive splits a folder into -001, -002, ... parts;
+#    take all of them for each dataset you want. They land in ~/Downloads.
+
+# 2. Unpack into the layout the loader expects, and verify.
+./scripts/setup_graphsaint.sh ~/Downloads
+
+# 3. Point the loader at the result (add to your shell profile to make it stick).
+export GRAPHSAINT_DATA_ROOT=$PWD/data/graphsaint
+```
+
+`GRAPHSAINT_DATA_ROOT` defaults to `data/graphsaint`, so step 3 is only needed
+if you extracted somewhere else — `setup_graphsaint.sh <zips> <dest>` takes a
+destination, which is what you want on a cluster where the data belongs on
+scratch rather than in the repo. The script is idempotent; re-run it freely.
+
+| `--dataset` | nodes | edges (Table 1) | labels | extracted |
+|---|---:|---:|---|---:|
+| `ppi-large`    |    56,944 |     818,716 | 121 multilabel | 36 MB |
+| `saint-flickr` |    89,250 |     899,756 | 7 classes      | — |
+| `saint-reddit` |   232,965 |  11,606,919 | 41 classes     | 1.2 GB |
+| `yelp`         |   716,847 |   6,977,410 | 100 multilabel | 2.2 GB |
+| `amazon`       | 1,598,960 | 132,169,734 | 107 multilabel | 3.7 GB |
+
+The edge column is GraphSAINT's Table 1 verbatim, and the loader reproduces it
+from the raw files — but **that figure counts self-loops and the loaded graph
+does not**, because the accounting counts paths in a simple graph. PPI-large
+carries 25,084 of them, so `data.edge_index` holds 793,632 undirected edges,
+not 818,716. Reddit has none and is unaffected. Extracted sizes are measured
+except `saint-flickr`, which the loader supports but we have never downloaded
+or run — treat that row as untested. First load writes a `_labels_cache.pt`
+next to the raw files (27 MB on PPI-large), so budget roughly double the
+extracted size.
+
+`saint-flickr` and `saint-reddit` are deliberately distinct names from the bare
+`flickr` and `reddit` keys, which are **PyG's different versions of the same
+graphs** — PyG's Reddit has 57.3M undirected edges against GraphSAINT's 11.6M,
+and the splits differ too. Only the GraphSAINT files are comparable to that
+paper's published baselines. Two preprocessing steps in `_load_graphsaint`
+reconcile the released files with the paper's Table 1 (they ship the
+*row-normalized* adjacency, and PPI-large carries 25,084 self-loops); its
+docstring has the arithmetic.
 
 ## Usage
 
