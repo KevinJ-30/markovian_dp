@@ -122,42 +122,29 @@ class GNNMechanism(BaseMechanism):
 
     def iter_subgraph_loss_batches(self, subgraphs: Sequence
                                    ) -> Iterable[List[torch.Tensor]]:
-        """Yield ONE loss at a time, deliberately unbatched.
-
-        This is the DP path: `_step_dp` needs a separate gradient per root in
-        order to clip per root, so it calls autograd.grad once per loss.  If
-        those losses share one batched forward, every backward has to traverse
-        the whole batch's graph -- O(n^2) instead of O(n).  Measured on 512 Yelp
-        roots (mean subgraph 7.36 nodes, hidden 512): 0.64s unbatched against
-        8.36s batched, a 13x penalty.
-
-        Batching is still the right thing for the NON-DP path, which sums the
-        losses and takes a single backward; see subgraph_losses below.
-        """
-        for sg in subgraphs:
-            yield [self.subgraph_loss(sg)]
+        """Yield bounded batches without retaining prior forward graphs."""
+        chunk = []
+        chunk_nodes = 0
+        for subgraph in subgraphs:
+            n_nodes = subgraph.num_nodes
+            if n_nodes > self.max_batched_subgraph_nodes:
+                if chunk:
+                    yield self._batched_loss_chunk(chunk)
+                    chunk, chunk_nodes = [], 0
+                yield [self.subgraph_loss(subgraph)]
+                continue
+            if chunk and chunk_nodes + n_nodes > self.max_batched_subgraph_nodes:
+                yield self._batched_loss_chunk(chunk)
+                chunk, chunk_nodes = [], 0
+            chunk.append(subgraph)
+            chunk_nodes += n_nodes
+        if chunk:
+            yield self._batched_loss_chunk(chunk)
 
     def subgraph_losses(self, subgraphs: Sequence) -> List[torch.Tensor]:
-        """One loss per root, using batched forwards over disconnected chunks.
-
-        Used by the NON-DP path, which sums these and takes a single backward,
-        so the batched forward is a straight win.  Do not route the DP path
-        here -- see iter_subgraph_loss_batches.
-        """
-        chunk, chunk_nodes, out = [], 0, []
-        for sg in subgraphs:
-            n = sg.num_nodes
-            if n > self.max_batched_subgraph_nodes:
-                if chunk:
-                    out.extend(self._batched_loss_chunk(chunk)); chunk, chunk_nodes = [], 0
-                out.append(self.subgraph_loss(sg))
-                continue
-            if chunk and chunk_nodes + n > self.max_batched_subgraph_nodes:
-                out.extend(self._batched_loss_chunk(chunk)); chunk, chunk_nodes = [], 0
-            chunk.append(sg); chunk_nodes += n
-        if chunk:
-            out.extend(self._batched_loss_chunk(chunk))
-        return out
+        """Return one loss per input root using disconnected GNN batches."""
+        return [loss for batch in self.iter_subgraph_loss_batches(subgraphs)
+                for loss in batch]
 
     @torch.no_grad()
     def evaluate(self, data=None) -> Dict[str, float]:
