@@ -67,6 +67,16 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     regression = bool(config.get("regression", False))
     if multilabel and regression:
         raise ValueError("a target cannot be both multilabel and regression")
+    # The exclusion above is deliberate, but it was only a comment: a config
+    # with method="dpar" and regression=true used to reach _task_loss with
+    # regression defaulting to False and die inside cross_entropy on float
+    # targets -- exactly the opaque crash the sparse-side guard in
+    # src/sparse/run.py was added to prevent.  Fail loudly here instead.
+    if regression and config["method"] not in {"mlp", "dp_mlp", "graphsage"}:
+        raise ValueError(
+            f"method {config['method']!r} does not support regression; only "
+            f"mlp, dp_mlp and graphsage accept it (DPARConfig has no "
+            f"`regression` field and DPAR's PPR propagation is out of scope)")
     seed = int(config.get("seed", 0))
     device = _device(str(config.get("device", "auto")))
     # Dataset loading and split creation run on CPU. Private preprocessing and

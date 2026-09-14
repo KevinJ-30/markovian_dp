@@ -111,7 +111,13 @@ class BaselineTrainer:
                                      weight_decay=self.config.weight_decay)
         generator = torch.Generator(device=self.device).manual_seed(self.config.seed + 1)
         steps_per_epoch = math.ceil(train.num_nodes / self.config.batch_size)
-        best_state, best_val = None, float("-inf")
+        # Regression reports MAE, where LOWER is better; classification reports
+        # accuracy/micro-F1, where higher is better.  Seeding best_val with
+        # -inf and keeping `validation > best_val` unconditionally would save
+        # the WORST checkpoint on every regression run.
+        lower_is_better = bool(self.config.regression)
+        best_state = None
+        best_val = float("inf") if lower_is_better else float("-inf")
         started = time.perf_counter()
         for _ in range(self.config.epochs):
             model.train()
@@ -124,7 +130,8 @@ class BaselineTrainer:
                           regression=self.config.regression).backward()
                 optimizer.step()
             validation, _ = self._evaluate(model, split.val)
-            if validation > best_val:
+            improved = (validation < best_val) if lower_is_better else (validation > best_val)
+            if improved:
                 best_val = validation
                 best_state = {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
         training_seconds = time.perf_counter() - started

@@ -47,6 +47,8 @@ def parse_args():
     p.add_argument('--direction', choices=['in', 'out'], default='in')
     p.add_argument('--theorem', choices=['auto', 'substitution', 'thm45'],
                    default='auto')
+    p.add_argument('--legacy_shells', action='store_true',
+                   help='drop the union-graph correction (n_d = K^d not 2*K^d)')
     p.add_argument('--grid', type=float, default=1e-4,
                    help='dp_accounting discretization.  Pessimistic rounding '
                         'accumulates over composition, so the numerical floor '
@@ -78,7 +80,8 @@ def main():
                 c = calibrate_sparsegnn_noise(
                     target_epsilon=eps, target_delta=delta, p1=a.p1, p2=p2,
                     r=a.r, K_in=a.K, K_out=a.K, steps=a.T, clip=a.clip,
-                    direction=a.direction, theorem=a.theorem, grid=a.grid)
+                    direction=a.direction, theorem=a.theorem, grid=a.grid,
+                    union_safe=not a.legacy_shells)
             except (RuntimeError, ValueError) as exc:
                 print(f"# SKIP p2={p2} eps={eps}: {exc}", file=sys.stderr)
                 print(f"{p2} {eps} SKIP", flush=True)

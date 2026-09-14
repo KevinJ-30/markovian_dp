@@ -4,13 +4,18 @@ Same shape as `GNNMechanism` — an L-layer GCN on each root's sparsified
 subgraph, read off at the root — but with a single unbounded output, MSE loss,
 and MAE as the reported metric.
 
-Targets are expected in Z-SCORED form (train-split mean subtracted, train-split
-std divided out) — `src.sparse.relbench_data.load_relbench` does this for
-RelBench regression tasks and records the scale as `data.target_std`.  Only the
-scale is needed to report metrics in the label's original units: MAE and RMSE
-are translation-invariant, so the mean cancels out of every residual, and
-"predict the train mean" is exactly "predict 0" in z-space.  `data.target_std`
-defaults to 1.0 (a no-op) for a caller that already scaled the target itself.
+Targets are expected SCALED but NOT centred: `load_relbench` divides by the
+train-split std and records it as `data.target_std`, and leaves the mean alone.
+Only the scale is needed to report metrics in the label's original units, since
+MAE and RMSE are translation-invariant as functions of the residual.
+`data.target_std` defaults to 1.0 (a no-op) for a caller that already scaled the
+target itself.
+
+Because the target is not centred, "predict the train mean" is NOT "predict 0"
+— `run.py`'s trivial_baseline subtracts mean(y_train) explicitly — and this
+head, which emits an unbounded scalar with no output transform, has to learn
+that intercept itself.  Under per-root clipping at C the intercept competes for
+gradient budget with the signal, so a large uncentred target is worth noticing.
 """
 
 from typing import Dict

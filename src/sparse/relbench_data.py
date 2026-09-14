@@ -254,12 +254,17 @@ def load_relbench(dataset_name: str, task_name: str, *,
         y[nodes] = labels[sel].astype(y.dtype)
         masks[split][nodes] = True
 
-    # Regression targets are z-scored using TRAIN-split statistics only (val/test
-    # rows never inform the scale a model trains against), and the scale alone
-    # -- not the mean -- is kept: MAE/RMSE are translation-invariant, so
-    # un-standardizing a residual only needs to multiply back by target_std,
-    # and "predict the train mean" is exactly "predict 0" in z-space, which is
-    # what the trivial-baseline computation in run.py relies on.
+    # Regression targets are SCALED by TRAIN-split statistics only (val/test
+    # rows never inform the scale a model trains against).  The scale alone --
+    # not the mean -- is adjusted: MAE/RMSE are translation-invariant as
+    # functions of the residual, so un-standardizing only needs a multiply by
+    # target_std.
+    #
+    # Consequence, because it has bitten once: the target is NOT centred, so
+    # the train mean is NOT 0 here.  "Predict the train mean" is therefore not
+    # "predict 0", and run.py's trivial_baseline must (and now does) subtract
+    # mean(y_train) explicitly rather than take |y_test|.  The network also has
+    # to learn the intercept itself, with no output transform to absorb it.
     target_std = 1.0
     if is_regression:
         train_vals = y[masks['train']]

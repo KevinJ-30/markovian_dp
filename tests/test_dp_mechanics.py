@@ -354,3 +354,65 @@ def test_model_depth_does_not_widen_the_privacy_radius(r, reads_two_hop):
 
     assert (before != after) == reads_two_hop
     assert (2 in H.nodes.tolist()) == reads_two_hop
+
+
+def test_noise_is_independent_across_same_shaped_parameters():
+    """Two parameters of the same shape must get INDEPENDENT noise draws.
+
+    Regression test for the buffer-cache aliasing that made the noise covariance
+    singular: a cache keyed on (shape, device) returned the same tensor object
+    for both, so a linear functional of the clipped-gradient sum was released
+    noiselessly.  Every mechanism in this file is a single-tensor nn.Linear,
+    which is why the original bug went undetected -- this model is deliberately
+    two same-shaped tensors.
+    """
+    import torch.nn as nn
+    from src.sparse.base_mechanism import BaseMechanism
+
+    class _TwoSameShaped(BaseMechanism):
+        def __init__(self):
+            m = nn.Module()
+            m.a = nn.Parameter(torch.zeros(4, 3))
+            m.b = nn.Parameter(torch.zeros(4, 3))    # identical shape
+            super().__init__(m)
+
+        def subgraph_loss(self, subgraph):
+            return self.zero_loss()
+
+        def evaluate(self, data=None):
+            return {'train': 0.0, 'val': 0.0, 'test': 0.0}
+
+    mech = _TwoSameShaped()
+    params = mech.parameters()
+    assert params[0].shape == params[1].shape
+
+    gen = torch.Generator().manual_seed(0)
+    noise = mech.gaussian_noise_like(params, sigma=1.0, C=1.0, generator=gen)
+
+    assert len(noise) == 2
+    assert noise[0] is not noise[1], "same tensor object returned twice"
+    assert not torch.allclose(noise[0], noise[1]), "noise draws are identical"
+
+
+def test_noise_across_calls_is_fresh_for_same_shapes():
+    """Repeated calls must not reuse a previous call's buffer contents."""
+    import torch.nn as nn
+    from src.sparse.base_mechanism import BaseMechanism
+
+    class _One(BaseMechanism):
+        def __init__(self):
+            m = nn.Module()
+            m.w = nn.Parameter(torch.zeros(6, 5))
+            super().__init__(m)
+
+        def subgraph_loss(self, subgraph):
+            return self.zero_loss()
+
+        def evaluate(self, data=None):
+            return {'train': 0.0, 'val': 0.0, 'test': 0.0}
+
+    mech = _One()
+    gen = torch.Generator().manual_seed(1)
+    a = mech.gaussian_noise_like(mech.parameters(), 1.0, 1.0, generator=gen)[0].clone()
+    b = mech.gaussian_noise_like(mech.parameters(), 1.0, 1.0, generator=gen)[0].clone()
+    assert not torch.allclose(a, b)

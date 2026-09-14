@@ -172,26 +172,13 @@ class BaseMechanism(ABC):
         pinned CPU staging and device buffers removes per-step allocation.
         """
         std = sigma * C
-        cache = getattr(self, '_gaussian_noise_buffers', None)
-        if cache is None:
-            cache = self._gaussian_noise_buffers = {}
-        noise = []
-        for grad in grads:
-            key = (tuple(grad.shape), grad.device)
-            buffers = cache.get(key)
-            if buffers is None:
-                cpu = torch.empty(
-                    grad.shape, dtype=torch.get_default_dtype(), device='cpu',
-                    pin_memory=grad.device.type == 'cuda')
-                device = (torch.empty_like(cpu, device=grad.device)
-                          if grad.device.type != 'cpu' else cpu)
-                buffers = cache[key] = (cpu, device)
-            cpu, device = buffers
-            cpu.normal_(generator=generator)
-            if device is cpu:
-                cpu.mul_(std)
-            else:
-                device.copy_(cpu, non_blocking=True)
-                device.mul_(std)
-            noise.append(device)
-        return noise
+        # One INDEPENDENT draw per gradient tensor.  A previous version cached a
+        # staging buffer keyed on (shape, device) and appended the cached tensor
+        # itself, so two parameters of the same shape received the *identical*
+        # draw -- which SAGEConv always triggers (lin_l.weight and lin_r.weight
+        # are the same shape at every layer).  That made the noise covariance
+        # singular: the difference of the two clipped-gradient sums was released
+        # with no noise at all, so the mechanism was not the Gaussian mechanism
+        # the accounting prices.  Do not reintroduce buffer reuse across tensors.
+        return [(torch.randn(grad.shape, generator=generator) * std).to(grad.device)
+                for grad in grads]
