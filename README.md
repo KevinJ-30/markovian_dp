@@ -120,8 +120,8 @@ parameters recorded in the CSV. Accounting never touches training.
 ```bash
 # 1. train (--dp adds clip+noise; omit it for the non-private reference)
 python -m src.sparse.run --dataset ppi --model multilabel_gnn --direction in \
-    --dp --p1 0.01 --p2 0.1 --r 1 --num_layers 2 --T 2000 --sigma 5 \
-    --K_in 5 --K_out 5 --lr 0.3 --seeds 3 --track_every 50 \
+    --dp --batch_size 512 --epochs 10 --p2 0.1 --r 2 --num_layers 2 --sigma 5 \
+    --K_in 5 --K_out 5 --lr 0.01 --seeds 3 --track_every 50 \
     --out_dir results/ppi/myrun
 
 # 2. attach epsilon
@@ -139,6 +139,42 @@ Higher-level drivers live in `scripts/`: `ladder_stage01.sh` (baselines and the
 sparsification sweep, no DP), `ladder_stage2.sh` (clip+noise, then epsilon),
 `sweep.sh <axis>` for one-axis tuning, and `diagnose.sh` for gradient-norm and
 metric probes.
+
+### Specifying the schedule: batch and epochs, not p1 and T
+
+`p1` and `T` are what the accountant prices, but they are the wrong units to
+specify a run in. `p1` is a *rate*, so the same `p1` is a 512-root batch on one
+graph and a 14,000-root batch on another; and a fixed `T` is a different number
+of passes over the data on every dataset. At the `T=300` the drivers used to
+hardcode, PPI-large saw 3.4 passes over its training nodes and Amazon 0.12 — a
+28x difference that reads as a utility difference.
+
+So pass `--batch_size` and `--epochs` instead, and `run.py` converts once the
+root pool is known:
+
+    p1 = batch_size / pool_size          T = epochs / p1
+
+`T` is derived **per cell**, so a `p1` sweep compares equal-data arms rather
+than equal-step ones. Every CSV records `pool_size`, `batch_size` and `epochs`
+alongside `p1` and `T`, whichever way the run was specified.
+
+Equal epochs also makes the cross-dataset comparison legible. Measured noise
+multiplier at eps=8, delta=1e-6, p2=0.1, r=2, K=5, B=512:
+
+| epochs | ppi-large | reddit | yelp | amazon |
+|---:|---:|---:|---:|---:|
+|  1 | 1.87 | 1.43 | 1.17 | 1.05 |
+|  5 | 3.10 | 1.87 | 1.37 | 1.21 |
+| 10 | 4.36 | 2.47 | 1.61 | 1.37 |
+| 20 | 6.20 | 3.48 | 2.17 | 1.84 |
+
+At equal epochs the **bigger** graph is cheaper — `p1 = B/N` shrinks as the
+graph grows, and amplification by subsampling more than pays for the extra
+steps. Don't extrapolate: the ordering breaks once composition dominates (at
+100 epochs Yelp needs 10.89 against Reddit's 9.13, and Amazon fails to
+calibrate at all at T=245,098). Read a budget off a table like this one.
+
+`--p1`/`--T` still work and are mutually exclusive with the pair above.
 
 ### Parameters that price epsilon, and parameters that do not
 

@@ -3,7 +3,15 @@ SparseGNN experiment CLI: root sampling (p1) + SparseExpand (p2, r) with a GNN
 base mechanism, swept over (p1, p2, r, sigma) and written to a results CSV.
 
   python -m src.sparse.run --dataset ppi --model multilabel_gnn --direction in \
-      --p1 0.01 --p2 0.1 --r 1 --num_layers 2 --T 2000 --K_in 5 --K_out 5
+      --batch_size 512 --epochs 10 --p2 0.1 --r 2 --num_layers 2 \
+      --K_in 5 --K_out 5
+
+Prefer --batch_size/--epochs over --p1/--T.  The accountant prices p1 and T, but
+they are the wrong units to think in: p1 is a rate, so the same p1 is a very
+different batch on two graphs, and a fixed T is a different number of passes
+over the data.  run.py converts once the root pool is known --
+p1 = B/pool_size and T = epochs/p1 -- and records pool_size, batch_size and
+epochs in the CSV so a run is reproducible from its own output.
 
 Add --dp for the clip+noise path; epsilon is attached afterwards by
 `python -m src.sparse.compute_epsilon --csv <results.csv>`.
@@ -47,6 +55,62 @@ _MECHANISMS = {
 # the "below trivial baseline" comparison both need to know which.
 _HIGHER_IS_BETTER = {'accuracy': True, 'micro_f1': True, 'auroc': True,
                     'mae': False}
+
+
+def p1_for_batch(batch_size, pool_size):
+    """Root-sampling rate that yields `batch_size` roots per step in expectation.
+
+    Poisson sampling draws each eligible root independently with probability p1,
+    so the expected batch is p1 * pool_size (`sparse_gnn.train_sparse_gnn`
+    computes exactly this) and p1 = B / pool_size.
+
+    Fixing B rather than p1 is what makes a cross-dataset comparison mean
+    anything: p1 is a rate, so the same p1 is a 500-root batch on one graph and
+    a 500,000-root batch on another.  It is also the direction that HELPS under
+    DP -- p1 falls as the graph grows, and epsilon falls with it through
+    amplification by subsampling.
+    """
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+    if batch_size > pool_size:
+        raise ValueError(
+            f"batch_size {batch_size} exceeds the eligible root pool "
+            f"({pool_size}); p1 would exceed 1")
+    return batch_size / pool_size
+
+
+def steps_for_epochs(epochs, p1):
+    """Steps T that put `epochs` passes over the root pool at sampling rate p1.
+
+    One epoch is pool_size/B steps, and p1 = B/pool_size, so
+
+        T = epochs / p1 = epochs * pool_size / batch_size
+
+    and the pool size cancels -- T depends only on the rate.
+
+    Worth knowing before raising this: epsilon grows with T, but at a FIXED
+    epoch count the two effects partly cancel, because p1 = B/pool_size shrinks
+    on a larger graph exactly as T = epochs/p1 grows.  Measured sigma for eps=8,
+    delta=1e-6, p2=0.1, r=2, K=5, B=512 -- equal epochs, so these ARE comparable:
+
+        epochs   ppi-large   reddit   yelp   amazon
+             1        1.87     1.43   1.17     1.05
+             5        3.10     1.87   1.37     1.21
+            10        4.36     2.47   1.61     1.37
+            20        6.20     3.48   2.17     1.84
+
+    i.e. at equal epochs the BIGGER graph is cheaper, the usual DP-SGD result
+    that more data buys accuracy.  Do not extrapolate the ordering: it holds
+    over this range and breaks once composition dominates (at 100 epochs Yelp
+    needs 10.89 against Reddit's 9.13, and Amazon fails to bracket at all,
+    T=245,098).  Pick an epoch budget from a table like this one rather than
+    from the asymptotics.
+    """
+    if not 0 < p1 <= 1:
+        raise ValueError(f"p1 must be in (0, 1], got {p1}")
+    if epochs <= 0:
+        raise ValueError(f"epochs must be > 0, got {epochs}")
+    return max(1, round(epochs / p1))
 
 
 def _set_seed(seed):
@@ -213,17 +277,44 @@ def parse_args():
                         "6.4); 'out' = legacy Algorithm 2/4, kept for the "
                         "orientation ablation (accounted by Theorem 4.5)")
     # Paper parameters (each accepts one or more values → swept as a grid)
-    p.add_argument('--p1', type=float, nargs='+', default=[0.5],
+    p.add_argument('--p1', type=float, nargs='+', default=None,
                    help='root-sampling probability p1 (Bernoulli per node); '
-                        'pass several to sweep, e.g. --p1 0.25 0.5 1.0')
+                        'pass several to sweep, e.g. --p1 0.25 0.5 1.0. '
+                        'Prefer --batch_size, which derives p1 = B/pool_size '
+                        'and so keeps the expected batch fixed across '
+                        'datasets. Default 0.5 if neither is given.')
     p.add_argument('--p2', type=float, nargs='+', default=[0.5],
                    help='edge-sparsification probability p2 (Bernoulli per arc); '
                         'pass several to sweep')
     p.add_argument('--r', type=int, nargs='+', default=[2],
                    help='maximum expansion distance r (SparseExpand levels); '
                         'pass several to sweep, e.g. --r 1 2 3')
-    p.add_argument('--T', type=int, default=200,
-                   help='number of training steps T')
+    p.add_argument('--T', type=int, default=None,
+                   help='number of training steps T. Prefer --epochs, which '
+                        'derives T = epochs/p1 so every arm of a p1 sweep sees '
+                        'the same amount of data. Default 200 if neither is '
+                        'given.')
+    # --- schedule in data units, not step units -------------------------------
+    # T and p1 are what the accountant prices, but they are the wrong units to
+    # THINK in: a fixed T means a different number of passes over the data on
+    # every dataset, and a fixed p1 means a different expected batch.  These two
+    # express the schedule in units that transfer across datasets, and run.py
+    # converts them to (p1, T) once the root pool is known.
+    p.add_argument('--batch_size', type=int, default=None,
+                   help='expected roots per step B; sets p1 = B/pool_size. '
+                        'Mutually exclusive with --p1.')
+    p.add_argument('--epochs', type=float, default=None,
+                   help='passes over the root pool; sets T = epochs/p1, per '
+                        'cell, so a p1 sweep compares equal-data arms rather '
+                        'than equal-step ones. Mutually exclusive with --T.')
+    p.add_argument('--expect_pool_size', type=int, default=None,
+                   help='assert the eligible root pool has exactly this many '
+                        'nodes. For drivers that compute p1 = B/N_train in '
+                        'shell and pass the result to BOTH this script and the '
+                        'noise calibration: if their N drifts from the real '
+                        'pool, sigma is solved for the wrong p1 and the '
+                        'reported epsilon is wrong. This turns that into a '
+                        'crash.')
     # Model / optimization
     p.add_argument('--hidden', type=int, default=64)
     p.add_argument('--num_layers', type=int, default=2, help='GCN layers L')
@@ -319,6 +410,10 @@ def parse_args():
                         '--eval_every and has no effect without --verbose')
     p.add_argument('--eval_every', type=int, default=50)
     args = p.parse_args()
+    if args.p1 is not None and args.batch_size is not None:
+        p.error("--p1 and --batch_size both set p1; pass one")
+    if args.T is not None and args.epochs is not None:
+        p.error("--T and --epochs both set the step count; pass one")
     if args.target_epsilon is None and args.target_delta is not None:
         p.error("--target_delta requires --target_epsilon")
     if args.target_epsilon is not None and args.target_delta is None:
@@ -354,24 +449,6 @@ def main():
     csv_path = os.path.join(args.out_dir,
                             f'sparse_gnn_{ds_slug}{tag}_results.csv')
 
-    target_mode = args.target_epsilon is not None
-    sigmas = args.sigma if args.dp else [args.sigma[0]]
-    grid = list(itertools.product(args.p1, args.p2, args.r))
-    if not target_mode:
-        grid = [(*cell, sigma) for cell in grid for sigma in sigmas]
-    noise_description = (
-        f"target_epsilon={args.target_epsilon} target_delta={args.target_delta}"
-        if target_mode else f"sigma={sigmas}")
-
-    print(f"\n{'='*66}")
-    print(f"SparseGNN  dataset={args.dataset}  device={device}  "
-          f"direction={args.direction}  aggr={args.aggr}")
-    print(f"  p1={args.p1}  p2={args.p2}  r={args.r}  {noise_description}  "
-          f"T={args.T}  L={args.num_layers}  dp={args.dp}  seeds={args.seeds}")
-    print(f"  inductive={args.inductive}  eval_graph={args.eval_graph}  "
-          f"roots_from={args.roots_from}")
-    print(f"  sweep: {len(grid)} configuration(s) x {args.seeds} seed(s)")
-    print('='*66)
 
     dataset, data = load_dataset(
         args.dataset, device=str(device),
@@ -399,6 +476,73 @@ def main():
         data.edge_index = full_edge_index[:, within_partition]
         print(f"  common inductive split: {split.path}; removed "
               f"{int((~within_partition).sum())} crossing edges")
+
+    # ---- schedule: resolve (batch_size, epochs) into the (p1, T) the
+    # accountant actually prices.  This has to happen HERE, after the mask
+    # handling above may have replaced data.train_mask, because the pool size
+    # is what p1 is measured against.
+    pool_size = (int(data.train_mask.sum()) if args.roots_from == 'train'
+                 else int(data.num_nodes))
+    if pool_size == 0:
+        raise SystemExit(
+            f"{args.dataset} has an empty root pool under "
+            f"--roots_from {args.roots_from}; nothing to train on")
+
+    if args.expect_pool_size is not None and pool_size != args.expect_pool_size:
+        raise SystemExit(
+            f"root pool is {pool_size} but --expect_pool_size says "
+            f"{args.expect_pool_size}. Whatever derived p1 from the expected "
+            f"value computed the wrong sampling rate; if a noise multiplier "
+            f"was calibrated against it, its epsilon does not hold. Fix the "
+            f"caller's N_train rather than this flag.")
+
+    if args.batch_size is not None:
+        try:
+            args.p1 = [p1_for_batch(args.batch_size, pool_size)]
+        except ValueError as e:
+            raise SystemExit(str(e))
+    elif args.p1 is None:
+        args.p1 = [0.5]
+
+    # T is per-cell, not global: with --epochs and a swept p1 each arm gets the
+    # step count that puts it at the SAME number of passes over the data.  A
+    # fixed T across a p1 sweep silently compares arms at different points on
+    # their learning curves, which is how a convergence-rate difference gets
+    # read as a utility difference.
+    _T_fixed = None if args.epochs is not None else (
+        200 if args.T is None else args.T)
+
+    def steps_of(p1):
+        """Step count for one cell: fixed T, or whatever reaches --epochs."""
+        return (steps_for_epochs(args.epochs, p1) if _T_fixed is None
+                else _T_fixed)
+
+    target_mode = args.target_epsilon is not None
+    sigmas = args.sigma if args.dp else [args.sigma[0]]
+    grid = list(itertools.product(args.p1, args.p2, args.r))
+    if not target_mode:
+        grid = [(*cell, sigma) for cell in grid for sigma in sigmas]
+    noise_description = (
+        f"target_epsilon={args.target_epsilon} target_delta={args.target_delta}"
+        if target_mode else f"sigma={sigmas}")
+
+    _T_all = sorted({steps_of(x) for x in args.p1})
+    _T_desc = (str(_T_all[0]) if len(_T_all) == 1
+               else f"{_T_all[0]}-{_T_all[-1]} (per p1)")
+    print(f"\n{'='*66}")
+    print(f"SparseGNN  dataset={args.dataset}  device={device}  "
+          f"direction={args.direction}  aggr={args.aggr}")
+    print(f"  p1={args.p1}  p2={args.p2}  r={args.r}  {noise_description}  "
+          f"T={_T_desc}  L={args.num_layers}  dp={args.dp}  seeds={args.seeds}")
+    print(f"  root pool={pool_size:,} ({args.roots_from})  "
+          f"expected batch={args.p1[0]*pool_size:.1f}"
+          + (f"  epochs={args.epochs:g}" if args.epochs is not None else "")
+          + (f"  [p1 from --batch_size {args.batch_size}]"
+             if args.batch_size is not None else ""))
+    print(f"  inductive={args.inductive}  eval_graph={args.eval_graph}  "
+          f"roots_from={args.roots_from}")
+    print(f"  sweep: {len(grid)} configuration(s) x {args.seeds} seed(s)")
+    print('='*66)
 
     # Model/task guard: fail fast on pairings that would crash deep in a shape
     # error (single-label GNN on multilabel PPI) or silently report a
@@ -610,6 +754,10 @@ def main():
                     'direction', 'p1', 'p2', 'r', 'sigma', 'clip', 'K_in',
                     'K_out', 'cap_mode', 'eval_graph', 'optimizer', 'lr',
                     'momentum', 'T', 'L', 'dp',
+                    # Schedule in data units. Always derived, whether the run
+                    # was specified as (p1, T) or (batch_size, epochs), so
+                    # every CSV is comparable across datasets and p1 values.
+                    'pool_size', 'batch_size', 'epochs',
                     'target_epsilon', 'target_delta', 'calibrated_epsilon',
                     'accounting_theorem', 'accounting_grid',
                     'calibration_rtol', 'calibration_evaluations',
@@ -650,10 +798,11 @@ def main():
             calibration = None
             if target_mode:
                 p1, p2, r = cell
+                T = steps_of(p1)
                 calibration = calibrate_sparsegnn_noise(
                     target_epsilon=args.target_epsilon,
                     target_delta=args.target_delta, p1=p1, p2=p2, r=r,
-                    K_in=K_in_req, K_out=K_out_req, steps=args.T, clip=args.clip,
+                    K_in=K_in_req, K_out=K_out_req, steps=T, clip=args.clip,
                     direction=args.direction, theorem=args.accounting_theorem,
                     grid=args.accounting_grid,
                     sigma_rtol=args.calibration_rtol,
@@ -661,7 +810,7 @@ def main():
                     union_safe=not args.legacy_shells,
                 )
                 sigma = calibration.noise_multiplier
-                print(f"\n[p1={p1} p2={p2} r={r}]")
+                print(f"\n[p1={p1} p2={p2} r={r} T={T}]")
                 print("  calibrated "
                       f"target=(epsilon={calibration.target_epsilon:g}, "
                       f"delta={calibration.delta:g}) "
@@ -671,7 +820,8 @@ def main():
                       f"evaluations={calibration.evaluations}")
             else:
                 p1, p2, r, sigma = cell
-                print(f"\n[p1={p1} p2={p2} r={r}" +
+                T = steps_of(p1)
+                print(f"\n[p1={p1} p2={p2} r={r} T={T}" +
                       (f" sigma={sigma}]" if args.dp else "]"))
             calibration_fields = (
                 [calibration.target_epsilon, calibration.delta,
@@ -723,7 +873,7 @@ def main():
                                   else args.eval_every)
                 accs = train_sparse_gnn(
                     mech, data, adj=gph['adj'], direction=args.direction,
-                    p1=p1, p2=p2, r=r, T=args.T,
+                    p1=p1, p2=p2, r=r, T=T,
                     candidate_nodes=candidate_nodes,
                     dp=args.dp, clip=args.clip, sigma=sigma,
                     seed=seed, eval_every=progress_every,
@@ -745,7 +895,9 @@ def main():
                                 gph['K_out'] if gph['K_out'] is not None else '',
                                 gph['cap_mode'], args.eval_graph,
                                 opt_kind, args.lr, args.momentum,
-                                args.T, args.num_layers, args.dp,
+                                T, args.num_layers, args.dp,
+                                pool_size, f"{p1 * pool_size:.1f}",
+                                f"{T * p1:.4f}",
                                 *calibration_fields, *noise_fields, seed, step,
                                 args.roots_from, args.hidden, args.dropout,
                                 args.weight_decay, args.seeds,
@@ -773,9 +925,9 @@ def main():
                                             'test_bin_acc_alt'))])
 
                 for h in history:
-                    if h['step'] < args.T:   # final checkpoint == the T row
+                    if h['step'] < T:        # final checkpoint == the T row
                         _write_row(h['step'], h)
-                _write_row(args.T, accs)
+                _write_row(T, accs)
                 fh.flush()   # persist each row so a killed run keeps its rows
 
             tm, ts = _mean_std(tests)

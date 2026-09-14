@@ -34,7 +34,11 @@ set -u
 HIDDEN=${HIDDEN:-512}
 DROPOUT=${DROPOUT:-0.1}
 BATCH=${BATCH:-512}
-T=${T:-500}
+# Schedule is specified in EPOCHS, not steps.  A fixed T is a different amount
+# of data on every dataset -- at the old T=500 with B=512, PPI-large saw 5.7
+# passes over its training nodes and Amazon 0.20, a 28x difference that reads
+# as a utility difference.  T is derived below so every dataset trains equally.
+EPOCHS=${EPOCHS:-10}
 K=${K:-5}
 SEEDS=${SEEDS:-1}
 DELTA=${DELTA:-1e-6}
@@ -43,14 +47,20 @@ EPS_LIST=${EPS_LIST:-"2 8"}
 TRACK_EVERY=${TRACK_EVERY:-50}
 
 P1=$($PY -c "print(f'{$BATCH/$NTRAIN:.8f}')")
+# T = epochs/p1. Derived here rather than inside run.py because calibrate_grid.py
+# solves sigma out of process and must be given the SAME T; one derivation, so
+# the two cannot disagree.
+T=${T:-$($PY -c "print(max(1, round($EPOCHS/$P1)))")}
 
 mkdir -p "$OUT_ROOT"
 echo "=== $DS grid  $(date) ==="
 echo "    N_train=$NTRAIN batch=$BATCH -> p1=$P1"
-echo "    T=$T K=$K hidden=$HIDDEN dropout=$DROPOUT seeds=$SEEDS delta=$DELTA"
+echo "    epochs=$EPOCHS -> T=$T"
+echo "    K=$K hidden=$HIDDEN dropout=$DROPOUT seeds=$SEEDS delta=$DELTA"
 echo "    multilabel -> micro-F1 primary, micro-AUROC alongside"
 
-COMMON="--dataset $DS --inductive --p1 $P1 --hidden $HIDDEN --clip 1.0
+COMMON="--dataset $DS --inductive --p1 $P1 --expect_pool_size $NTRAIN
+        --hidden $HIDDEN --clip 1.0
         --dropout $DROPOUT --weight_decay 0.0 --roots_from train
         --optimizer adam --lr 0.01 --T $T --seeds $SEEDS
         --track_every $TRACK_EVERY"

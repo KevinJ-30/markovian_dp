@@ -12,7 +12,8 @@
 #   INDUCTIVE    --inductive, or empty for natively-inductive datasets
 #   P1           root-sampling probability, the SAME for DP and non-DP so the DP
 #                frontier is readable against its own non-DP ceiling
-#   T            training steps
+#   EPOCHS       passes over the training roots (the schedule is specified HERE)
+#   T            training steps, DERIVED as round(EPOCHS/P1) at the bottom
 #   CAP          degree-cap flags; K_out is always explicit, because under
 #                in-expansion the accounting shells are n_d = K_out^d and so it
 #                is K_out that prices epsilon (Theorem 6.4, Eq. 44)
@@ -75,14 +76,14 @@ case $_ds in
     MODEL=(--model multilabel_gnn --aggr mean)
     BLIND=(--model mlp --r 0)
     INDUCTIVE=(--inductive)
-    P1=0.011402; T=300
+    P1=0.011402; EPOCHS=${EPOCHS:-10}
     CAP=(--K_in 5 --K_out 5)
     HIDDEN=512; DROPOUT=0.0
     ;;
   saint-reddit)
     MODEL=(--aggr mean); BLIND=(--model mlp --r 0)
     INDUCTIVE=(--inductive)
-    P1=0.003326; T=300
+    P1=0.003326; EPOCHS=${EPOCHS:-10}
     CAP=(--K_in 5 --K_out 5)
     HIDDEN=128; DROPOUT=0.1
     ;;
@@ -90,7 +91,7 @@ case $_ds in
     MODEL=(--model multilabel_gnn --aggr mean)
     BLIND=(--model mlp --r 0)
     INDUCTIVE=(--inductive)
-    P1=0.000952; T=300
+    P1=0.000952; EPOCHS=${EPOCHS:-10}
     CAP=(--K_in 5 --K_out 5)
     HIDDEN=512; DROPOUT=0.1
     ;;
@@ -98,7 +99,7 @@ case $_ds in
     MODEL=(--model multilabel_gnn --aggr mean)
     BLIND=(--model mlp --r 0)
     INDUCTIVE=(--inductive)
-    P1=0.000408; T=300
+    P1=0.000408; EPOCHS=${EPOCHS:-10}
     CAP=(--K_in 5 --K_out 5)
     HIDDEN=512; DROPOUT=0.1
     ;;
@@ -193,19 +194,42 @@ DROPOUT=${DROPOUT:-0.0}
 LR_DP=${LR_DP:-0.01}
 LR_NONDP=${LR_NONDP:-0.01}
 
-# STEP COUNT
-# ----------
-# T=300 for the DP arms.  sigma grows as sqrt(T), so the cost is steep and the
-# old T=2000 was buying very little: on PPI-large at p2=0.1, r=2, eps=2 the
-# required sigma is 5.25 at T=300 against 14.20 at T=2000, a 2.7x noise
-# penalty for 6.7x the steps.  Measured sigma for eps=2 by T (p2=0.1):
-#     T=100  3.11    T=300  5.25    T=1000   9.77
-#     T=200  4.29    T=500  6.82    T=2000  14.20
+# STEP COUNT: SET EPOCHS, DERIVE T
+# -------------------------------
+# T is NOT a free constant -- it is round(EPOCHS/P1), applied at the bottom of
+# this file.  A fixed T is a different amount of data on every dataset, because
+# P1 = B/N_train shrinks as the graph grows: at the T=300 this file used to
+# hardcode, PPI-large saw 3.4 passes over its training nodes and Amazon 0.12.
+# Comparing those two arms compares convergence, not privacy-utility.
+#
+# EPOCHS=10 is the default.  It is affordable everywhere -- measured sigma for
+# eps=8, delta=1e-6, p2=0.1, r=2, K=5, B=512, at EQUAL epochs:
+#
+#     epochs   ppi-large   reddit   yelp   amazon
+#          1        1.87     1.43   1.17     1.05
+#          5        3.10     1.87   1.37     1.21
+#         10        4.36     2.47   1.61     1.37
+#         20        6.20     3.48   2.17     1.84
+#
+# and 10 epochs clears the point where the graph starts paying: the non-private
+# PPI-large curve crosses the graph-blind MLP at ~3 epochs.  Note the bigger
+# graph is CHEAPER at equal epochs (more data, same batch), so this budget is
+# set by the smallest dataset, not the largest.
+#
+# Raising it is not free in wall-clock: T scales with N_train, so EPOCHS=10 is
+# 877 steps on PPI-large and 24,510 on Amazon.
 #
 # The NON-DP ceiling is not privacy-constrained and should NOT be matched to
-# T=300: at batch 512 that is only 3.4 epochs on PPI-large and nowhere near
-# converged.  Run the ceiling to convergence and say so.
+# this budget -- run it to convergence and say so.
 DELTA=${DELTA:-1e-6}
+
+# T = EPOCHS/P1: one Poisson step draws P1*N_train roots, so 1/P1 steps is one
+# pass over the pool.  Scripts that want an explicit step count can still set T
+# in the environment, which wins.  src/sparse/run.py --epochs does the same
+# conversion internally; this is here because calibrate_grid.py solves sigma out
+# of process and has to be handed the identical T.
+EPOCHS=${EPOCHS:-10}
+T=${T:-$(python3 -c "print(max(1, round($EPOCHS/$P1)))")}
 
 # relbench:<db>/<task> contains characters that are not filename-safe.
 TAG=$(echo $_ds | tr '/:' '__')
