@@ -19,6 +19,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base_mechanism import BaseMechanism
+from .vectorized import multilabel_tail
 from .layers import build_conv_stack
 
 
@@ -86,6 +87,10 @@ class MultiLabelGNNMechanism(BaseMechanism):
     Same constructor signature as GNNMechanism and MLPMechanism so run.py can
     swap them freely.  `num_classes` is the number of label columns.
     """
+
+    # Batched loss tail for the ghost-clipped DP path; must match
+    # `subgraph_loss` below exactly (tests/test_vectorized.py pins this).
+    vectorized_tail = staticmethod(multilabel_tail)
 
     metric_name = "micro_f1"
 

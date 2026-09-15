@@ -348,6 +348,13 @@ def parse_args():
     p.add_argument('--accounting_theorem',
                    choices=['auto', 'substitution', 'thm45'], default='auto',
                    help='SparseGNN dominating-pair theorem used for calibration')
+    p.add_argument('--no_vectorized', action='store_true',
+                   help='force the per-root Python loop for the DP gradient '
+                        'instead of the ghost-clipped batched path. Same '
+                        'mechanism and same epsilon -- only the arithmetic '
+                        'differs, and the two agree to ~1e-7 -- but ~8x '
+                        'slower. For A/B checks and for mechanisms the fast '
+                        'path declines (aggr=gcn).')
     p.add_argument('--legacy_shells', action='store_true',
                    help='drop the union-graph correction in the in-process '
                         'calibration (n_d = K^d instead of 2*K^d)')
@@ -541,6 +548,9 @@ def main():
              if args.batch_size is not None else ""))
     print(f"  inductive={args.inductive}  eval_graph={args.eval_graph}  "
           f"roots_from={args.roots_from}")
+    if args.dp:
+        print(f"  dp gradient path: "
+              f"{'per-root loop (--no_vectorized)' if args.no_vectorized else 'vectorized'}")
     print(f"  sweep: {len(grid)} configuration(s) x {args.seeds} seed(s)")
     print('='*66)
 
@@ -877,6 +887,7 @@ def main():
                     candidate_nodes=candidate_nodes,
                     dp=args.dp, clip=args.clip, sigma=sigma,
                     seed=seed, eval_every=progress_every,
+                    vectorized=not args.no_vectorized,
                     track_every=args.track_every, eval_alt_edge_index=alt_ei,
                     verbose=args.verbose,
                 )

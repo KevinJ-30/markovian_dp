@@ -18,6 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base_mechanism import BaseMechanism
+from .vectorized import single_label_tail
 from .layers import build_conv_stack
 
 
@@ -52,6 +53,10 @@ class GNNMechanism(BaseMechanism):
         dropout:   dropout probability.
         device:    torch device.
     """
+
+    # Batched loss tail for the ghost-clipped DP path; must match
+    # `subgraph_loss` below exactly (tests/test_vectorized.py pins this).
+    vectorized_tail = staticmethod(single_label_tail)
 
     def __init__(self, data, num_features, num_classes, *, hidden=64,
                  num_layers=2, dropout=0.5, aggr='mean', device=None,

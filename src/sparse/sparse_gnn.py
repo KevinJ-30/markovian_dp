@@ -15,6 +15,14 @@ Algorithm 1: SparseGNN — the model-agnostic training engine.
     add Gaussian noise N(0, (sigma*C)^2 I) (Assumption 6.3), then step.
     Accounted post-hoc by the dominating pairs in accounting.py.
 
+    Two implementations of that SAME mechanism.  `_step_dp` is the reference:
+    a Python loop calling autograd once per root.  `_step_dp_vectorized` pads
+    the roots into one batch and computes the clipped sum with ghost clipping
+    (see vectorized.py) -- 8x faster on the GNN arms and 24x on the blind MLP,
+    agreeing with the loop to ~2e-7 after hundreds of DP steps.  The fast path
+    is default and mechanisms decline it when it cannot reproduce their loss
+    exactly; --no_vectorized forces the loop.
+
 The engine only talks to a BaseMechanism, so it is identical for the GNN node
 classifier and a future non-GNN anomaly detector.
 """
@@ -113,6 +121,62 @@ def _step_dp(mechanism: BaseMechanism, subgraphs: List, *, C: float,
     return float(running) if running is not None else 0.0
 
 
+def _step_dp_vectorized(mechanism: BaseMechanism, subgraphs: List, *, C: float,
+                        sigma: float, noise_gen: torch.Generator, cfg: dict,
+                        expected_batch: float = 1.0) -> float:
+    """`_step_dp` with the per-root loop replaced by ghost-clipped batched math.
+
+    Same mechanism, same guarantee: one gradient per root, clipped to C before
+    summing, then a single N(0, (sigma*C)^2 I) draw.  Only the arithmetic route
+    differs -- see `vectorized.clipped_grad_sum_ghost`.  Measured end to end on
+    PPI-large at B=512, hidden=512: the GNN arm goes 399 -> 47 ms/step (8.5x)
+    and the blind MLP arm 198 -> 8 ms/step (24x), with final weights agreeing to
+    ~2e-7 relative after hundreds of DP steps.
+    """
+    from .vectorized import (build_padded_batch, clipped_grad_sum_ghost,
+                             ghost_param_names)
+
+    mechanism.train_mode()
+    params = mechanism.parameters()
+    opt = mechanism.optimizer
+    denom = max(float(expected_batch), 1.0)
+
+    if not subgraphs:
+        noise = mechanism.gaussian_noise_like(params, sigma, C, generator=noise_gen)
+        opt.zero_grad()
+        for p, z in zip(params, noise):
+            p.grad = z / denom
+        opt.step()
+        return 0.0
+
+    data = mechanism.data
+    batch = build_padded_batch(
+        subgraphs, data.x, data.y,
+        supervised=getattr(mechanism, '_train_mask', None),
+        device=mechanism.device)
+    summed, loss_total, _ = clipped_grad_sum_ghost(
+        dict(mechanism.module.named_parameters()), batch, C=C, **cfg)
+
+    by_name = dict(zip(ghost_param_names(cfg['num_layers'],
+                                         cfg.get('kind', 'sage')), summed))
+    grad_accum = []
+    for name, p in mechanism.module.named_parameters():
+        if name not in by_name:
+            # A parameter the dense form does not cover would silently receive
+            # only noise, which is a different mechanism from the one accounted.
+            raise RuntimeError(
+                f"vectorized DP step does not produce a gradient for {name!r}; "
+                f"this mechanism should not have declared vectorized_tail")
+        grad_accum.append(by_name[name])
+
+    noise = mechanism.gaussian_noise_like(grad_accum, sigma, C, generator=noise_gen)
+    opt.zero_grad()
+    for p, acc, z in zip(params, grad_accum, noise):
+        p.grad = (acc + z) / denom
+    opt.step()
+    return loss_total
+
+
 def _evaluate(mechanism, data, alt_edge_index):
     """Metrics on the configured graph, plus `<key>_alt` on `alt_edge_index`."""
     out = dict(mechanism.evaluate(data))
@@ -140,6 +204,7 @@ def train_sparse_gnn(
     eval_every: int = 0,
     track_every: int = 0,
     eval_alt_edge_index=None,
+    vectorized: bool = True,
     verbose: bool = False,
     checkpoint_callback: Optional[Callable[[Dict[str, float]], None]] = None,
 ) -> Dict[str, float]:
@@ -194,6 +259,14 @@ def train_sparse_gnn(
                  else int(candidate_nodes.numel()))
     expected_batch = p1 * pool_size
 
+    # Resolve the fast DP path once.  None -> the per-root loop, which is always
+    # correct; the mechanism declines whenever the dense form cannot reproduce
+    # its `subgraph_loss` exactly (see BaseMechanism.vectorized_config).
+    dp_cfg = (mechanism.vectorized_config() if dp and vectorized else None)
+    if verbose:
+        print(f"  DP gradient path: "
+              f"{'vectorized (ghost-clipped)' if dp_cfg else 'per-root loop'}")
+
     history: List[Dict[str, float]] = []
     for t in range(1, T + 1):
         roots = sample_roots(num_nodes, p1, generator=sample_gen,
@@ -207,8 +280,15 @@ def train_sparse_gnn(
             # mechanism (Assumption 3.2 / 6.3) adds Gaussian noise to G(y)
             # unconditionally, including on the all-empty batch, so a
             # noise-only update is what matches the accounting.
-            loss = _step_dp(mechanism, subgraphs, C=clip, sigma=sigma,
-                            noise_gen=noise_gen, expected_batch=expected_batch)
+            if dp_cfg is not None:
+                loss = _step_dp_vectorized(
+                    mechanism, subgraphs, C=clip, sigma=sigma,
+                    noise_gen=noise_gen, cfg=dp_cfg,
+                    expected_batch=expected_batch)
+            else:
+                loss = _step_dp(mechanism, subgraphs, C=clip, sigma=sigma,
+                                noise_gen=noise_gen,
+                                expected_batch=expected_batch)
         else:
             if roots.numel() == 0:
                 continue
@@ -258,6 +338,7 @@ def train_sparse_gnn_with_budget(
     eval_every: int = 0,
     track_every: int = 0,
     eval_alt_edge_index=None,
+    vectorized: bool = True,
     verbose: bool = False,
     checkpoint_callback=None,
 ) -> tuple[dict[str, Any], SparseGNNNoiseCalibration]:

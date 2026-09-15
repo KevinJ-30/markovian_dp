@@ -25,6 +25,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base_mechanism import BaseMechanism
+from .vectorized import regression_tail
 from .layers import build_conv_stack
 
 
@@ -53,6 +54,10 @@ class RegressionGNNMechanism(BaseMechanism):
     Same constructor signature as the other mechanisms so run.py can swap them
     freely; `num_classes` is accepted and ignored (always one output).
     """
+
+    # Batched loss tail for the ghost-clipped DP path; must match
+    # `subgraph_loss` below exactly (tests/test_vectorized.py pins this).
+    vectorized_tail = staticmethod(regression_tail)
 
     metric_name = "mae"
 

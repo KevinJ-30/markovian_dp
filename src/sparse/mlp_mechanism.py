@@ -32,6 +32,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base_mechanism import BaseMechanism
+from .vectorized import multilabel_tail, single_label_tail
 
 
 class _MLP(nn.Module):
@@ -80,6 +81,11 @@ class MLPMechanism(BaseMechanism):
         self.multilabel = bool(multilabel)
         self.metric_name = 'micro_f1' if self.multilabel else 'accuracy'
         self._train_mask = data.train_mask
+        # Batched tail matching `subgraph_loss` below. Unlike the GNN
+        # mechanisms this is per-INSTANCE: one class serves both single-label
+        # and multilabel datasets, and the loss differs between them.
+        self.vectorized_tail = (multilabel_tail if self.multilabel
+                                else single_label_tail)
 
     def subgraph_loss(self, subgraph) -> torch.Tensor:
         root = subgraph.root

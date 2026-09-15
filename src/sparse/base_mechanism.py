@@ -151,6 +151,44 @@ class BaseMechanism(ABC):
             return params[0].sum() * 0.0
         return torch.zeros((), device=self.device, requires_grad=True)
 
+    # ── vectorized (ghost-clipped) DP path ────────────────────────────────────
+    # Subclasses that are a SAGEConv(aggr='mean') stack set `vectorized_tail` to
+    # the batched loss tail matching their own `subgraph_loss`.  Leaving it None
+    # keeps the mechanism on the per-subgraph loop, which is always correct.
+    vectorized_tail = None
+
+    def vectorized_config(self):
+        """Config for `vectorized.clipped_grad_sum_ghost`, or None to use the loop.
+
+        None whenever the fast path cannot reproduce `subgraph_loss` EXACTLY:
+        no declared tail, or a stack that is not SAGEConv (the 'gcn' aggregator
+        normalizes with the source degree, which the dense form does not model).
+        """
+        import torch.nn as nn
+        from torch_geometric.nn import SAGEConv
+        # Instance first, then class: the GNN mechanisms set it as a class-level
+        # staticmethod, but MLPMechanism serves both single-label and multilabel
+        # datasets from one class and must pick its tail per instance.
+        resolved = getattr(self, 'vectorized_tail', None)
+        if resolved is None:
+            return None
+        common = {'dropout': float(getattr(self.module, 'dropout', 0.0))}
+
+        convs = getattr(self.module, 'convs', None)
+        if convs is not None and len(convs) > 0:
+            if not all(isinstance(c, SAGEConv) for c in convs):
+                return None
+            return {'loss_tail': resolved, 'num_layers': len(convs),
+                    'kind': 'sage', **common}
+
+        lins = getattr(self.module, 'lins', None)
+        if lins is not None and len(lins) > 0:
+            if not all(isinstance(m, nn.Linear) for m in lins):
+                return None
+            return {'loss_tail': resolved, 'num_layers': len(lins),
+                    'kind': 'mlp', **common}
+        return None
+
     # ── shared DP helpers (used by the engine's DP path) ──────────────────────
 
     def clip_flat_grad(self, grads: List[torch.Tensor], C: float) -> List[torch.Tensor]:
