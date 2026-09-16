@@ -42,9 +42,40 @@ EPOCHS=${EPOCHS:-10}
 K=${K:-5}
 SEEDS=${SEEDS:-1}
 DELTA=${DELTA:-1e-6}
-GRID=${GRID:-1e-4}
 EPS_LIST=${EPS_LIST:-"2 8"}
-TRACK_EVERY=${TRACK_EVERY:-50}
+
+# ACCOUNTANT DISCRETIZATION.  `grid` is dp_accounting's value_discretization_
+# interval: the PLD lives on a lattice of this spacing and rounds PESSIMISTICALLY
+# to stay an upper bound, so the error accumulates under composition at roughly
+# T*grid.  That is safe (epsilon is never under-reported) but it is paid for in
+# noise, and the overpayment is NOT uniform -- it is a fixed ADDITIVE epsilon, so
+# it eats a far larger share of an eps=2 budget than an eps=8 one.
+#
+# The old default of 1e-4 was correct when T was a hardcoded 500 (floor 0.05).
+# It is not correct now that T = epochs/p1 and p1 = BATCH/NTRAIN, because T grows
+# with the graph -- which means the penalty falls hardest on exactly the large
+# graphs this suite exists to measure.  Measured on amazon at 10 epochs, eps=2:
+#
+#     grid=1e-4  floor 2.45  ->  sigma 6.996   (floor EXCEEDS the eps=2 target)
+#     grid=1e-6  floor 0.025 ->  sigma 2.963   (2.4x less noise, same guarantee)
+#
+# 1e-6 holds the floor under ~2.5% of an eps=2 budget through ~20 epochs and
+# costs 80-550s per calibration call, which is a one-time per-cell cost.  Beyond
+# ~30 epochs it starts to bind again and wants to go finer, but calibration time
+# grows as 1/grid, so check `calibrate_grid.py`'s stderr warning rather than
+# assuming.  That warning fires whenever T*grid > min(eps)/10; it goes to the
+# slurm log, and it is not decoration.
+GRID=${GRID:-1e-6}
+
+# ONE EVALUATION PER EPOCH.  1/p1 = NTRAIN/BATCH steps is one pass over the root
+# pool, so this tracks once per epoch on every dataset.  A CONSTANT here is a
+# different number of evaluations at every T: at the old fixed 50, amazon at 10
+# epochs would run 490 full-graph evaluations over a 262.8M-arc graph, which is
+# the dominant cost of the job and the thing the sbatch headers warn about.
+# summarize_sweep.py then reports both the best tracked checkpoint (selected on
+# VALIDATION) and the final one; the final is the matched-epsilon number, since
+# every cell reaches step T at its calibrated target.
+TRACK_EVERY=${TRACK_EVERY:-$(( NTRAIN / BATCH ))}
 
 P1=$($PY -c "print(f'{$BATCH/$NTRAIN:.8f}')")
 # T = epochs/p1. Derived here rather than inside run.py because calibrate_grid.py

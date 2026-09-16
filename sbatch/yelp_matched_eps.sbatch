@@ -40,8 +40,8 @@ export GRAPHSAINT_DATA_ROOT=${GRAPHSAINT_DATA_ROOT:-/storage/ice1/8/1/kjacob7/gr
 
 DS=yelp
 NTRAIN=537635
-HIDDEN=512          # GraphSAINT Appendix C.3 uses 512 for Yelp
-DROPOUT=0.1         # ditto
+HIDDEN=${HIDDEN:-512}      # GraphSAINT Appendix C.3 uses 512 for Yelp
+DROPOUT=${DROPOUT:-0.1}    # ditto
 OUT_ROOT=${OUT_ROOT:-results/yelp_matched_eps}
 
 source scripts/_matched_eps_grid.sh
