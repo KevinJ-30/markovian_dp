@@ -34,7 +34,7 @@ src/
     multilabel_mechanism.py  multilabel g0 (PPI): micro-F1 + AUROC
     binary_mechanism.py    binary g0 (RelBench entity tasks): AUROC
     mlp_mechanism.py       graph-blind baseline g0
-    vectorized.py          padded dense subgraphs + ghost-clipped DP gradients
+    vectorized.py          padded dense subgraphs + torch.func per-root grads
     relbench_data.py       RelBench database -> homogeneous directed graph
     accounting.py          dominating pairs -> Google dp_accounting
     compute_epsilon.py     post-hoc epsilon for a results CSV
@@ -182,40 +182,43 @@ calibrate at all at T=245,098). Read a budget off a table like this one.
 DP-SGD needs one gradient **per root**, clipped to `C` before summing, so it
 cannot use a single batched backward. The obvious implementation is a Python
 loop calling autograd once per root — 512 backward passes per step, each over a
-subgraph averaging 1.4 nodes. That is all launch overhead and no arithmetic,
-and a GPU cannot help: measured on PPI-large it was 387 ms of a 396 ms step,
-against 9 ms for the expansion that produced the subgraphs.
+subgraph averaging 1.4 nodes. That is all launch overhead and no arithmetic:
+measured on PPI-large it was 387 ms of a 396 ms step, against 9 ms for the
+expansion that produced the subgraphs.
 
-`src/sparse/vectorized.py` removes the loop, following the approach in Google's
-own DP-GNN implementation (`jax.vmap(jax.grad(subgraph_loss))` over fixed-size
-padded subgraphs). Two properties make it work here:
+`src/sparse/vectorized.py` removes the loop, following the reference DP-GNN
+implementation from Google Research (`jax.vmap(jax.grad(subgraph_loss))` over
+padded subgraphs). It is built from **stock library pieces only** — there is no
+hand-derived gradient math on the privacy path, deliberately:
 
-- **Subgraphs are bounded.** SparseExpand at depth `r` on a graph capped to
-  `K_out` yields at most `1 + K + ... + K^r` nodes. We pad to the largest
-  subgraph *in the batch*, which is far smaller — at K=5, p2=0.1, r=2 the mean
-  is 1.38 nodes, the batch max 6, the static bound 31.
-- **Mean aggregation is a matmul.** `SAGEConv(aggr='mean')` is exactly
-  `A_norm @ X @ W_l^T + b_l + X @ W_r^T`, verified bit-identical against the PyG
-  layer. So the forward is dense batched matmuls.
+- **`torch.func.vmap(grad(...))` + `functional_call`** is PyTorch's own
+  documented per-sample-gradient recipe.
+- **`torch_geometric.nn.DenseSAGEConv`** is PyG's dense counterpart of
+  `SAGEConv(aggr='mean')`, built for exactly this `[B, n, n]` layout. Only the
+  bias *placement* differs (SAGEConv puts it on `lin_l`, the dense layer on
+  `lin_root`); since the two terms are summed, that is a rename, handled by
+  `dense_param_map` and pinned by `test_dense_mirror_matches_sageconv`.
 
-The default path goes one step further and uses **ghost clipping**: per-root
-gradient *norms* come from `<S Sᵀ, U Uᵀ>` on n×n Gram matrices, so the per-root
-gradients are never materialized (at B=512, hidden=512 that would be a 127 MB
-tensor for one weight). The clipped sum is then one matmul.
+Padding is finite because SparseExpand at depth `r` on a graph capped to
+`K_out` yields at most `1 + K + ... + K^r` nodes, and we pad to the largest
+subgraph *in the batch* — at K=5, p2=0.1, r=2 the mean is 1.38 nodes, the batch
+max 6, the static bound 31.
 
-| arm | per-root loop | vectorized | speedup |
+| arm (PPI-large, B=512, hidden=512) | per-root loop | vectorized | speedup |
 |---|---:|---:|---:|
-| GNN (r=2, p2=0.1, hidden=512) | 399 ms/step | 47 ms/step | 8.5x |
-| blind MLP (r=0, hidden=512) | 198 ms/step | 8 ms/step | 24x |
+| GNN (r=2, p2=0.1) | 369 ms/step | 123 ms/step | 3.0x |
+| blind MLP (r=0) | 184 ms/step | 65 ms/step | 2.8x |
 
 **This is the same mechanism, not an approximation.** Both paths produce one
-clipped gradient per root and one Gaussian draw; only the arithmetic differs.
-`tests/test_vectorized.py` pins agreement with the loop for every mechanism,
-with clipping active, and end-to-end through the training engine — measured
-~2e-7 relative after hundreds of DP steps. A mechanism *declines* the fast path
-whenever it cannot reproduce its own `subgraph_loss` exactly (`aggr='gcn'`,
-whose symmetric normalization needs the source degree), and falls back to the
-loop. `--no_vectorized` forces the loop for A/B checks.
+clipped gradient per root and one Gaussian draw; only the route to the
+per-root gradients differs. `tests/test_vectorized.py` pins agreement with the
+loop for every mechanism, with clipping active, with the padding widened, and
+end-to-end through the training engine — measured 4e-7 (GNN) and 9e-6 (MLP)
+relative on the final weights after 120 DP steps.
+
+A mechanism *declines* the fast path whenever it cannot reproduce its own
+`subgraph_loss` exactly (`aggr='gcn'`, whose symmetric normalization needs the
+source degree) and falls back to the loop. `--no_vectorized` forces the loop.
 
 ### Parameters that price epsilon, and parameters that do not
 

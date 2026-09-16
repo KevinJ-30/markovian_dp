@@ -88,7 +88,7 @@ class MultiLabelGNNMechanism(BaseMechanism):
     swap them freely.  `num_classes` is the number of label columns.
     """
 
-    # Batched loss tail for the ghost-clipped DP path; must match
+    # Loss tail for the vectorized DP path; must match
     # `subgraph_loss` below exactly (tests/test_vectorized.py pins this).
     vectorized_tail = staticmethod(multilabel_tail)
 

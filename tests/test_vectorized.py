@@ -1,12 +1,12 @@
-"""The vectorized (ghost-clipped) DP path must equal the per-root loop exactly.
+"""The vectorized DP path must equal the per-root loop exactly.
 
 The loop in `sparse_gnn._step_dp` is the reference implementation of the
 mechanism the accounting prices: one gradient per root, each clipped to
 ||g||_2 <= C, summed, then one Gaussian draw.  `_step_dp_vectorized` computes
-the same quantity by different arithmetic.  If the two ever disagree, the
-reported epsilon describes the loop and the released weights came from the
-vectorized path -- so these tests pin the agreement rather than merely checking
-the fast path "looks reasonable".
+the same quantity via torch.func.vmap over padded subgraphs.  If the two ever
+disagree, the reported epsilon describes the loop while the released weights
+came from the vectorized path -- so these tests pin the agreement rather than
+merely checking that the fast path "looks reasonable".
 
 Everything here runs on a small synthetic graph so the suite stays fast.
 """
@@ -16,10 +16,23 @@ import torch
 
 from src.sparse.sparse_expand import build_adjacency, sparse_expand
 from src.sparse.vectorized import (
-    build_padded_batch, clipped_grad_sum, clipped_grad_sum_ghost,
-    dense_forward, ghost_param_names, per_sample_grads, unbatched_tail,
+    build_mirror, build_padded_batch, clipped_grad_sum, per_sample_grads,
     multilabel_tail, single_label_tail, binary_tail, regression_tail,
 )
+
+
+def _vec(mech, subgraphs, data, C, kind='sage'):
+    """Run the vectorized path for a mechanism, returning name -> summed grad."""
+    cfg = mech.vectorized_config()
+    assert cfg is not None, "mechanism declined the fast path"
+    mirror = build_mirror(mech.module, cfg['kind'], cfg['dropout'])
+    names = [n for n, _ in mech.module.named_parameters()]
+    batch = build_padded_batch(subgraphs, data.x, data.y,
+                               supervised=data.train_mask)
+    per_root, _ = per_sample_grads(dict(mech.module.named_parameters()), batch,
+                                   mirror, loss_tail=cfg['loss_tail'],
+                                   kind=cfg['kind'])
+    return dict(zip(names, clipped_grad_sum(per_root, names, C)))
 
 
 class _Data:
@@ -63,31 +76,43 @@ def _loop_reference(mech, subgraphs, C):
     return acc
 
 
-# ── the dense forward is the PyG layer, not an approximation of it ──────────
+# ── the dense mirror IS the PyG layer, not an approximation of it ──────────
 
-def test_dense_forward_matches_sageconv_stack():
+def test_dense_mirror_matches_sageconv():
+    """PyG's DenseSAGEConv, fed the mechanism's weights, IS SAGEConv(mean).
+
+    This is the load-bearing assumption of the whole fast path: if the rename
+    in `dense_param_map` were wrong (SAGEConv puts the bias on lin_l, the dense
+    layer on lin_root) the gradients would be subtly wrong everywhere.
+    """
+    from torch.func import functional_call
     from src.sparse.multilabel_mechanism import _MultiLabelGNN
+    from src.sparse.vectorized import dense_param_map
     torch.manual_seed(0)
     x, ei = _graph(n=12, f=5)
     mod = _MultiLabelGNN(5, 7, 3, dropout=0.0, num_layers=2, aggr='mean')
     ref = mod(x, ei)
 
     # ACCUMULATE, do not assign: SAGEConv's mean averages over the edge
-    # multiset, so a repeated arc counts twice.  `build_padded_batch` uses
+    # MULTISET, so a repeated arc counts twice.  `build_padded_batch` uses
     # index_add_ for the same reason; assigning 1.0 here silently dedupes and
     # the two disagree by ~5e-2 on a graph with repeated arcs.
     adj = torch.zeros(12, 12)
     adj.index_put_((ei[1], ei[0]), torch.ones(ei.shape[1]), accumulate=True)
-    adj = adj / adj.sum(-1, keepdim=True).clamp(min=1.0)
-    got = dense_forward(dict(mod.named_parameters()), x, adj,
-                        num_layers=2, dropout=0.0, training=False)
+
+    mirror = build_mirror(mod, 'sage', 0.0)
+    mirror.eval()
+    name_map = dense_param_map(2)
+    dense_params = {name_map[k]: v for k, v in mod.named_parameters()}
+    got = functional_call(mirror, dense_params,
+                          (x.unsqueeze(0), adj.unsqueeze(0))).squeeze(0)
     assert torch.allclose(ref, got, atol=1e-6)
 
 
-# ── ghost == loop, for every mechanism that declares the fast path ──────────
+# ── vectorized == loop, for every mechanism that declares the fast path ────
 
 @pytest.mark.parametrize("C", [1.0, 0.01, 0.0005])
-def test_ghost_matches_loop_multilabel(C):
+def test_vectorized_matches_loop_multilabel(C):
     from src.sparse.multilabel_mechanism import MultiLabelGNNMechanism
     torch.manual_seed(0)
     x, ei = _graph()
@@ -97,17 +122,12 @@ def test_ghost_matches_loop_multilabel(C):
 
     ref = dict(zip([n for n, _ in mech.module.named_parameters()],
                    _loop_reference(mech, sgs, C)))
-    batch = build_padded_batch(sgs, data.x, data.y, supervised=data.train_mask)
-    got, _, coef = clipped_grad_sum_ghost(
-        dict(mech.module.named_parameters()), batch,
-        loss_tail=multilabel_tail, num_layers=2, C=C)
-    for name, v in zip(ghost_param_names(2), got):
-        assert torch.allclose(ref[name], v, atol=1e-6, rtol=1e-4), name
-    if C < 1.0:                      # the small-C cases must actually clip
-        assert coef < 1.0
+    got = _vec(mech, sgs, data, C)
+    for name in ref:
+        assert torch.allclose(ref[name], got[name], atol=1e-6, rtol=1e-4), name
 
 
-def test_ghost_matches_loop_single_label():
+def test_vectorized_matches_loop_single_label():
     from src.sparse.gnn_mechanism import GNNMechanism
     torch.manual_seed(0)
     x, ei = _graph()
@@ -116,15 +136,12 @@ def test_ghost_matches_loop_single_label():
     sgs = _subgraphs(ei, 40)
     ref = dict(zip([n for n, _ in mech.module.named_parameters()],
                    _loop_reference(mech, sgs, 0.05)))
-    batch = build_padded_batch(sgs, data.x, data.y, supervised=data.train_mask)
-    got, _, _ = clipped_grad_sum_ghost(
-        dict(mech.module.named_parameters()), batch,
-        loss_tail=single_label_tail, num_layers=2, C=0.05)
-    for name, v in zip(ghost_param_names(2), got):
-        assert torch.allclose(ref[name], v, atol=1e-6, rtol=1e-4), name
+    got = _vec(mech, sgs, data, 0.05)
+    for name in ref:
+        assert torch.allclose(ref[name], got[name], atol=1e-6, rtol=1e-4), name
 
 
-def test_ghost_matches_loop_binary_and_regression():
+def test_vectorized_matches_loop_binary_and_regression():
     from src.sparse.binary_mechanism import BinaryGNNMechanism
     from src.sparse.regression_mechanism import RegressionGNNMechanism
     x, ei = _graph()
@@ -137,17 +154,13 @@ def test_ghost_matches_loop_binary_and_regression():
         sgs = _subgraphs(ei, 40)
         ref = dict(zip([n for n, _ in mech.module.named_parameters()],
                        _loop_reference(mech, sgs, 0.05)))
-        batch = build_padded_batch(sgs, data.x, data.y,
-                                   supervised=data.train_mask)
-        got, _, _ = clipped_grad_sum_ghost(
-            dict(mech.module.named_parameters()), batch,
-            loss_tail=tail, num_layers=2, C=0.05)
-        for name, v in zip(ghost_param_names(2), got):
-            assert torch.allclose(ref[name], v, atol=1e-6, rtol=1e-4), \
+        got = _vec(mech, sgs, data, 0.05)
+        for name in ref:
+            assert torch.allclose(ref[name], got[name], atol=1e-6, rtol=1e-4), \
                 f"{cls.__name__}:{name}"
 
 
-def test_ghost_matches_loop_blind_mlp():
+def test_vectorized_matches_loop_blind_mlp():
     """The graph-blind arm uses a Linear stack, not SAGEConv (kind='mlp')."""
     from src.sparse.mlp_mechanism import MLPMechanism
     torch.manual_seed(0)
@@ -157,35 +170,9 @@ def test_ghost_matches_loop_blind_mlp():
     sgs = _subgraphs(ei, 40, p2=1.0, r=0)
     ref = dict(zip([n for n, _ in mech.module.named_parameters()],
                    _loop_reference(mech, sgs, 0.05)))
-    batch = build_padded_batch(sgs, data.x, data.y, supervised=data.train_mask)
-    got, _, _ = clipped_grad_sum_ghost(
-        dict(mech.module.named_parameters()), batch,
-        loss_tail=multilabel_tail, num_layers=2, kind='mlp', C=0.05)
-    for name, v in zip(ghost_param_names(2, 'mlp'), got):
-        assert torch.allclose(ref[name], v, atol=1e-6, rtol=1e-4), name
-
-
-# ── the vmap route agrees too (independent implementation of the same thing) ─
-
-def test_vmap_route_agrees_with_ghost():
-    from src.sparse.multilabel_mechanism import MultiLabelGNNMechanism
-    torch.manual_seed(0)
-    x, ei = _graph()
-    data = _Data(x, (torch.rand(40, 4) > 0.5).float(), ei)
-    mech = MultiLabelGNNMechanism(data, 6, 4, hidden=8, num_layers=2, dropout=0.0)
-    sgs = _subgraphs(ei, 40)
-    names = [n for n, _ in mech.module.named_parameters()]
-    pdict = dict(mech.module.named_parameters())
-    batch = build_padded_batch(sgs, data.x, data.y, supervised=data.train_mask)
-
-    ghost, _, _ = clipped_grad_sum_ghost(pdict, batch, loss_tail=multilabel_tail,
-                                         num_layers=2, C=0.05)
-    vm = clipped_grad_sum(
-        per_sample_grads(pdict, batch, loss_tail=unbatched_tail(multilabel_tail),
-                         num_layers=2), names, 0.05)
-    by_name = dict(zip(ghost_param_names(2), ghost))
-    for name, v in zip(names, vm):
-        assert torch.allclose(by_name[name], v, atol=1e-6, rtol=1e-4), name
+    got = _vec(mech, sgs, data, 0.05)
+    for name in ref:
+        assert torch.allclose(ref[name], got[name], atol=1e-6, rtol=1e-4), name
 
 
 # ── padding must not change the answer ──────────────────────────────────────
@@ -204,21 +191,24 @@ def test_padding_is_inert():
     mech = MultiLabelGNNMechanism(data, 6, 4, hidden=8, num_layers=2, dropout=0.0)
     sgs = _subgraphs(ei, 40)
     pdict = dict(mech.module.named_parameters())
+    names = [n for n, _ in mech.module.named_parameters()]
+    mirror = build_mirror(mech.module, 'sage', 0.0)
+
+    def run(batch):
+        per_root, _ = per_sample_grads(pdict, batch, mirror,
+                                       loss_tail=multilabel_tail, kind='sage')
+        return clipped_grad_sum(per_root, names, 0.05)
 
     base = build_padded_batch(sgs, data.x, data.y, supervised=data.train_mask)
-    ref, _, _ = clipped_grad_sum_ghost(pdict, base, loss_tail=multilabel_tail,
-                                       num_layers=2, C=0.05)
+    ref = run(base)
 
-    extra = 7
-    n = base.pad_to
+    extra, n = 7, base.pad_to
     wide = type(base)(
         x=torch.cat([base.x, torch.zeros(len(base), extra, base.x.shape[-1])], 1),
         adj=torch.nn.functional.pad(base.adj, (0, extra, 0, extra)),
         y=base.y, sup=base.sup)
     assert wide.pad_to == n + extra
-    got, _, _ = clipped_grad_sum_ghost(pdict, wide, loss_tail=multilabel_tail,
-                                       num_layers=2, C=0.05)
-    for a, b in zip(ref, got):
+    for a, b in zip(ref, run(wide)):
         assert torch.allclose(a, b, atol=1e-6)
 
 

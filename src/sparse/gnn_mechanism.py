@@ -54,7 +54,7 @@ class GNNMechanism(BaseMechanism):
         device:    torch device.
     """
 
-    # Batched loss tail for the ghost-clipped DP path; must match
+    # Loss tail for the vectorized DP path; must match
     # `subgraph_loss` below exactly (tests/test_vectorized.py pins this).
     vectorized_tail = staticmethod(single_label_tail)
 

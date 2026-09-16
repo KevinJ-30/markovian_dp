@@ -350,7 +350,7 @@ def parse_args():
                    help='SparseGNN dominating-pair theorem used for calibration')
     p.add_argument('--no_vectorized', action='store_true',
                    help='force the per-root Python loop for the DP gradient '
-                        'instead of the ghost-clipped batched path. Same '
+                        'instead of the vmap batched path. Same '
                         'mechanism and same epsilon -- only the arithmetic '
                         'differs, and the two agree to ~1e-7 -- but ~8x '
                         'slower. For A/B checks and for mechanisms the fast '

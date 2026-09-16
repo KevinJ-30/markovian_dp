@@ -17,11 +17,10 @@ Algorithm 1: SparseGNN — the model-agnostic training engine.
 
     Two implementations of that SAME mechanism.  `_step_dp` is the reference:
     a Python loop calling autograd once per root.  `_step_dp_vectorized` pads
-    the roots into one batch and computes the clipped sum with ghost clipping
-    (see vectorized.py) -- 8x faster on the GNN arms and 24x on the blind MLP,
-    agreeing with the loop to ~2e-7 after hundreds of DP steps.  The fast path
-    is default and mechanisms decline it when it cannot reproduce their loss
-    exactly; --no_vectorized forces the loop.
+    the roots into one batch and takes per-root gradients with torch.func.vmap
+    (see vectorized.py -- stock library pieces, no hand-derived gradients).
+    The fast path is default; mechanisms decline it when it cannot reproduce
+    their loss exactly, and --no_vectorized forces the loop.
 
 The engine only talks to a BaseMechanism, so it is identical for the GNN node
 classifier and a future non-GNN anomaly detector.
@@ -123,18 +122,15 @@ def _step_dp(mechanism: BaseMechanism, subgraphs: List, *, C: float,
 
 def _step_dp_vectorized(mechanism: BaseMechanism, subgraphs: List, *, C: float,
                         sigma: float, noise_gen: torch.Generator, cfg: dict,
-                        expected_batch: float = 1.0) -> float:
-    """`_step_dp` with the per-root loop replaced by ghost-clipped batched math.
+                        mirror, expected_batch: float = 1.0) -> float:
+    """`_step_dp` with the per-root loop replaced by torch.func.vmap.
 
     Same mechanism, same guarantee: one gradient per root, clipped to C before
-    summing, then a single N(0, (sigma*C)^2 I) draw.  Only the arithmetic route
-    differs -- see `vectorized.clipped_grad_sum_ghost`.  Measured end to end on
-    PPI-large at B=512, hidden=512: the GNN arm goes 399 -> 47 ms/step (8.5x)
-    and the blind MLP arm 198 -> 8 ms/step (24x), with final weights agreeing to
-    ~2e-7 relative after hundreds of DP steps.
+    summing, then a single N(0, (sigma*C)^2 I) draw.  Only the route to the
+    per-root gradients differs -- see vectorized.py, which uses stock
+    torch.func + PyG layers rather than any hand-derived gradient math.
     """
-    from .vectorized import (build_padded_batch, clipped_grad_sum_ghost,
-                             ghost_param_names)
+    from .vectorized import build_padded_batch, clipped_grad_sum, per_sample_grads
 
     mechanism.train_mode()
     params = mechanism.parameters()
@@ -150,31 +146,33 @@ def _step_dp_vectorized(mechanism: BaseMechanism, subgraphs: List, *, C: float,
         return 0.0
 
     data = mechanism.data
+    names = [n for n, _ in mechanism.module.named_parameters()]
     batch = build_padded_batch(
         subgraphs, data.x, data.y,
         supervised=getattr(mechanism, '_train_mask', None),
         device=mechanism.device)
-    summed, loss_total, _ = clipped_grad_sum_ghost(
-        dict(mechanism.module.named_parameters()), batch, C=C, **cfg)
+    per_root, total_loss = per_sample_grads(
+        dict(mechanism.module.named_parameters()), batch, mirror,
+        loss_tail=cfg['loss_tail'], kind=cfg['kind'])
 
-    by_name = dict(zip(ghost_param_names(cfg['num_layers'],
-                                         cfg.get('kind', 'sage')), summed))
-    grad_accum = []
-    for name, p in mechanism.module.named_parameters():
-        if name not in by_name:
-            # A parameter the dense form does not cover would silently receive
-            # only noise, which is a different mechanism from the one accounted.
-            raise RuntimeError(
-                f"vectorized DP step does not produce a gradient for {name!r}; "
-                f"this mechanism should not have declared vectorized_tail")
-        grad_accum.append(by_name[name])
+    missing = [n for n in names if n not in per_root]
+    if missing:
+        # A parameter the mirror does not cover would silently receive only
+        # noise, which is a different mechanism from the one accounted.
+        raise RuntimeError(
+            f"vectorized DP step produced no gradient for {missing}; this "
+            f"mechanism should not have declared vectorized_tail")
 
+    # Clip per root, then sum -- `grad_accum` is already parameter-shaped, so
+    # the noise drawn from it matches the parameters (per_root entries carry a
+    # leading batch axis and must NOT be used for the noise shape).
+    grad_accum = clipped_grad_sum(per_root, names, C)
     noise = mechanism.gaussian_noise_like(grad_accum, sigma, C, generator=noise_gen)
     opt.zero_grad()
     for p, acc, z in zip(params, grad_accum, noise):
         p.grad = (acc + z) / denom
     opt.step()
-    return loss_total
+    return total_loss
 
 
 def _evaluate(mechanism, data, alt_edge_index):
@@ -263,9 +261,17 @@ def train_sparse_gnn(
     # correct; the mechanism declines whenever the dense form cannot reproduce
     # its `subgraph_loss` exactly (see BaseMechanism.vectorized_config).
     dp_cfg = (mechanism.vectorized_config() if dp and vectorized else None)
+    dp_mirror = None
+    if dp_cfg is not None:
+        from .vectorized import build_mirror
+        # Built ONCE per run, not per step: it holds no trained state (every
+        # step supplies the mechanism's live parameters via functional_call),
+        # so rebuilding it would be pure overhead.
+        dp_mirror = build_mirror(mechanism.module, dp_cfg['kind'],
+                                 dp_cfg['dropout']).to(mechanism.device)
     if verbose:
         print(f"  DP gradient path: "
-              f"{'vectorized (ghost-clipped)' if dp_cfg else 'per-root loop'}")
+              f"{'vectorized (torch.func.vmap)' if dp_cfg else 'per-root loop'}")
 
     history: List[Dict[str, float]] = []
     for t in range(1, T + 1):
@@ -283,7 +289,7 @@ def train_sparse_gnn(
             if dp_cfg is not None:
                 loss = _step_dp_vectorized(
                     mechanism, subgraphs, C=clip, sigma=sigma,
-                    noise_gen=noise_gen, cfg=dp_cfg,
+                    noise_gen=noise_gen, cfg=dp_cfg, mirror=dp_mirror,
                     expected_batch=expected_batch)
             else:
                 loss = _step_dp(mechanism, subgraphs, C=clip, sigma=sigma,

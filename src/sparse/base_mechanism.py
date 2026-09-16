@@ -151,14 +151,14 @@ class BaseMechanism(ABC):
             return params[0].sum() * 0.0
         return torch.zeros((), device=self.device, requires_grad=True)
 
-    # ── vectorized (ghost-clipped) DP path ────────────────────────────────────
+    # ── vectorized DP path ────────────────────────────────────────────────────
     # Subclasses that are a SAGEConv(aggr='mean') stack set `vectorized_tail` to
     # the batched loss tail matching their own `subgraph_loss`.  Leaving it None
     # keeps the mechanism on the per-subgraph loop, which is always correct.
     vectorized_tail = None
 
     def vectorized_config(self):
-        """Config for `vectorized.clipped_grad_sum_ghost`, or None to use the loop.
+        """Config for `vectorized.per_sample_grads`, or None to use the loop.
 
         None whenever the fast path cannot reproduce `subgraph_loss` EXACTLY:
         no declared tail, or a stack that is not SAGEConv (the 'gcn' aggregator
