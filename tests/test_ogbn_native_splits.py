@@ -6,10 +6,11 @@ import pytest
 import torch
 from torch_geometric.data import Data
 
-from src.datasets import _load_ogb_node
-from src.experiments.baselines import BaselineConfig, BaselineTrainer
-import src.experiments.dpar as dpar
-from src.experiments.inductive import load_or_create_inductive_split
+from src.data.datasets import _load_ogb_node
+from src.models.baselines import DPARMLP
+from src.training.baselines import BaselineConfig, BaselineTrainer
+import src.training.dpar as dpar
+from src.processing.splits import load_or_create_inductive_split
 import src.experiments.run as experiment_runner
 from src.experiments.upstream import export_partitions
 
@@ -64,7 +65,7 @@ def test_global_class_space_includes_held_out_labels(monkeypatch, tmp_path):
     assert baseline._model(split.train.data, split.num_classes).layers[-1].out_features == 3
 
     captured = {}
-    dpar_mlp = dpar.DPARMLP
+    dpar_mlp = DPARMLP
 
     def capture_dpar_mlp(inputs, classes, hidden, layers, dropout):
         captured["classes"] = classes

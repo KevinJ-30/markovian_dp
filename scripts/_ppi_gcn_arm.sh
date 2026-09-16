@@ -16,7 +16,7 @@ for AGGR in gcn mean; do
     OUT=results/ppi/aggr/${AGGR}_p${P2}_nodp
     [[ -s $OUT/sparse_gnn_ppi_results.csv ]] || {
       echo "=== aggr=$AGGR p2=$P2 non-DP $(date) ==="
-      $PY -u -m src.sparse.run --dataset ppi --direction in \
+      $PY -u -m src.experiments.sparse --dataset ppi --direction in \
         --model multilabel_gnn --aggr $AGGR \
         --p1 0.01 --p2 $P2 --r 1 --num_layers 2 --T 2000 --lr 0.01 \
         --K_in 5 --K_out 5 --dropout 0.0 --weight_decay 0.0 \
@@ -25,7 +25,7 @@ for AGGR in gcn mean; do
     OUT=results/ppi/aggr/${AGGR}_p${P2}_dp
     [[ -s $OUT/sparse_gnn_ppi_dp_results.csv ]] || {
       echo "=== aggr=$AGGR p2=$P2 DP sigma=5 $(date) ==="
-      $PY -u -m src.sparse.run --dataset ppi --direction in --dp \
+      $PY -u -m src.experiments.sparse --dataset ppi --direction in --dp \
         --model multilabel_gnn --aggr $AGGR \
         --p1 0.01 --p2 $P2 --r 1 --num_layers 2 --T 2000 --sigma 5.0 \
         --clip 1.0 --lr 0.3 --K_in 5 --K_out 5 --dropout 0.0 --weight_decay 0.0 \

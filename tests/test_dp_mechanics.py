@@ -5,10 +5,10 @@ import torch
 import torch.nn as nn
 from torch_geometric.data import Data
 
-from src.sparse.base_mechanism import BaseMechanism
-from src.sparse.sparse_expand import (
+from src.models.base_mechanism import BaseMechanism
+from src.processing.sparse_expand import (
     RootedSubgraph, build_adjacency, sample_roots, sparse_expand)
-from src.sparse.sparse_gnn import OpacusPrivateUpdate
+from src.training.sparse_gnn import OpacusPrivateUpdate
 
 
 def _subgraph(root):
@@ -212,7 +212,7 @@ def test_edge_retention_matches_p2():
 
 @pytest.mark.parametrize("radius,reads_two_hop", [(1, False), (2, True)])
 def test_model_depth_does_not_widen_privacy_radius(radius, reads_two_hop):
-    from src.sparse.gnn_mechanism import GNNMechanism
+    from src.models.gnn_mechanism import GNNMechanism
 
     edges = torch.tensor([[2, 1], [1, 0]])
     data = Data(

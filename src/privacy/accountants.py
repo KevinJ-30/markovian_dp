@@ -45,7 +45,7 @@ class SparseGNNAccountant(PrivacyAccountant):
     def account(self, *, p1: float, p2: float, radius: int, k_in: int, k_out: int,
                 sigma: float, steps: int, delta: float,
                 grid: float = 1e-4) -> PrivacyResult:
-        from src.sparse.accounting import sparsegnn_epsilon
+        from src.privacy.accounting import sparsegnn_epsilon
 
         epsilon = sparsegnn_epsilon(
             p1, p2, radius, k_in, sigma, steps, delta, K_out=k_out,
@@ -62,7 +62,7 @@ class SparseGNNAccountant(PrivacyAccountant):
 
     def calibrate(self, target_epsilon: float, delta: float,
                   **kwargs: Any) -> Mapping[str, Any]:
-        from src.sparse.accounting import calibrate_sparsegnn_noise
+        from src.privacy.accounting import calibrate_sparsegnn_noise
 
         calibration = calibrate_sparsegnn_noise(
             target_epsilon=target_epsilon, target_delta=delta,
@@ -82,7 +82,7 @@ class DPMLPAccountant(PrivacyAccountant):
 
     def account(self, *, noise_multiplier: float, sample_rate: float, steps: int,
                 delta: float, mechanism: str = "prv") -> PrivacyResult:
-        from src.sparse.accounting import naive_opacus_epsilon
+        from src.privacy.accounting import naive_opacus_epsilon
 
         epsilon = naive_opacus_epsilon(noise_multiplier, sample_rate, steps, delta, mechanism)
         return PrivacyResult(

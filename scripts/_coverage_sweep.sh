@@ -75,10 +75,10 @@ run_cell() {
   mkdir -p "$out"
   echo "  [run ] $out"
   # shellcheck disable=SC2086
-  $PY -u -m src.sparse.run "${COMMON[@]}" "$@" --out_dir "$out" || return 1
+  $PY -u -m src.experiments.sparse "${COMMON[@]}" "$@" --out_dir "$out" || return 1
   local csv
   csv=$(ls "$out"/sparse_gnn_*_dp_results.csv 2>/dev/null | head -1)
-  [ -n "${csv:-}" ] && $PY -u -m src.sparse.compute_epsilon --csv "$csv" \
+  [ -n "${csv:-}" ] && $PY -u -m src.experiments.compute_epsilon --csv "$csv" \
       --delta "$DELTA" | tail -4
   return 0
 }

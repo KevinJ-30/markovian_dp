@@ -42,7 +42,7 @@ export FLICKR_DATA_ROOT=$SCRATCH/data/Flickr
 cd "$REPO"
 python - "$DATASET" <<'PY'
 import sys
-from src.datasets import load_dataset
+from src.data.datasets import load_dataset
 ds, d = load_dataset(sys.argv[1])
 print(f"{sys.argv[1]} ready: {d.num_nodes:,} nodes, {d.edge_index.size(1):,} arcs, "
       f"{ds.num_features} features, {ds.num_classes} classes")

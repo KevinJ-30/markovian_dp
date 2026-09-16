@@ -47,8 +47,8 @@ run_cell() {   # optimizer lr
     echo "  [skip] $OUT"; return 0
   fi
   echo "=== optimizer=$OPT lr=$LR $(date) ==="
-  $PY -m src.sparse.run $COMMON --optimizer $OPT --lr $LR --out_dir $OUT
-  $PY -m src.sparse.compute_epsilon \
+  $PY -m src.experiments.sparse $COMMON --optimizer $OPT --lr $LR --out_dir $OUT
+  $PY -m src.experiments.compute_epsilon \
       --csv $OUT/sparse_gnn_facebook_dp_results.csv --delta $DELTA | tail -2 || true
 }
 

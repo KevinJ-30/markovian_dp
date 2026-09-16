@@ -43,8 +43,8 @@ import numpy as np
 import pytest
 import torch
 
-from src.sparse.accounting import sparsegnn_mixture_weights
-from src.sparse.sparse_expand import build_adjacency, sample_roots, sparse_expand
+from src.privacy.accounting import sparsegnn_mixture_weights
+from src.processing.sparse_expand import build_adjacency, sample_roots, sparse_expand
 
 pytest.importorskip("scipy")
 

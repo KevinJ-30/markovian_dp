@@ -10,15 +10,16 @@ only on this repository's PyTorch/scientific Python stack.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from typing import Any
 
-import numpy as np
-import scipy.special
-import scipy.stats
 import torch
-from torch import nn
 import torch.nn.functional as F
+
+from src.models.baselines import _OneHopGCN
+
+from src.privacy.dpgnn import (
+    max_terms_per_node, base_sensitivity, multiterm_dpsgd_epsilon,
+)
 
 
 @dataclass(frozen=True)
@@ -34,70 +35,6 @@ class DPGNNConfig:
     learning_rate: float = 3e-3
     clip_percentile: float = 75.0
     max_subgraph_nodes: int = 100
-
-
-class _OneHopGCN(nn.Module):
-    """The DP-GNN one-hop GCN convention: receivers send to senders."""
-
-    def __init__(self, inputs: int, hidden: int, classes: int):
-        super().__init__()
-        self.encoder = nn.Linear(inputs, hidden)
-        self.core = nn.Linear(hidden, hidden)
-        self.decoder = nn.Linear(hidden, classes)
-
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor,
-                edge_weight: torch.Tensor) -> torch.Tensor:
-        x = torch.tanh(self.encoder(x))
-        aggregated = torch.zeros_like(x)
-        if edge_index.numel():
-            senders, receivers = edge_index
-            aggregated.index_add_(0, senders, x[receivers] * edge_weight[:, None])
-        x = aggregated + torch.tanh(self.core(aggregated))
-        return self.decoder(x)
-
-
-def max_terms_per_node(max_degree: int) -> int:
-    if max_degree < 1:
-        raise ValueError("max_degree must be positive")
-    return max_degree + 1
-
-
-def base_sensitivity(max_degree: int) -> float:
-    return float(2 * max_terms_per_node(max_degree))
-
-
-def multiterm_dpsgd_epsilon(*, steps: int, noise_multiplier: float,
-                             delta: float, num_samples: int,
-                             batch_size: int, max_terms: int) -> float:
-    """Port of DP-GNN's hypergeometric multi-term RDP accountant."""
-    if steps < 1 or num_samples < 1 or batch_size < 1:
-        raise ValueError("steps, num_samples, and batch_size must be positive")
-    if not 0.0 < delta < 1.0:
-        raise ValueError("delta must lie in (0, 1)")
-    if noise_multiplier < 1e-20:
-        return float("inf")
-    from dp_accounting import GaussianDpEvent
-    from dp_accounting.rdp import RdpAccountant, compute_epsilon
-
-    batch_size = min(batch_size, num_samples)
-    max_terms = min(max_terms, num_samples)
-    terms = np.arange(max_terms + 1)
-    terms_logprobs = scipy.stats.hypergeom(
-        num_samples, max_terms, batch_size).logpmf(terms)
-    orders = np.arange(1, 10, 0.1)[1:]
-    accountant = RdpAccountant(orders)
-    accountant.compose(GaussianDpEvent(noise_multiplier))
-    unamplified = np.asarray(accountant._rdp)  # DP-Accounting has no public RDP accessor.
-    amplified = []
-    for order, rdp in zip(orders, unamplified):
-        beta = rdp * (order - 1)
-        log_factors = beta * np.square(terms / max_terms)
-        amplified.append(scipy.special.logsumexp(terms_logprobs + log_factors) /
-                         (order - 1))
-    amplified = np.asarray(amplified)
-    if not np.all(unamplified * (batch_size / num_samples) ** 2 <= amplified + 1e-6):
-        raise ValueError("DP-GNN multi-term RDP lower bound was violated")
-    return float(compute_epsilon(orders, amplified * steps, delta)[0])
 
 
 def _sample_training_edges(data: Any, *, max_degree: int, seed: int) -> torch.Tensor:

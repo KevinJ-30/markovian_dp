@@ -12,13 +12,13 @@ case $WHAT in
 metrics)
 $PY -u - "$DS" <<'EOF'
 import sys, torch
-from src.datasets import load_dataset
-from src.sparse.multilabel_mechanism import (
+from src.data.datasets import load_dataset
+from src.models.multilabel_mechanism import (
     MultiLabelGNNMechanism, _micro_f1, _micro_auroc)
-from src.sparse.sparse_expand import (
+from src.processing.sparse_expand import (
     build_adjacency, cap_degrees_undirected)
-from src.sparse.run import make_training_graph
-from src.sparse.sparse_gnn import train_sparse_gnn
+from src.processing.graphs import make_training_graph
+from src.training.sparse_gnn import train_sparse_gnn
 
 ds, data = load_dataset(sys.argv[1])
 train_data = make_training_graph(data)

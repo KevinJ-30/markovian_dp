@@ -2,11 +2,11 @@
 SparseGNN experiment CLI: root sampling (p1) + SparseExpand (p2, r) with a GNN
 base mechanism, swept over (p1, p2, r, sigma) and written to a results CSV.
 
-  python -m src.sparse.run --dataset ppi --model multilabel_gnn --direction in \
+  python -m src.experiments.sparse --dataset ppi --model multilabel_gnn --direction in \
       --p1 0.01 --p2 0.1 --r 1 --num_layers 2 --T 2000 --K_in 5 --K_out 5
 
 Add --dp for the clip+noise path; epsilon is attached afterwards by
-`python -m src.sparse.compute_epsilon --csv <results.csv>`.
+`python -m src.experiments.compute_epsilon --csv <results.csv>`.
 """
 
 import argparse
@@ -20,18 +20,22 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from src.datasets import load_dataset                       # noqa: E402
-from src.sparse.gnn_mechanism import GNNMechanism           # noqa: E402
-from src.sparse.mlp_mechanism import MLPMechanism           # noqa: E402
-from src.sparse.multilabel_mechanism import MultiLabelGNNMechanism  # noqa: E402
-from src.sparse.binary_mechanism import BinaryGNNMechanism  # noqa: E402
-from src.sparse.regression_mechanism import RegressionGNNMechanism  # noqa: E402
-from src.sparse.sparse_expand import (                      # noqa: E402
+from src.data.datasets import load_dataset                       # noqa: E402
+from src.models.gnn_mechanism import GNNMechanism           # noqa: E402
+from src.models.mlp_mechanism import MLPMechanism           # noqa: E402
+from src.models.multilabel_mechanism import MultiLabelGNNMechanism  # noqa: E402
+from src.models.binary_mechanism import BinaryGNNMechanism  # noqa: E402
+from src.models.regression_mechanism import RegressionGNNMechanism  # noqa: E402
+from src.processing.sparse_expand import (                      # noqa: E402
     build_adjacency, cap_degrees, cap_degrees_undirected, dedup_arcs,
     max_degrees, sparse_expand,
 )
-from src.sparse.accounting import calibrate_sparsegnn_noise  # noqa: E402
-from src.sparse.sparse_gnn import train_sparse_gnn          # noqa: E402
+from src.privacy.accounting import calibrate_sparsegnn_noise  # noqa: E402
+from src.training.sparse_gnn import train_sparse_gnn          # noqa: E402
+
+from src.processing.graphs import make_training_graph
+
+from src.models.objectives import trivial_baseline
 
 
 _MECHANISMS = {
@@ -52,19 +56,6 @@ _HIGHER_IS_BETTER = {'accuracy': True, 'micro_f1': True, 'auroc': True,
 def _set_seed(seed):
     random.seed(seed)
     torch.manual_seed(seed)
-
-
-def make_training_graph(test_graph):
-    """Return the graph visible to training, separate from the test graph."""
-    train_graph = test_graph.clone()
-    if hasattr(test_graph, 'train_edge_index'):
-        train_graph.edge_index = test_graph.train_edge_index
-    else:
-        is_train = test_graph.train_mask
-        edge_index = test_graph.edge_index
-        train_graph.edge_index = edge_index[
-            :, is_train[edge_index[0]] & is_train[edge_index[1]]]
-    return train_graph
 
 
 def _mean_std(xs):
@@ -97,45 +88,6 @@ def _report_subgraph_size(adj, candidate_nodes, num_nodes, *, p2, r, direction,
     if mean < 1.05:
         print("  WARNING: roots are effectively isolated — the graph "
               "contributes nothing beyond the root's own features.")
-
-
-def trivial_baseline(data, metric):
-    """Score of the best label-only predictor under the dataset's own metric.
-
-      accuracy  -> most frequent training class, evaluated on test
-      micro_f1  -> predict every label positive: 2p/(1+p) at positive rate p
-      auroc     -> 0.5 by definition
-      mae       -> MAE of "always predict the train mean" on test, i.e.
-                   mean(|y_test - mean(y_train)|) * target_std.
-
-                   NOTE: targets are scaled by target_std but NOT centred
-                   (relbench_data.load_relbench divides by the train std and
-                   leaves the mean alone), so the train mean is NOT 0 in the
-                   scaled space.  An earlier version computed
-                   mean(|y_test|) * target_std, which is the MAE of the
-                   ALL-ZERO predictor -- a much weaker bar on the non-negative
-                   heavy-tailed targets RelBench regression uses (LTV, sales),
-                   so "beats trivial" was too easy to clear.
-
-    Recorded in the CSV as the floor every result must clear (for mae, the
-    ceiling every result must undercut -- see _HIGHER_IS_BETTER).  Note
-    micro_f1's floor is high but has no ranking ability (its AUROC is 0.5), so
-    a model below it may still be learning — compare AUROC too.
-    """
-    import torch as _t
-    if metric == "auroc":
-        return 0.5
-    y, te = data.y, data.test_mask
-    if metric == "micro_f1":
-        p = float(y[te].float().mean())
-        return 2 * p / (1 + p) if p > 0 else float("nan")
-    if metric == "mae":
-        target_std = float(getattr(data, 'target_std', 1.0))
-        train_mean = float(y[data.train_mask].view(-1).float().mean())
-        return float((y[te].view(-1).float() - train_mean).abs().mean()) * target_std
-    tr_counts = _t.bincount(y[data.train_mask].view(-1))
-    majority = int(tr_counts.argmax())
-    return float((y[te].view(-1) == majority).float().mean())
 
 
 def plot_sweep(summary, dataset_name, out_dir):
@@ -274,7 +226,7 @@ def parse_args():
     p.add_argument('--K_in', type=int, default=None,
                    help='cap max in-degree before training (required for a '
                         'valid Theorem 6.4 guarantee; recorded in the CSV for '
-                        'post-hoc accounting via src.sparse.compute_epsilon)')
+                        'post-hoc accounting via src.experiments.compute_epsilon)')
     p.add_argument('--K_out', type=int, default=None,
                    help='cap max out-degree before training (defaults to K_in)')
     p.add_argument('--cap_mode', choices=['auto', 'directed', 'undirected'],
@@ -360,7 +312,7 @@ def main():
     num_features = dataset.num_features
     num_classes = dataset.num_classes
     if args.common_inductive_split:
-        from src.experiments.inductive import load_or_create_inductive_split
+        from src.processing.splits import load_or_create_inductive_split
         split = load_or_create_inductive_split(
             data.clone().cpu(), args.dataset, root=args.split_root,
             seed=args.split_seed)
@@ -718,7 +670,7 @@ def main():
               f"{vm:.4f} +/- {vs:.4f}")
     print(f"\nresults written to {csv_path}")
     if args.dp:
-        print("compute epsilon post-hoc with:  python -m src.sparse.compute_epsilon "
+        print("compute epsilon post-hoc with:  python -m src.experiments.compute_epsilon "
               f"--csv {csv_path} --delta <delta> --grid {args.accounting_grid:g}")
 
     if args.plot:

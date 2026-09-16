@@ -5,7 +5,7 @@ Why this is a valid substitute
 ------------------------------
 With mean aggregation the base mechanism g0 evaluated on a rooted subgraph at
 p2=1, no degree cap, and r = L is EXACTLY full-graph inference at the root
-(verified to 0.00e+00 relative error; see src/sparse/layers.py).  The two
+(verified to 0.00e+00 relative error; see src/models/layers.py).  The two
 training procedures therefore optimize the same per-node objective and differ
 only in how nodes are batched: Poisson root sampling at rate p1 versus all
 training nodes every step.  Measured on PPI with the same capped graph, the two
@@ -37,11 +37,12 @@ import torch.nn.functional as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from src.datasets import load_dataset                              # noqa: E402
-from src.sparse.binary_mechanism import BinaryGNNMechanism         # noqa: E402
-from src.sparse.gnn_mechanism import GNNMechanism                  # noqa: E402
-from src.sparse.multilabel_mechanism import MultiLabelGNNMechanism  # noqa: E402
-from src.sparse.run import make_training_graph, trivial_baseline             # noqa: E402
+from src.data.datasets import load_dataset                              # noqa: E402
+from src.models.binary_mechanism import BinaryGNNMechanism         # noqa: E402
+from src.models.gnn_mechanism import GNNMechanism                  # noqa: E402
+from src.models.multilabel_mechanism import MultiLabelGNNMechanism  # noqa: E402
+from src.processing.graphs import make_training_graph             # noqa: E402
+from src.models.objectives import trivial_baseline                # noqa: E402
 
 MECHANISMS = {
     'gnn': GNNMechanism,

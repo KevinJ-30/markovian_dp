@@ -113,7 +113,7 @@ run_cell() {   # out_dir, then extra flags
   fi
   mkdir -p "$out"
   echo "  [run ] $out  $*"
-  $PY -u -m src.sparse.run "${COMMON[@]}" "$@" --out_dir "$out"
+  $PY -u -m src.experiments.sparse "${COMMON[@]}" "$@" --out_dir "$out"
 }
 
 echo "=== STAGE 1: references $(date) ==="

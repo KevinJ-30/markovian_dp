@@ -28,8 +28,8 @@ def main() -> None:
     out_root = Path("results/inductive/sparse_ablation")
     for dataset in datasets:
         if not args.dry_run:
-            from src.datasets import load_dataset
-            from src.experiments.inductive import load_or_create_inductive_split
+            from src.data.datasets import load_dataset
+            from src.processing.splits import load_or_create_inductive_split
         if not args.dry_run:
             _, data = load_dataset(dataset, device="cpu")
             load_or_create_inductive_split(data, dataset, seed=int(config["seed"]))
@@ -39,7 +39,7 @@ def main() -> None:
             steps = math.ceil(config["training_epochs"] / p1)
             output = out_root / dataset / f"p1-{p1:g}"
             command = [
-                sys.executable, "-m", "src.sparse.run", "--dataset", dataset,
+                sys.executable, "-m", "src.experiments.sparse", "--dataset", dataset,
                 "--common_inductive_split", "--split_seed", str(config["seed"]),
                 "--direction", "in", "--model", "gnn", "--aggr", "mean", "--p1", str(p1),
                 "--p2", *(str(rate) for rate in edge_rates), "--r", str(config["radius"]),
@@ -58,7 +58,7 @@ def main() -> None:
                 if config["privacy"]["enabled"]:
                     result_csv = output / f"sparse_gnn_{dataset}_dp_results.csv"
                     subprocess.run(
-                        [sys.executable, "-m", "src.sparse.compute_epsilon",
+                        [sys.executable, "-m", "src.experiments.compute_epsilon",
                          "--csv", str(result_csv), "--delta",
                          str(config["privacy"]["delta"])],
                         check=True)

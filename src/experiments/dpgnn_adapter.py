@@ -1,7 +1,7 @@
 """First-party partition adapter for DP-GNN.
 
 The previous adapter imported Google's checked-out ``differentially_private_gnns``
-tree at runtime. The implementation now lives in :mod:`src.experiments.dpgnn`;
+tree at runtime. The implementation now lives in :mod:`src.training.dpgnn`;
 this module retains the public manifest/result contract.
 """
 from __future__ import annotations
@@ -12,7 +12,7 @@ from typing import Any
 
 import torch
 
-from .dpgnn import DPGNNConfig, PartitionedDPGNN
+from src.training.dpgnn import DPGNNConfig, PartitionedDPGNN
 
 
 def _load_partitions(manifest: Path) -> tuple[dict[str, Any], int]:
@@ -61,7 +61,7 @@ def run_partitioned(manifest: str | Path, result_path: str | Path, *, steps: int
             "composition_count": steps,
         },
         "implementation": {
-            "source": "src.experiments.dpgnn",
+            "source": "src.training.dpgnn",
             "algorithm": [
                 "reverse-edge bounded-degree sampling",
                 "one-hop per-root gradients",

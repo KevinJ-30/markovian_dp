@@ -12,7 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from src.sparse.accounting import (  # noqa: E402
+from src.privacy.accounting import (  # noqa: E402
     naive_opacus_epsilon, sparsegnn_epsilon_schedule)
 
 

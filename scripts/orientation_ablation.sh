@@ -46,27 +46,27 @@ for DS in $DATASETS; do
           --seeds $SEEDS )
 
   echo "=== [0] graph-blind reference (r=0) ==="
-  $PY -m src.sparse.run $COMMON $BLIND --p2 1.0 --p1 $P1 \
+  $PY -m src.experiments.sparse $COMMON $BLIND --p2 1.0 --p1 $P1 \
       --out_dir $OUT/mlp
 
   for DIR in in out; do
     echo "\n=== [1] uncapped ceiling, direction=$DIR ==="
-    $PY -m src.sparse.run $COMMON $MODEL --direction $DIR --p1 $P1 \
+    $PY -m src.experiments.sparse $COMMON $MODEL --direction $DIR --p1 $P1 \
         --p2 1.0 --r $CEIL_R --num_layers $CEIL_R --out_dir $OUT/ceiling_$DIR
 
     echo "=== [2] capped sparsification sweep, direction=$DIR ==="
-    $PY -m src.sparse.run $COMMON $MODEL --direction $DIR --p1 $P1 $CAP \
+    $PY -m src.experiments.sparse $COMMON $MODEL --direction $DIR --p1 $P1 $CAP \
         --p2 $P2_GRID --r $CEIL_R --num_layers $CEIL_R \
         --out_dir $OUT/stage1_$DIR
 
     echo "=== [3] DP sweep, direction=$DIR ==="
-    $PY -m src.sparse.run $COMMON $MODEL --direction $DIR --dp --p1 $P1 $CAP \
+    $PY -m src.experiments.sparse $COMMON $MODEL --direction $DIR --dp --p1 $P1 $CAP \
         --p2 $P2_GRID --r $CEIL_R --num_layers $CEIL_R \
         --sigma $SIGMA_GRID --clip $CLIP --lr $LR_DP \
         --out_dir $OUT/dp_$DIR
 
     echo "=== [4] post-hoc epsilon, direction=$DIR ==="
-    $PY -m src.sparse.compute_epsilon \
+    $PY -m src.experiments.compute_epsilon \
         --csv $OUT/dp_$DIR/sparse_gnn_${TAG}_dp_results.csv --delta $DELTA
   done
 

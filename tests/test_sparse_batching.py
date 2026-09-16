@@ -6,10 +6,10 @@ import torch.nn.functional as F
 from opacus.grad_sample import GradSampleModule
 from torch_geometric.data import Data
 
-from src.sparse.gnn_mechanism import GNNMechanism
-from src.sparse.padded import pad_rooted_subgraphs
-from src.sparse.sparse_gnn import OpacusPrivateUpdate
-from src.sparse.sparse_expand import RootedSubgraph
+from src.models.gnn_mechanism import GNNMechanism
+from src.processing.padded import pad_rooted_subgraphs
+from src.training.sparse_gnn import OpacusPrivateUpdate
+from src.processing.sparse_expand import RootedSubgraph
 
 
 def _data():

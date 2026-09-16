@@ -28,7 +28,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
-from src.sparse.accounting import calibrate_sparsegnn_noise   # noqa: E402
+from src.privacy.accounting import calibrate_sparsegnn_noise   # noqa: E402
 
 
 def parse_args():

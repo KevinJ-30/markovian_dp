@@ -9,10 +9,11 @@ from typing import Any
 
 import torch
 from torch import Tensor, nn
-import torch.nn.functional as F
 
-from .dpar import _task_loss, _task_metric
-from .privacy import DPMLPAccountant
+from src.models.objectives import _task_loss, _task_metric
+from src.privacy.accountants import DPMLPAccountant
+
+from src.models.baselines import MLP, GraphSAGE
 
 @dataclass(frozen=True)
 class BaselineConfig:
@@ -30,53 +31,6 @@ class BaselineConfig:
     seed: int = 0
     multilabel: bool = False
     regression: bool = False
-
-
-class MLP(nn.Module):
-    def __init__(self, inputs: int, classes: int, hidden: int, layers: int, dropout: float):
-        super().__init__()
-        if layers < 1:
-            raise ValueError("layers must be positive")
-        widths = [inputs] + [hidden] * (layers - 1) + [classes]
-        self.layers = nn.ModuleList(nn.Linear(a, b) for a, b in zip(widths, widths[1:]))
-        self.dropout = dropout
-
-    def forward(self, x: Tensor, edge_index: Tensor | None = None) -> Tensor:
-        for layer in self.layers[:-1]:
-            x = F.relu(layer(x))
-            x = F.dropout(x, p=self.dropout, training=self.training)
-        return self.layers[-1](x)
-
-
-class GraphSAGE(nn.Module):
-    """Mean-aggregating GraphSAGE without a PyG runtime dependency."""
-
-    def __init__(self, inputs: int, classes: int, hidden: int, layers: int, dropout: float):
-        super().__init__()
-        if layers < 1:
-            raise ValueError("layers must be positive")
-        widths = [inputs] + [hidden] * (layers - 1) + [classes]
-        self.self_layers = nn.ModuleList(nn.Linear(a, b) for a, b in zip(widths, widths[1:]))
-        self.neighbor_layers = nn.ModuleList(nn.Linear(a, b, bias=False) for a, b in zip(widths, widths[1:]))
-        self.dropout = dropout
-
-    @staticmethod
-    def _mean_neighbors(x: Tensor, edge_index: Tensor) -> Tensor:
-        source, target = edge_index
-        sums = torch.zeros_like(x)
-        sums.index_add_(0, target, x[source])
-        degree = torch.bincount(target, minlength=x.size(0)).to(x.dtype).clamp_min_(1)
-        return sums / degree[:, None]
-
-    def forward(self, x: Tensor, edge_index: Tensor | None = None) -> Tensor:
-        if edge_index is None:
-            raise ValueError("GraphSAGE requires edge_index")
-        for index, (self_layer, neighbor_layer) in enumerate(zip(self.self_layers, self.neighbor_layers)):
-            x = self_layer(x) + neighbor_layer(self._mean_neighbors(x, edge_index))
-            if index < len(self.self_layers) - 1:
-                x = F.relu(x)
-                x = F.dropout(x, p=self.dropout, training=self.training)
-        return x
 
 
 class BaselineTrainer:

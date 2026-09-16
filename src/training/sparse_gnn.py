@@ -23,10 +23,10 @@ from typing import Any, Callable, Dict, List, Optional
 
 import torch
 
-from .base_mechanism import BaseMechanism
-from .accounting import SparseGNNNoiseCalibration, calibrate_sparsegnn_noise
-from .padded import iter_padded_root_batches
-from .sparse_expand import SparseAdjacency, build_adjacency, sample_roots, sparse_expand
+from src.models.base_mechanism import BaseMechanism
+from src.privacy.accounting import SparseGNNNoiseCalibration, calibrate_sparsegnn_noise
+from src.processing.padded import iter_padded_root_batches
+from src.processing.sparse_expand import SparseAdjacency, build_adjacency, sample_roots, sparse_expand
 
 
 def _make_generator(seed, device="cpu"):

@@ -42,13 +42,13 @@ for DS in $DATASETS; do
     OUT=results/inductive_stage2_${TAG}_r$R
     echo "=== [S2] DP sigma sweep, r=$R (L=$R), capped ==="
     done_already $OUT/sparse_gnn_${TAG}_dp_results.csv || \
-    $PY -m src.sparse.run --dataset $DS --direction in --dp \
+    $PY -m src.experiments.sparse --dataset $DS --direction in --dp \
         $MODEL $CAP $REG --p1 $P1 --p2 $P2_GRID --r $R --num_layers $L \
         --sigma $SIGMA_GRID --clip $CLIP --lr $LR_DP \
         --T $T --seeds $SEEDS --out_dir $OUT
 
     echo "=== [S3] post-hoc epsilon (Theorem 6.4), r=$R ==="
-    $PY -m src.sparse.compute_epsilon \
+    $PY -m src.experiments.compute_epsilon \
         --csv $OUT/sparse_gnn_${TAG}_dp_results.csv --delta $DELTA
 
     # Ceiling line comes from inductive_stage01.sh; skipped quietly if absent.

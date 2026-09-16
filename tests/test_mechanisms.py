@@ -13,13 +13,13 @@ import pytest
 import torch
 from torch_geometric.data import Data
 
-from src.sparse.binary_mechanism import BinaryGNNMechanism, _auroc
-from src.sparse.gnn_mechanism import GNNMechanism
-from src.sparse.mlp_mechanism import MLPMechanism
-from src.sparse.multilabel_mechanism import MultiLabelGNNMechanism, _micro_f1
-from src.sparse.regression_mechanism import RegressionGNNMechanism
-from src.sparse.relbench_data import parse_relbench_name
-from src.sparse.sparse_expand import build_adjacency, sparse_expand
+from src.models.binary_mechanism import BinaryGNNMechanism, _auroc
+from src.models.gnn_mechanism import GNNMechanism
+from src.models.mlp_mechanism import MLPMechanism
+from src.models.multilabel_mechanism import MultiLabelGNNMechanism, _micro_f1
+from src.models.regression_mechanism import RegressionGNNMechanism
+from src.data.relbench import parse_relbench_name
+from src.processing.sparse_expand import build_adjacency, sparse_expand
 
 
 def _toy_data(num_labels=None, binary=False):
@@ -112,7 +112,7 @@ def test_mechanism_subgraph_loss_and_metrics(kind):
 
 
 def test_mechanism_trains_through_the_engine():
-    from src.sparse.sparse_gnn import train_sparse_gnn
+    from src.training.sparse_gnn import train_sparse_gnn
 
     data = _toy_data(num_labels=3)
     mech = MultiLabelGNNMechanism(data, 4, 3, hidden=8, num_layers=2)
@@ -126,7 +126,7 @@ def test_mechanism_trains_through_the_engine():
 @pytest.mark.parametrize(
     "kind", ["multiclass", "mlp", "binary", "multilabel", "regression"])
 def test_every_mechanism_trains_one_private_padded_step(kind):
-    from src.sparse.sparse_gnn import train_sparse_gnn
+    from src.training.sparse_gnn import train_sparse_gnn
 
     if kind == "binary":
         data = _toy_data(binary=True)
@@ -174,7 +174,7 @@ def test_encode_table_skips_unhashable_columns():
     unencodable column, not crash the whole table."""
     import numpy as np
     import pandas as pd
-    from src.sparse.relbench_data import _encode_table
+    from src.data.relbench import _encode_table
 
     df = pd.DataFrame({
         'id': range(5),
@@ -199,7 +199,7 @@ def test_csr_eval_path_matches_edge_index(aggr):
     what full-graph evaluation actually tried to allocate.  The CSR adjacency
     fuses gather and scatter; PyG's result is identical either way.
     """
-    from src.sparse.gnn_mechanism import GNNMechanism
+    from src.models.gnn_mechanism import GNNMechanism
 
     torch.manual_seed(0)
     n, f, c = 200, 6, 3

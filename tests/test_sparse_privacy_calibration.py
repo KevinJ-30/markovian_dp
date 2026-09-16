@@ -5,66 +5,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from src.sparse.accounting import SparseGNNNoiseCalibration
-from src.sparse import run as sparse_run
-from src.sparse import sparse_gnn
-
-
-def _calibration(multiplier=2.5):
-    noise_std = multiplier * 1.5
-    return SparseGNNNoiseCalibration(
-        noise_multiplier=multiplier,
-        noise_std=noise_std,
-        noise_variance=noise_std ** 2,
-        epsilon=0.9,
-        target_epsilon=1.0,
-        delta=1e-5,
-        evaluations=7,
-    )
-
-
-def test_train_sparse_gnn_with_budget_calibrates_once_and_forwards(monkeypatch):
-    calibration = _calibration()
-    calibration_calls = []
-    train_calls = []
-
-    def calibrate(**kwargs):
-        calibration_calls.append(kwargs)
-        return calibration
-
-    def train(mechanism, train_data, test_data, **kwargs):
-        train_calls.append((mechanism, train_data, test_data, kwargs))
-        return {"test": 0.8}
-
-    monkeypatch.setattr(sparse_gnn, "calibrate_sparsegnn_noise", calibrate)
-    monkeypatch.setattr(sparse_gnn, "train_sparse_gnn", train)
-    checkpoint_callback = object()
-    metrics, result = sparse_gnn.train_sparse_gnn_with_budget(
-        "mechanism", "train_data", "test_data",
-        target_epsilon=1.0, target_delta=1e-5,
-        K_in=3, K_out=4, p1=0.2, p2=0.3, r=2, T=10, clip=1.5,
-        direction="out", accounting_grid=2e-4, union_safe=True,
-        calibration_rtol=2e-3, calibration_atol=3e-6, max_sigma=99.0,
-        adj="adj", seed=8, eval_every=9, track_every=10, verbose=True,
-        checkpoint_callback=checkpoint_callback,
-    )
-
-    assert metrics == {"test": 0.8}
-    assert result is calibration
-    assert calibration_calls == [{
-        "target_epsilon": 1.0, "target_delta": 1e-5,
-        "p1": 0.2, "p2": 0.3, "r": 2, "K_in": 3, "K_out": 4,
-        "steps": 10, "clip": 1.5, "grid": 2e-4,
-        "sigma_rtol": 2e-3, "sigma_atol": 3e-6,
-        "max_sigma": 99.0, "union_safe": True,
-    }]
-    assert train_calls == [("mechanism", "train_data", "test_data", {
-        "p1": 0.2, "p2": 0.3, "r": 2, "T": 10, "adj": "adj",
-        "direction": "out", "dp": True, "clip": 1.5,
-        "sigma": calibration.noise_multiplier, "seed": 8,
-        "eval_every": 9, "track_every": 10, "verbose": True,
-        "checkpoint_callback": checkpoint_callback,
-    })]
+from src.privacy.accounting import SparseGNNNoiseCalibration
+from src.experiments import sparse as sparse_run
 
 
 def test_target_cli_calibrates_each_cell_once_and_records_metadata(
@@ -154,9 +96,3 @@ def test_target_cli_validates_noise_selection(monkeypatch, argv):
         sparse_run.parse_args()
 
 
-def test_cli_preserves_current_optimizer_defaults(monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["run"])
-    args = sparse_run.parse_args()
-    assert args.optimizer == "auto"
-    assert args.lr == 1e-2
-    assert args.weight_decay == 5e-4

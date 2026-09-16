@@ -1,9 +1,9 @@
 import torch
 from torch_geometric.data import Data
 
-from src.experiments.baselines import BaselineConfig, BaselineTrainer
-from src.experiments.dpar import DPARConfig, DPARTrainer, private_ista_ppr
-from src.experiments.inductive import load_or_create_inductive_split
+from src.training.baselines import BaselineConfig, BaselineTrainer
+from src.training.dpar import DPARConfig, DPARTrainer, private_ista_ppr
+from src.processing.splits import load_or_create_inductive_split
 
 
 def _graph():

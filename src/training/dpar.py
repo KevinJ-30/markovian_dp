@@ -14,11 +14,14 @@ import time
 from typing import Any
 
 import torch
-from torch import Tensor, nn
-import torch.nn.functional as F
+from torch import Tensor
 
-from .inductive import _induce, graph_statistics
-from .privacy import DPARAccountant, PrivacyResult, calibrate_dpar_noise
+from src.processing.splits import _induce, graph_statistics
+from src.privacy.accountants import DPARAccountant, PrivacyResult, calibrate_dpar_noise
+
+from src.models.baselines import DPARMLP
+
+from src.models.objectives import _task_loss, _task_metric
 
 
 @dataclass(frozen=True)
@@ -52,24 +55,6 @@ class DPARConfig:
     inference_steps: int = 2
     seed: int = 0
     multilabel: bool = False
-
-
-class DPARMLP(nn.Module):
-    """The released DPAR ``W1 ... Wo`` MLP, expressed with torch modules."""
-
-    def __init__(self, inputs: int, classes: int, hidden: int, layers: int, dropout: float):
-        super().__init__()
-        if layers < 2:
-            raise ValueError("DPAR requires at least two MLP layers")
-        widths = [inputs] + [hidden] * (layers - 1) + [classes]
-        self.layers = nn.ModuleList(nn.Linear(a, b, bias=False) for a, b in zip(widths, widths[1:]))
-        self.dropout = dropout
-
-    def forward(self, x: Tensor) -> Tensor:
-        for layer in self.layers[:-1]:
-            x = F.dropout(x, p=self.dropout, training=self.training)
-            x = F.relu(layer(x))
-        return self.layers[-1](F.dropout(x, p=self.dropout, training=self.training))
 
 
 def _coalesced_adjacency(edge_index: Tensor, num_nodes: int, device: torch.device) -> Tensor:
@@ -188,73 +173,6 @@ def propagate_logits(logits: Tensor, edge_index: Tensor, alpha: float, steps: in
     for _ in range(steps):
         propagated = (1.0 - alpha) * torch.sparse.mm(adjacency, propagated) / degree[:, None] + alpha * local
     return propagated
-
-
-def _accuracy_and_macro_f1(logits: Tensor, labels: Tensor) -> tuple[float, float]:
-    predictions = logits.argmax(dim=-1)
-    accuracy = float((predictions == labels).float().mean())
-    f1s = []
-    for label in torch.unique(labels):
-        positive = predictions == label
-        truth = labels == label
-        denom = 2 * (positive & truth).sum() + (positive & ~truth).sum() + (~positive & truth).sum()
-        f1s.append(float(2 * (positive & truth).sum() / denom) if denom else 0.0)
-    return accuracy, sum(f1s) / len(f1s)
-
-
-def _multilabel_micro_f1(logits: Tensor, labels: Tensor) -> tuple[float, float]:
-    """Micro-F1 over every (node, label) pair, thresholding logits at 0.
-
-    Returned in both slots of the (accuracy, macro_f1) tuple both trainers
-    already unpack: neither "accuracy" nor "macro-F1" means the same thing for
-    a multi-hot target that it does for a single class index.  Micro-F1 is the
-    metric src.sparse.multilabel_mechanism already reports for this exact
-    label shape (PPI's 121 binary functional labels), kept identical here so a
-    baseline and the SparseGNN mechanism are judged the same way.
-    """
-    predictions = (logits > 0).float()
-    labels = labels.float()
-    tp = float((predictions * labels).sum())
-    fp = float((predictions * (1 - labels)).sum())
-    fn = float(((1 - predictions) * labels).sum())
-    denom = 2 * tp + fp + fn
-    micro_f1 = 2 * tp / denom if denom > 0 else float("nan")
-    return micro_f1, micro_f1
-
-
-def _regression_mae(preds: Tensor, target: Tensor) -> tuple[float, float]:
-    """MAE, returned in both slots of the (metric, secondary) tuple every
-    trainer already unpacks -- matches src.sparse.regression_mechanism's
-    metric, so a baseline and the SparseGNN mechanism are judged the same way.
-    """
-    mae = float((preds.view(-1) - target.view(-1).float()).abs().mean())
-    return mae, mae
-
-
-def _task_loss(logits: Tensor, target: Tensor, multilabel: bool,
-               regression: bool = False) -> Tensor:
-    """The loss each config's label shape needs -- not a change to either
-    method's private mechanism.
-
-    DPAR's ISTA/PPR/propagation and the plain MLP/GraphSAGE clip-and-noise loop
-    both operate on whatever gradient this loss produces; neither looks at the
-    loss's type.  Swapping softmax cross-entropy for per-label BCE (or MSE)
-    changes what task is being fit, not what either method does with the
-    resulting gradient.
-    """
-    if regression:
-        return F.mse_loss(logits.view(-1), target.view(-1).float())
-    if multilabel:
-        return F.binary_cross_entropy_with_logits(logits, target.float())
-    return F.cross_entropy(logits, target)
-
-
-def _task_metric(logits: Tensor, labels: Tensor, multilabel: bool,
-                 regression: bool = False) -> tuple[float, float]:
-    if regression:
-        return _regression_mae(logits, labels)
-    return (_multilabel_micro_f1(logits, labels) if multilabel
-           else _accuracy_and_macro_f1(logits, labels))
 
 
 def _sample_train_partition(partition: Any, requested_nodes: int | None,

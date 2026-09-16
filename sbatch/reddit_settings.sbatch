@@ -53,7 +53,7 @@ run_cell() {   # out_dir, then extra flags
      [ -s "$OUT/sparse_gnn_reddit_results.csv" ]; then
     echo "  [skip] $OUT already complete"; return 0
   fi
-  $PY -m src.sparse.run $COMMON "$@" --out_dir $OUT
+  $PY -m src.experiments.sparse $COMMON "$@" --out_dir $OUT
 }
 
 echo "=== Reddit inductive: non-DP reference ==="
@@ -64,7 +64,7 @@ for P2 in 1.0 0.1; do
     OUT=$OUT_ROOT/p${P2}_s${SIGMA}
     echo "=== Reddit inductive DP: p2=$P2 sigma=$SIGMA ==="
     run_cell $OUT --dp --p2 $P2 --sigma $SIGMA --lr 0.3
-    $PY -m src.sparse.compute_epsilon \
+    $PY -m src.experiments.compute_epsilon \
         --csv $OUT/sparse_gnn_reddit_dp_results.csv --delta $DELTA || true
   done
 done

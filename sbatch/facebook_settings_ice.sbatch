@@ -59,7 +59,7 @@ run_cell() {
      [ -s "$OUT/sparse_gnn_facebook_results.csv" ]; then
     echo "  [skip] $OUT"; return 0
   fi
-  $PY -m src.sparse.run $COMMON "$@" --out_dir $OUT
+  $PY -m src.experiments.sparse $COMMON "$@" --out_dir $OUT
 }
 
 if [ "$ARM" = "matched" ]; then
@@ -68,7 +68,7 @@ if [ "$ARM" = "matched" ]; then
   for SIGMA in 30 50 80; do
     OUT=$OUT_ROOT/matched_s${SIGMA}
     run_cell $OUT --dp --p2 1.0 --K_in 100 --K_out 100 --sigma $SIGMA --lr 0.3
-    $PY -m src.sparse.compute_epsilon \
+    $PY -m src.experiments.compute_epsilon \
         --csv $OUT/sparse_gnn_facebook_dp_results.csv --delta $DELTA || true
   done
 else
@@ -78,7 +78,7 @@ else
     for SIGMA in 5 20; do
       OUT=$OUT_ROOT/sparse_p${P2}_s${SIGMA}
       run_cell $OUT --dp --p2 $P2 --K_in 5 --K_out 5 --sigma $SIGMA --lr 0.3
-      $PY -m src.sparse.compute_epsilon \
+      $PY -m src.experiments.compute_epsilon \
           --csv $OUT/sparse_gnn_facebook_dp_results.csv --delta $DELTA || true
     done
   done

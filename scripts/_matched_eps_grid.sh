@@ -62,7 +62,7 @@ run_cell() {   # out_dir, then extra flags
   fi
   mkdir -p "$out"
   echo "  [run ] $(basename "$out")  $*"
-  $PY -u -m src.sparse.run $COMMON "$@" --out_dir "$out"
+  $PY -u -m src.experiments.sparse $COMMON "$@" --out_dir "$out"
 }
 
 # GNN cells as K:p2:r.  r IS PER-CELL -- the previous grid hardcoded --r 1 for

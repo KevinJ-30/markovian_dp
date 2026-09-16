@@ -16,29 +16,42 @@ One training step:
 
 The composition of both sampling stages amplifies privacy beyond what
 Poisson subsampling alone gives, which is what the dominating pairs in
-`src/sparse/accounting.py` quantify. I'm making an edit here for no specific reason.
+`src/privacy/accounting.py` quantify. I'm making an edit here for no specific reason.
 
 ## Layout
 
 ```
 src/
-  datasets.py              loader: Planetoid, OGB, Reddit, Flickr, PPI, RelBench,
-                           GraphSAINT (see "Datasets" below)
-  sparse/
-    sparse_expand.py       SparseExpand, root sampling, degree capping
-    sparse_gnn.py          training engine (non-DP and DP paths)
+  data/
+    datasets.py           dataset dispatch and graph loaders
+    relbench.py           RelBench database -> homogeneous directed graph
+  processing/
+    splits.py             saved graph-disjoint inductive partitions
+    graphs.py             separate training-graph selection
+    sparse_expand.py      SparseExpand, root sampling, degree capping
+    padded.py             lossless root-first private batch representation
+  models/
     base_mechanism.py      g0 interface, optimizer, and evaluation helpers
-    padded.py              lossless root-first private batch representation
-    layers.py              sparse PyG and padded batch-first message passing
-    gnn_mechanism.py       single-label node classification g0
-    multilabel_mechanism.py  multilabel g0 (PPI): micro-F1 + AUROC
-    binary_mechanism.py    binary g0 (RelBench entity tasks): AUROC
-    mlp_mechanism.py       graph-blind baseline g0
-    relbench_data.py       RelBench database -> homogeneous directed graph
-    accounting.py          dominating pairs -> Google dp_accounting
-    privacy_loss.py        two-mixture Gaussian dp_accounting primitive
-    compute_epsilon.py     post-hoc epsilon for a results CSV
-    run.py                 experiment CLI
+    *_mechanism.py        task-specific networks and mechanisms
+    layers.py             sparse PyG and padded batch-first message passing
+    baselines.py          MLP, GraphSAGE, DPAR, and DP-GNN networks
+    objectives.py         shared baseline losses, metrics, trivial predictors
+  training/
+    sparse_gnn.py         model-agnostic non-DP and DP training engine
+    baselines.py          portable MLP/GraphSAGE/DP-MLP training
+    dpar.py               DPAR training and private PPR
+    dpgnn.py              partitioned DP-GNN training
+  privacy/
+    accounting.py         dominating pairs -> Google dp_accounting
+    privacy_loss.py       two-mixture Gaussian dp_accounting primitive
+    accountants.py        baseline accounting and calibration adapters
+    dpgnn.py              DP-GNN multi-term RDP accounting
+  experiments/
+    sparse.py             SparseGNN experiment CLI
+    compute_epsilon.py    post-hoc epsilon for a results CSV
+    run.py                graph-disjoint comparison CLI
+    upstream.py           external baseline manifest/result integration
+    dpgnn_adapter.py      first-party DP-GNN manifest/result adapter
 
 scripts/                   drivers and figures (see scripts/README.md)
   setup_graphsaint.sh      unpack the manually-downloaded GraphSAINT graphs
@@ -47,6 +60,18 @@ tests/                     mechanism, accounting, and integration tests
 results/                   experiment output, grouped by dataset (results/README.md)
 paper/                     manuscript and figures
 ```
+
+The source packages are organized by responsibility; method-specific training
+loops and graph protocols remain separate. Import definitions from their owning
+modules rather than package-level facades.
+
+Entry points:
+- `python -m src.experiments.sparse` — SparseGNN sweeps.
+- `python -m src.experiments.compute_epsilon` — post-hoc privacy accounting.
+- `python -m src.experiments.run` — graph-disjoint baseline comparisons.
+
+The old SparseGNN import and CLI paths have been removed. Existing command-line
+flags, dataset/split caches, and result filenames and schemas are unchanged.
 
 ## Install
 
@@ -118,13 +143,13 @@ parameters recorded in the CSV. Accounting never touches training.
 
 ```bash
 # 1. train (--dp adds clip+noise; omit it for the non-private reference)
-python -m src.sparse.run --dataset ppi --model multilabel_gnn --direction in \
+python -m src.experiments.sparse --dataset ppi --model multilabel_gnn --direction in \
     --dp --p1 0.01 --p2 0.1 --r 1 --num_layers 2 --T 2000 --sigma 5 \
     --K_in 5 --K_out 5 --lr 0.3 --seeds 3 --track_every 50 \
     --out_dir results/ppi/myrun
 
 # 2. attach epsilon
-python -m src.sparse.compute_epsilon \
+python -m src.experiments.compute_epsilon \
     --csv results/ppi/myrun/sparse_gnn_ppi_dp_results.csv --delta 1e-6
 ```
 
@@ -157,7 +182,7 @@ contain anything further out — the extra layers add depth, not reach.
 
 ## Accounting
 
-`src/sparse/accounting.py` constructs the manuscript's **Theorem 5.4 node-
+`src/privacy/accounting.py` constructs the manuscript's **Theorem 5.4 node-
 substitution pair** for incoming-edge expansion. The pair is represented as two
 Gaussian mixtures through `DoubleMixtureGaussianPrivacyLoss`; Google's
 `dp_accounting` performs pessimistic connect-the-dots discretization,
@@ -209,4 +234,4 @@ pytest tests/
   may still be learning. AUROC is recorded alongside micro-F1 for this reason.
 - **Inductive settings differ.** PPI and RelBench supply disjoint or temporal
   training graphs. For ogbn-arxiv, Flickr, Reddit, and other single graphs,
-  `src.sparse.run` always drops arcs whose endpoints are not both training nodes.
+  `src.experiments.sparse` always drops arcs whose endpoints are not both training nodes.

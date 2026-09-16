@@ -14,10 +14,10 @@ from typing import Any
 
 import torch
 
-from src.datasets import load_dataset
-from .baselines import BaselineConfig, BaselineTrainer
-from .dpar import DPARConfig, DPARTrainer
-from .inductive import load_or_create_inductive_split
+from src.data.datasets import load_dataset
+from src.training.baselines import BaselineConfig, BaselineTrainer
+from src.training.dpar import DPARConfig, DPARTrainer
+from src.processing.splits import load_or_create_inductive_split
 
 
 def _dataclass_config(cls: type, values: dict[str, Any]) -> Any:
@@ -71,7 +71,7 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     # with method="dpar" and regression=true used to reach _task_loss with
     # regression defaulting to False and die inside cross_entropy on float
     # targets -- exactly the opaque crash the sparse-side guard in
-    # src/sparse/run.py was added to prevent.  Fail loudly here instead.
+    # src/experiments/sparse.py was added to prevent.  Fail loudly here instead.
     if regression and config["method"] not in {"mlp", "dp_mlp", "graphsage"}:
         raise ValueError(
             f"method {config['method']!r} does not support regression; only "

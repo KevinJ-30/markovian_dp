@@ -58,37 +58,37 @@ COMMON=(--dataset $DS --direction in --p1 $P1 --T $T \
 
 echo "=== [S0a] graph-blind baseline (r=0) ==="
 done_already $OUT/blind/sparse_gnn_${TAG}_results.csv || \
-$PY -m src.sparse.run $COMMON $BLIND --p2 1.0 --out_dir $OUT/blind
+$PY -m src.experiments.sparse $COMMON $BLIND --p2 1.0 --out_dir $OUT/blind
 
 echo "=== [S0b] ceiling: all edges, no cap, r=$CEIL_R (L=$CEIL_R) ==="
 done_already $OUT/ceiling/sparse_gnn_${TAG}_results.csv || \
-$PY -m src.sparse.run $COMMON $MODEL --p2 1.0 --r $CEIL_R \
+$PY -m src.experiments.sparse $COMMON $MODEL --p2 1.0 --r $CEIL_R \
     --num_layers $CEIL_R --out_dir $OUT/ceiling
 
 for R in $R_VALUES; do
   echo "=== [S1] sparsification sweep, r=$R (L=$R), capped ==="
   done_already $OUT/stage1_r$R/sparse_gnn_${TAG}_results.csv || \
-  $PY -m src.sparse.run $COMMON $MODEL $CAP --p2 $P2_GRID --r $R \
+  $PY -m src.experiments.sparse $COMMON $MODEL $CAP --p2 $P2_GRID --r $R \
       --num_layers $R --out_dir $OUT/stage1_r$R
 done
 
 echo "=== [S1b] the K_out utility/privacy knob (no DP yet, r=$CEIL_R) ==="
 for KO in 2 3 5 10; do
   done_already $OUT/kout_$KO/sparse_gnn_${TAG}_results.csv || \
-  $PY -m src.sparse.run $COMMON $MODEL --K_in 20 --K_out $KO \
+  $PY -m src.experiments.sparse $COMMON $MODEL --K_in 20 --K_out $KO \
       --p2 1.0 --r $CEIL_R --num_layers $CEIL_R --out_dir $OUT/kout_$KO
 done
 
 for R in $R_VALUES; do
   echo "=== [S2] DP sigma sweep, r=$R (L=$R) ==="
   done_already $OUT/dp_r$R/sparse_gnn_${TAG}_dp_results.csv || \
-  $PY -m src.sparse.run --dataset $DS --direction in --dp \
+  $PY -m src.experiments.sparse --dataset $DS --direction in --dp \
       $MODEL $CAP $REG --p1 $P1 --p2 $P2_GRID --r $R --num_layers $R \
       --sigma $SIGMA_GRID --clip $CLIP --lr $LR_DP \
       --T $T --seeds $SEEDS --out_dir $OUT/dp_r$R
 
   echo "=== [S3] post-hoc epsilon (Theorem 6.4), r=$R ==="
-  $PY -m src.sparse.compute_epsilon \
+  $PY -m src.experiments.compute_epsilon \
       --csv $OUT/dp_r$R/sparse_gnn_${TAG}_dp_results.csv --delta $DELTA
 done
 

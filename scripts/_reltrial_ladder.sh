@@ -25,7 +25,7 @@ run_cell() {   # out_dir, then extra flags
      || -s "$OUT/sparse_gnn_relbench_rel-trial_study-outcome_results.csv" ]]; then
     echo "  [skip] $OUT"; return 0
   fi
-  $PY -u -m src.sparse.run $COMMON "$@" --out_dir $OUT
+  $PY -u -m src.experiments.sparse $COMMON "$@" --out_dir $OUT
 }
 
 mkdir -p results/logs results/relbench/reltrial
@@ -40,7 +40,7 @@ for P2 in 1.0 0.1; do
   for SIGMA in 2.0 5.0 20.0; do
     OUT=results/relbench/reltrial/dp_p${P2}_s${SIGMA}
     run_cell $OUT --dp --p2 $P2 --sigma $SIGMA --lr 0.3
-    $PY -u -m src.sparse.compute_epsilon \
+    $PY -u -m src.experiments.compute_epsilon \
         --csv $OUT/sparse_gnn_relbench_rel-trial_study-outcome_dp_results.csv \
         --delta $DELTA | tail -2 || true
   done

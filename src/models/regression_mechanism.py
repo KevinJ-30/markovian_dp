@@ -12,7 +12,7 @@ MAE and RMSE are translation-invariant as functions of the residual.
 target itself.
 
 Because the target is not centred, "predict the train mean" is NOT "predict 0"
-— `run.py`'s trivial_baseline subtracts mean(y_train) explicitly — and this
+— `objectives.py`'s trivial_baseline subtracts mean(y_train) explicitly — and this
 head, which emits an unbounded scalar with no output transform, has to learn
 that intercept itself.  Under per-root clipping at C the intercept competes for
 gradient budget with the signal, so a large uncentred target is worth noticing.

@@ -44,7 +44,7 @@ for DS in $DATASETS; do
 
   echo "=== [S0a] graph-blind baseline (r=0) ==="
   done_already results/inductive_blind_$TAG/sparse_gnn_${TAG}_results.csv || \
-  $PY -m src.sparse.run $COMMON $BLIND --p2 1.0 \
+  $PY -m src.experiments.sparse $COMMON $BLIND --p2 1.0 \
       --out_dir results/inductive_blind_$TAG
 
   # S0b ceiling.  At p2=1, no cap, and r=L the per-root computation IS
@@ -55,7 +55,7 @@ for DS in $DATASETS; do
   if done_already results/inductive_ceiling_$TAG/sparse_gnn_${TAG}_results.csv; then
     :
   elif [[ -n "$SLOW_CEILING" ]]; then
-    $PY -m src.sparse.run $COMMON $MODEL --p2 1.0 --r $CEIL_R \
+    $PY -m src.experiments.sparse $COMMON $MODEL --p2 1.0 --r $CEIL_R \
         --num_layers $CEIL_R --out_dir results/inductive_ceiling_$TAG
   else
     $PY scripts/ceiling_fullbatch.py --dataset $DS $MODEL $REG \
@@ -66,7 +66,7 @@ for DS in $DATASETS; do
   for R in $R_VALUES; do
     echo "=== [S1] sparsification sweep, r=$R (L=$R), capped ==="
     done_already results/inductive_stage1_${TAG}_r$R/sparse_gnn_${TAG}_results.csv || \
-    $PY -m src.sparse.run $COMMON $MODEL $CAP --p2 $P2_GRID --r $R \
+    $PY -m src.experiments.sparse $COMMON $MODEL $CAP --p2 $P2_GRID --r $R \
         --num_layers $L --out_dir results/inductive_stage1_${TAG}_r$R
   done
 done

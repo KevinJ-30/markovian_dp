@@ -1,5 +1,5 @@
 #!/bin/bash
-# Extract the GraphSAINT benchmark data into the layout src/datasets.py expects.
+# Extract the GraphSAINT benchmark data into the layout src/data/datasets.py expects.
 #
 #   ./scripts/setup_graphsaint.sh <dir-with-zips> [dest]
 #
@@ -63,5 +63,5 @@ done
 
 echo
 echo "point the loader at it with:  export GRAPHSAINT_DATA_ROOT=$(cd "$DEST" && pwd)"
-echo "then e.g.:  python -m src.sparse.run --dataset ppi-large --model multilabel_gnn ..."
+echo "then e.g.:  python -m src.experiments.sparse --dataset ppi-large --model multilabel_gnn ..."
 exit $rc

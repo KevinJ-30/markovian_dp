@@ -43,19 +43,19 @@ for DS in "${TASKS[@]}"; do
   echo "########## $DS ##########"
 
   echo "=== [S0a] graph-blind MLP baseline ==="
-  srun python -u -m src.sparse.run \
+  srun python -u -m src.experiments.sparse \
       --dataset "$DS" --model mlp --direction in \
       --r 0 --p2 1.0 --p1 0.01 --T 1000 --lr 0.01 --seeds 3 \
       --out_dir $OUT/mlp
 
   echo "=== [S0b] GCN ceiling ==="
-  srun python -u -m src.sparse.run \
+  srun python -u -m src.experiments.sparse \
       --dataset "$DS" --model binary_gnn --direction in \
       --p2 1.0 --r 2 --p1 0.01 --T 1000 --lr 0.01 --seeds 3 --num_layers 2 \
       --out_dir $OUT/ceiling
 
   echo "=== [S1] sparsification-only sweep ==="
-  srun python -u -m src.sparse.run \
+  srun python -u -m src.experiments.sparse \
       --dataset "$DS" --model binary_gnn --direction in \
       --K_in 20 --K_out 3 --p2 1.0 0.5 0.25 0.1 --r 2 \
       --p1 0.01 --T 1000 --lr 0.01 --seeds 3 --num_layers 2 \
@@ -63,7 +63,7 @@ for DS in "${TASKS[@]}"; do
 
   echo "=== [S1b] the K_out utility/privacy knob ==="
   for KO in 2 3 5 10; do
-    srun python -u -m src.sparse.run \
+    srun python -u -m src.experiments.sparse \
         --dataset "$DS" --model binary_gnn --direction in \
         --K_in 20 --K_out $KO --p2 1.0 --r 2 \
         --p1 0.01 --T 1000 --lr 0.01 --seeds 3 --num_layers 2 \
@@ -71,7 +71,7 @@ for DS in "${TASKS[@]}"; do
   done
 
   echo "=== [S2] DP sigma sweep ==="
-  srun python -u -m src.sparse.run \
+  srun python -u -m src.experiments.sparse \
       --dataset "$DS" --model binary_gnn --direction in --dp \
       --K_in 20 --K_out 3 --p2 1.0 0.5 0.25 0.1 --r 2 \
       --sigma 2.0 5.0 10.0 20.0 --clip 1.0 --lr 1.0 \
@@ -79,7 +79,7 @@ for DS in "${TASKS[@]}"; do
       --out_dir $OUT/dp
 
   echo "=== [S3] post-hoc epsilon (Theorem 6.4) ==="
-  srun python -u -m src.sparse.compute_epsilon \
+  srun python -u -m src.experiments.compute_epsilon \
       --csv $OUT/dp/sparse_gnn_${TAG}_dp_results.csv --delta $DELTA
 done
 

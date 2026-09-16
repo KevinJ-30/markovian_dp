@@ -1,7 +1,7 @@
 """
 Privacy-utility frontier plot for SparseGNN DP sweeps.
 
-Reads a *_with_eps.csv produced by `src.sparse.compute_epsilon` and plots test
+Reads a *_with_eps.csv produced by `src.experiments.compute_epsilon` and plots test
 accuracy vs epsilon (log x), one line per edge-sparsification probability p2,
 points ordered by sigma.  Optionally overlays the non-DP ceiling from the
 matching non-DP results CSV.
@@ -34,7 +34,7 @@ def main():
 
     # Mean test metric per (p2, sigma), with the sole Theorem 5.4 epsilon.
     if 'epsilon' not in rows[0]:
-        raise SystemExit("CSV must be augmented by src.sparse.compute_epsilon")
+        raise SystemExit("CSV must be augmented by src.experiments.compute_epsilon")
     eps_col = 'epsilon'
     acc = defaultdict(list)
     eps = {}

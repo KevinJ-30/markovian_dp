@@ -1,7 +1,7 @@
 """
 DP utility vs noise multiplier sigma (no epsilon axis).
 
-Reads a DP results CSV from `src.sparse.run --dp` and plots test accuracy vs
+Reads a DP results CSV from `src.experiments.sparse --dp` and plots test accuracy vs
 sigma, one line per edge-sampling probability p2, averaged over seeds.
 
   python scripts/plot_sigma_utility.py \

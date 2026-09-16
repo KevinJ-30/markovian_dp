@@ -6,16 +6,16 @@ import numpy as np
 import pytest
 import torch
 
-from src.experiments.privacy import (
+from src.privacy.accountants import (
     DPARAccountant, SparseGNNAccountant, calibrate_dpar_noise)
-from src.sparse import accounting as sparse_accounting
-from src.sparse.accounting import (
+from src.privacy import accounting as sparse_accounting
+from src.privacy.accounting import (
     calibrate_sparsegnn_noise, mixture_gaussian_pld, naive_opacus_epsilon,
     shell_sizes, sparsegnn_epsilon, sparsegnn_epsilon_schedule,
     sparsegnn_mixture_weights,
 )
-from src.sparse.privacy_loss import DoubleMixtureGaussianPrivacyLoss
-from src.sparse.sparse_expand import (
+from src.privacy.privacy_loss import DoubleMixtureGaussianPrivacyLoss
+from src.processing.sparse_expand import (
     cap_degrees, cap_degrees_undirected, edge_set_is_symmetric, max_degrees,
 )
 

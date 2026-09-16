@@ -8,7 +8,7 @@ import math
 import pytest
 import torch
 
-from src.sparse.sparse_expand import (
+from src.processing.sparse_expand import (
     SparseAdjacency, build_adjacency, build_out_adjacency, sample_roots,
     sparse_expand,
 )
@@ -189,8 +189,8 @@ def test_root_sampling_p1_one_returns_all():
 
 def test_sparse_gnn_smoke_reduces_loss():
     from torch_geometric.datasets import Planetoid
-    from src.sparse.gnn_mechanism import GNNMechanism
-    from src.sparse.sparse_gnn import train_sparse_gnn
+    from src.models.gnn_mechanism import GNNMechanism
+    from src.training.sparse_gnn import train_sparse_gnn
 
     dataset = Planetoid(root='/tmp/CiteSeer', name='CiteSeer')
     data = dataset[0]

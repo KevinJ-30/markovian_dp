@@ -5,7 +5,7 @@ import pytest
 import torch
 from torch_geometric.data import Data
 
-from src.experiments.inductive import load_or_create_inductive_split
+from src.processing.splits import load_or_create_inductive_split
 from src.experiments.upstream import UpstreamBaseline
 
 

@@ -32,14 +32,14 @@ BASE_P2=0.1; BASE_R=1; BASE_SIGMA=5.0; BASE_CLIP=1.0; BASE_LR=0.3
 cell() {  # name, then extra flags overriding the base
   local NAME=$1; shift
   echo "=== $AXIS/$NAME $(date) ==="
-  $PY -u -m src.sparse.run --dataset $DS --direction in $MODEL $REG \
+  $PY -u -m src.experiments.sparse --dataset $DS --direction in $MODEL $REG \
       --p1 $P1 --p2 $BASE_P2 --r $BASE_R --num_layers $L --T $T \
       --K_in ${CAP[2]} --K_out ${CAP[4]} \
       --clip $BASE_CLIP --lr $BASE_LR --momentum 0.0 \
       --seeds 2 --track_every 50 \
       --out_dir $OUT_ROOT/$NAME "$@"
   local CSV=$OUT_ROOT/$NAME/sparse_gnn_${TAG}_dp_results.csv
-  [[ -f $CSV ]] && $PY -u -m src.sparse.compute_epsilon --csv $CSV --delta $DELTA | tail -2
+  [[ -f $CSV ]] && $PY -u -m src.experiments.compute_epsilon --csv $CSV --delta $DELTA | tail -2
   return 0
 }
 

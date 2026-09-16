@@ -18,8 +18,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt  # noqa: E402
 import torch  # noqa: E402
 
-from src.datasets import load_dataset  # noqa: E402
-from src.sparse.sparse_expand import (  # noqa: E402
+from src.data.datasets import load_dataset  # noqa: E402
+from src.processing.sparse_expand import (  # noqa: E402
     build_out_adjacency, cap_degrees, max_degrees, sparse_expand)
 
 
