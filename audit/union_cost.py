@@ -2,10 +2,9 @@ import sys, math
 import numpy as np
 sys.path.insert(0, '/Users/kevinjacob/markovian_dp copy')
 from src.sparse.accounting import (
-    sparsegnn_substitution_epsilon, _binom_pmf,
-    _substitution_pld_from_weights)
+    sparsegnn_epsilon, _binom_pmf, mixture_gaussian_pld)
 
-GRID, NS, APS = 1e-5, 10.0, 400.0
+GRID = 1e-5
 
 def refined_pi(p1, p2, r, K_in, K_out):
     """Mixture weights under the UNION degree bounds implied by capping g at K.
@@ -34,7 +33,7 @@ def refined_pi(p1, p2, r, K_in, K_out):
     return pi / pi.sum(), n
 
 def eps_from_pi(pi, sigma, steps, delta):
-    pld = _substitution_pld_from_weights(pi, sigma, GRID, NS, APS)
+    pld = mixture_gaussian_pld(pi, sigma, GRID)
     return pld.self_compose(steps).get_epsilon_for_delta(delta)
 
 def row(label, eps, base):
@@ -55,16 +54,16 @@ for name, c in CELLS:
     p1, p2, r, K, sg, T, dl = (c['p1'], c['p2'], c['r'], c['K'],
                                c['sigma'], c['T'], c['delta'])
     print(f"\n{name}")
-    cur = sparsegnn_substitution_epsilon(p1, p2, r, K, sg, T, dl, K_out=K,
-                                         grid=GRID, n_sigma=NS, atoms_per_sigma=APS)
+    cur = sparsegnn_epsilon(
+        p1, p2, r, K, sg, T, dl, K_out=K, grid=GRID)
     row("as accounted now (cap g at K, use K)", cur, cur)
     pi, n = refined_pi(p1, p2, r, K, K)
     row(f"union-safe, refined  (n_d={n[1:]})", eps_from_pi(pi, sg, T, dl), cur)
-    naive = sparsegnn_substitution_epsilon(p1, p2, r, 2*K, sg, T, dl, K_out=2*K,
-                                           grid=GRID, n_sigma=NS, atoms_per_sigma=APS)
+    naive = sparsegnn_epsilon(
+        p1, p2, r, 2*K, sg, T, dl, K_out=2*K, grid=GRID)
     row("union-safe, naive (K -> 2K everywhere)", naive, cur)
     half = max(1, K // 2)
-    hp = sparsegnn_substitution_epsilon(p1, p2, r, K, sg, T, dl, K_out=K,
-                                        grid=GRID, n_sigma=NS, atoms_per_sigma=APS)
+    hp = sparsegnn_epsilon(
+        p1, p2, r, K, sg, T, dl, K_out=K, grid=GRID)
     print(f"  {'FIX (b): cap g at ' + str(half) + ', union <= ' + str(2*half) + ' <= K, account at K':<44}"
           f" eps = {hp:9.4f}   {1.00:6.2f}x   (accounting unchanged; costs utility)")

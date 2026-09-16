@@ -12,12 +12,11 @@ One training step:
    probability `p2` (Algorithm 5 of the manuscript).
 3. **Noisy update.** Each rooted subgraph contributes one gradient `g0`, clipped
    to L2 norm `C`; the clipped gradients are summed and one draw of
-   `N(0, (sigma*C)^2 I)` is added (the noisy-base-mechanism assumption —
-   Assumption 3.2 in the current draft).
+   `N(0, (sigma*C)^2 I)` is added. `sigma` is the Opacus noise multiplier.
 
 The composition of both sampling stages amplifies privacy beyond what
 Poisson subsampling alone gives, which is what the dominating pairs in
-`src/sparse/accounting.py` quantify.
+`src/sparse/accounting.py` quantify. I'm making an edit here for no specific reason.
 
 ## Layout
 
@@ -28,14 +27,16 @@ src/
   sparse/
     sparse_expand.py       SparseExpand, root sampling, degree capping
     sparse_gnn.py          training engine (non-DP and DP paths)
-    base_mechanism.py      g0 interface + clipping / noise / evaluation helpers
-    layers.py              message-passing stack (SAGE-mean or GCN)
+    base_mechanism.py      g0 interface, optimizer, and evaluation helpers
+    padded.py              lossless root-first private batch representation
+    layers.py              sparse PyG and padded batch-first message passing
     gnn_mechanism.py       single-label node classification g0
     multilabel_mechanism.py  multilabel g0 (PPI): micro-F1 + AUROC
     binary_mechanism.py    binary g0 (RelBench entity tasks): AUROC
     mlp_mechanism.py       graph-blind baseline g0
     relbench_data.py       RelBench database -> homogeneous directed graph
     accounting.py          dominating pairs -> Google dp_accounting
+    privacy_loss.py        two-mixture Gaussian dp_accounting primitive
     compute_epsilon.py     post-hoc epsilon for a results CSV
     run.py                 experiment CLI
     gad/                   graph anomaly detection (XGBoost, GADBench) — side pipeline
@@ -43,7 +44,7 @@ src/
 scripts/                   drivers and figures (see scripts/README.md)
   setup_graphsaint.sh      unpack the manually-downloaded GraphSAINT graphs
 sbatch/                    SLURM jobs for the cluster runs
-tests/                     106 tests; see "Tests" below
+tests/                     mechanism, accounting, and integration tests
 results/                   experiment output, grouped by dataset (results/README.md)
 paper/                     manuscript and figures
 ```
@@ -136,26 +137,20 @@ model as released at that step. Evaluation consumes no sampling randomness, so a
 tracked run follows exactly the same trajectory as an untracked one.
 
 Higher-level drivers live in `scripts/`: `ladder_stage01.sh` (baselines and the
-sparsification sweep, no DP), `ladder_stage2.sh` (clip+noise, then epsilon),
-`sweep.sh <axis>` for one-axis tuning, and `diagnose.sh` for gradient-norm and
-metric probes.
+sparsification sweep, no DP), `ladder_stage2.sh` (clip+noise, then epsilon), and
+`sweep.sh <axis>` for one-axis tuning.
 
 ### Parameters that price epsilon, and parameters that do not
 
 Only `p1`, `p2`, `r`, `K_in`/`K_out`, `sigma`, and `T` enter the accounting.
-`sigma` is a noise *multiplier*, not an absolute noise scale: the clipping norm
+`sigma` is a noise multiplier, not an absolute noise scale: the clipping norm
 `C` bounds each rooted subgraph's gradient (`||g0|| <= C`), and the noise
-actually injected is `N(0, (sigma*C)^2 I)`. `C` does enter the mechanism — it
-is not irrelevant — but the dominating-pair reduction divides sensitivity and
-noise through by the same `C` before comparing them (the affine rescaling in
-the proof of Theorem 5.4), so only the ratio `sigma` survives in the final
-formula. This is the same reduction that lets standard DP-SGD accounting
-(Abadi et al., Opacus, `dp_accounting`'s PLD accountant) treat the noise
-multiplier as the only free parameter. Concretely: doubling `C` while holding
-`sigma` fixed doubles the actual noise standard deviation `sigma*C` right
-along with the sensitivity, so epsilon is unchanged — that's `C` being priced
-into `sigma`, not `C` being absent from the mechanism. Neither the learning
-rate, momentum, optimizer, nor model depth `L` enter — those are free to tune.
+actually injected is `N(0, (sigma*C)^2 I)`. The dominating-pair reduction
+divides sensitivity and noise through by the same `C`, so only `sigma`
+survives in the privacy formula. Concretely, changing `C` while holding
+`sigma` fixed changes both the sensitivity bound and absolute noise by the same
+factor, leaving epsilon unchanged. Neither the learning rate, momentum,
+optimizer, nor model depth `L` enters the accountant.
 
 Note `L` and `r` are independent. `r` is the expansion depth and sets the
 privacy radius; `L` is the number of GNN layers. An `L`-layer model on an
@@ -164,22 +159,16 @@ contain anything further out — the extra layers add depth, not reach.
 
 ## Accounting
 
-`src/sparse/accounting.py` builds the manuscript's dominating pairs and hands
-them to Google's `dp_accounting` for composition and epsilon(delta):
+`src/sparse/accounting.py` constructs the manuscript's **Theorem 5.4 node-
+substitution pair** for incoming-edge expansion. The pair is represented as two
+Gaussian mixtures through `DoubleMixtureGaussianPrivacyLoss`; Google's
+`dp_accounting` performs pessimistic connect-the-dots discretization,
+composition, and epsilon(delta).
 
-- **Theorem 5.4** (node substitution — numbered Theorem 6.4 in manuscript v36;
-  renumbered as the theory doc has been revised) for `--direction in`, the
-  corrected expansion orientation. This is the headline guarantee.
-- **node insertion/removal** for `--direction out`, the orientation ablation;
-  the pair is not symmetric, so both directions are composed and the max
-  reported. This was Theorem 4.5 in v36; the current draft (rewritten around
-  the incoming-edge orientation fix) does not yet restate an out-expansion
-  theorem under any number, so treat this direction's citation as unconfirmed
-  pending an updated theory doc.
-
-The pair handed to `dp_accounting` is built to dominate the analytic one —
-exact CDF cell masses, per-cell loss taken at the worse cell edge, trimmed mass
-routed to an infinite-loss outcome — so the reported epsilon is an upper bound.
+The training `direction` is not inspected by the accountant: it always applies
+the in-expansion shell law. The private optimizer is likewise separate from
+accounting—Opacus computes per-root gradients, clips at `C`, and injects noise
+with standard deviation `sigma*C`; no generic Opacus accountant is attached.
 
 Under in-expansion the accounting shells are `K_out^d`, so it is the **out**-degree
 cap that prices the guarantee. Epsilon is charged for the worst-case bound
@@ -195,11 +184,10 @@ pytest tests/
 
 - `test_accounting.py` — dominating-pair weights and epsilon, with degenerate
   cases cross-checked against Opacus.
-- `test_dp_mechanics.py` — *measures* the DP path rather than reading it:
-  per-subgraph (not per-batch) clipping, the 2C substitution / C insertion
-  sensitivity bounds, noise calibrated to `sigma*C` and drawn once per step,
-  Poisson root sampling with the right variance, and that model depth cannot
-  widen the privacy radius.
+- `test_dp_mechanics.py` — measures the Opacus DP path: per-subgraph (not
+  per-batch) clipping, the 2C substitution sensitivity bound, noise calibrated
+  to `sigma*C` and drawn once per step, Poisson root sampling with the right
+  variance, and that model depth cannot widen the privacy radius.
 - `test_theorem_numerical.py` — verifies Theorem 5.4 itself (Theorem 6.4 in
   manuscript v36), by computing the
   hockey-stick divergence of the actual mechanism on a star graph and checking

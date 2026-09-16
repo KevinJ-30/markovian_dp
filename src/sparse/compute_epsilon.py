@@ -1,29 +1,8 @@
-"""
-Post-hoc privacy accounting for SparseGNN DP sweeps.
+"""Attach Theorem 5.4 substitution epsilon to SparseGNN result rows.
 
-Reads a results CSV from `src.sparse.run --dp`, computes epsilon per distinct
-configuration (and per checkpoint, for CSVs written with --track_every), and
-writes an augmented copy.  Accounting never touches training.
-
-The expansion orientation recorded in the CSV selects the theorem:
-direction='in' uses Theorem 5.4 (node substitution; numbered Theorem 6.4 in
-manuscript v36), direction='out' uses the node insertion/removal result
-(Theorem 4.5 in v36 — the current theory doc has not restated an out-expansion
-theorem under any number since the incoming-edge orientation rewrite, so this
-direction's accounting is unconfirmed against the latest draft).
-
-Columns added:
-
-  epsilon               the guarantee for this row
-  epsilon_theorem       which theorem produced it
-  epsilon_substitution  the substitution pair, computed for every row so the
-                        two orientations are comparable under one adjacency
-  epsilon_naive_opacus  subsampled-Gaussian epsilon at rate p1.  NOT a valid
-                        node-level guarantee — it ignores that a node appears
-                        in its neighbours' expansions — but it shows the price
-                        of graph structure.
-
-  python -m src.sparse.compute_epsilon --csv <results.csv> --delta 1e-6
+The accountant always uses the in-expansion shell law.  A row's training
+``direction`` remains provenance and is intentionally not used to select or
+validate a different guarantee.
 """
 
 import argparse
@@ -31,209 +10,103 @@ import csv
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from src.sparse.accounting import (                               # noqa: E402
-    naive_opacus_epsilon, sparsegnn_substitution_epsilon_schedule,
-    sparsegnn_thm4_epsilon_schedule,
-)
+from src.sparse.accounting import (  # noqa: E402
+    naive_opacus_epsilon, sparsegnn_epsilon_schedule)
 
 
 def parse_args():
-    p = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('--csv', required=True,
-                   help='results CSV from `python -m src.sparse.run --dp`')
-    # No default: the repo has used 1e-6, 1e-5 and n^-1.01 in different
-    # drivers, and a silent default here produced runs whose delta matched
-    # none of them.  Requiring it forces the choice to be recorded.
-    p.add_argument('--delta', type=float, required=True,
-                   help='target delta; must satisfy delta << 1/n for '
-                        'node-level DP to be meaningful')
-    p.add_argument('--assume_direction', choices=['in', 'out'], default=None,
-                   help="orientation to assume for rows whose `direction` "
-                        "column is missing or blank (pre-orientation-fix CSVs "
-                        "used 'out'); without this such rows are an error")
-    p.add_argument('--theorem', choices=['auto', 'substitution', 'thm45'],
-                   default='auto',
-                   help="which dominating pair drives the `epsilon` column; "
-                        "'auto' picks Theorem 6.4 for direction='in' and "
-                        "Theorem 4.5 for direction='out'")
-    p.add_argument('--grid', type=float, default=1e-4,
-                   help="dp_accounting value_discretization_interval "
-                        "(pessimistic rounding; smaller = tighter but slower)")
-    p.add_argument('--legacy_shells', action='store_true',
-                   help="drop the union-graph correction (n_d = K^d instead of "
-                        "2*K^d). Only for reproducing pre-2026-09-13 numbers; "
-                        "Assumption 5.2 bounds g u g', not g")
-    p.add_argument('--out', default=None,
-                   help='output CSV (default: <input>_with_eps.csv)')
-    return p.parse_args()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--csv", required=True)
+    parser.add_argument("--delta", required=True, type=float)
+    parser.add_argument(
+        "--grid", default=1e-4, type=float,
+        help="dp_accounting privacy-loss discretization interval")
+    parser.add_argument(
+        "--legacy_shells", action="store_true",
+        help="drop the union-graph correction for reproducing older numbers")
+    parser.add_argument("--out", default=None)
+    return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    if not 0.0 < args.delta < 1.0:
-        # Previously unvalidated: --delta 1.5 wrote eps=0.0000 for every row
-        # (plus a negative eps_naive from Opacus), and --delta 0 wrote inf.
+    if not 0 < args.delta < 1:
         raise SystemExit(f"--delta must lie in (0, 1), got {args.delta}")
-    out_path = args.out or args.csv.replace('.csv', '_with_eps.csv')
+    if args.grid <= 0:
+        raise SystemExit(f"--grid must be positive, got {args.grid}")
+    out_path = args.out or args.csv.replace(".csv", "_with_eps.csv")
 
-    with open(args.csv, newline='') as fh:
-        rows = list(csv.DictReader(fh))
+    with open(args.csv, newline="") as handle:
+        rows = list(csv.DictReader(handle))
     if not rows:
         raise SystemExit(f"no rows in {args.csv}")
-    if rows[0].get('dp', 'False') != 'True':
-        print("note: CSV rows have dp=False — epsilon is only meaningful for "
-              "DP runs; computing anyway from the recorded parameters.")
 
-    # One accounting pass per distinct mechanism configuration.  Rows written
-    # with --track_every carry a `step` column; all checkpoints of a config
-    # share one incremental composition schedule, so eps(t) for 40 checkpoints
-    # costs about as much as a single full-length composition.
-    def _row_key(row):
-        # A missing or blank `direction` used to silently default to 'out',
-        # which does not just change the number -- it switches the ADJACENCY
-        # RELATION, from node substitution (Thm 5.4) to insertion/removal
-        # (Thm 4.5).  Measured on one synthetic row: 4.85 with direction=in vs
-        # 7.79 with the column absent, and at p1=0.3 the ordering even flips.
-        # Pre-orientation-fix CSVs genuinely lack the column; they used
-        # Algorithm 4, so pass --assume_direction out to process them.
-        direction = row.get('direction') or args.assume_direction or ''
-        if not direction:
-            raise SystemExit(
-                "this CSV has no `direction` value, and defaulting it would "
-                "silently pick a different neighbouring relation (substitution "
-                "vs insertion/removal). Pass --assume_direction {in,out} to "
-                "state which orientation produced it; pre-orientation-fix CSVs "
-                "used 'out'.")
-        return (direction, float(row['p1']), float(row['p2']),
-                int(row['r']), float(row['sigma']), int(row['T']),
-                int(row['K_in']), int(row['K_out']))
+    def row_key(row):
+        for field in ("K_in", "K_out"):
+            if not row.get(field):
+                raise SystemExit(
+                    f"CSV has no {field}; a finite degree bound is required")
+        return (
+            float(row["p1"]), float(row["p2"]), int(row["r"]),
+            float(row["sigma"]), int(row["T"]), int(row["K_in"]),
+            int(row["K_out"]),
+        )
 
-    def _row_step(row):
-        # Legacy CSVs have no `step` column: the row is the final iterate.
-        s = row.get('step')
-        return int(float(s)) if s not in (None, '') else int(row['T'])
-
-    for row in rows:
-        if not row.get('K_in'):
-            raise SystemExit(
-                "CSV has no K_in — rerun with --K_in (degree capping) or use a "
-                "CSV produced by the updated src.sparse.run, which records the "
-                "graph's max degrees.")
+    def row_step(row):
+        value = row.get("step")
+        return int(float(value)) if value not in (None, "") else int(row["T"])
 
     steps_by_key = {}
     for row in rows:
-        steps_by_key.setdefault(_row_key(row), set()).add(_row_step(row))
+        steps_by_key.setdefault(row_key(row), set()).add(row_step(row))
 
-    eps_cache = {}     # (key, step) -> eps of the row's applicable theorem
-    sub_cache = {}     # (key, step) -> substitution eps (always computed)
-    naive_cache = {}   # (key, step) -> naive opacus eps
-    thm_cache = {}     # key -> theorem label
-    for key, steps in steps_by_key.items():
-        direction, p1, p2, r, sigma, T, K_in, K_out = key
-        # Always computed: comparable across orientations.
-        sub_sched = sparsegnn_substitution_epsilon_schedule(
-            p1=p1, p2=p2, r=r, K_in=K_in, K_out=K_out, sigma=sigma,
-            steps=steps, delta=args.delta, direction=direction,
-            grid=args.grid, union_safe=not args.legacy_shells)
-
-        theorem = args.theorem
-        if theorem == 'auto':
-            theorem = 'thm45' if direction == 'out' else 'substitution'
-        if theorem == 'thm45':
-            if direction != 'out':
-                raise SystemExit(
-                    "Theorem 4.5 is stated for out-expansion (Algorithm 4) "
-                    f"only, but this CSV has direction={direction!r}. Use "
-                    "--theorem substitution.")
-            eps_sched = sparsegnn_thm4_epsilon_schedule(
-                p1=p1, p2=p2, r=r, K_in=K_in, K_out=K_out, sigma=sigma,
-                steps=steps, delta=args.delta, grid=args.grid)
-            thm_cache[key] = 'thm4.5-insertion-removal'
-        else:
-            eps_sched = sub_sched
-            thm_cache[key] = ('thm6.4-substitution' if direction == 'in'
-                              else 'thm1.2-substitution')
-
-        for t in steps:
-            sub_cache[(key, t)] = sub_sched[t]
-            eps_cache[(key, t)] = eps_sched[t]
+    epsilon_cache = {}
+    naive_cache = {}
+    for key, checkpoints in steps_by_key.items():
+        p1, p2, radius, sigma, total_steps, k_in, k_out = key
+        schedule = sparsegnn_epsilon_schedule(
+            p1=p1, p2=p2, r=radius, K_in=k_in, K_out=k_out,
+            sigma=sigma, steps=checkpoints, delta=args.delta, grid=args.grid,
+            union_safe=not args.legacy_shells)
+        for step in checkpoints:
+            epsilon_cache[(key, step)] = schedule[step]
             try:
-                naive_cache[(key, t)] = naive_opacus_epsilon(
-                    sigma, p1, t, args.delta, mechanism='prv')
+                naive_cache[(key, step)] = naive_opacus_epsilon(
+                    sigma, p1, step, args.delta, mechanism="prv")
             except Exception:
-                naive_cache[(key, t)] = float('nan')
+                naive_cache[(key, step)] = float("nan")
+        final = max(checkpoints)
+        print(
+            f"p1={p1} p2={p2} r={radius} sigma={sigma} T={total_steps} "
+            f"K_in={k_in} K_out={k_out}: "
+            f"epsilon={schedule[final]:.4f} "
+            f"naive={naive_cache[(key, final)]:.4f}")
 
-        t_max = max(steps)
-        print(f"dir={direction} p1={p1} p2={p2} r={r} sigma={sigma} T={T} "
-              f"K_in={K_in} K_out={K_out}"
-              + (f" [{len(steps)} checkpoints]" if len(steps) > 1 else "")
-              + f":  eps={eps_cache[(key, t_max)]:.4f} ({thm_cache[key]})  "
-                f"eps_sub={sub_cache[(key, t_max)]:.4f}  "
-                f"eps_naive={naive_cache[(key, t_max)]:.4f}")
-
+    obsolete = {"epsilon_theorem", "epsilon_substitution", "epsilon_thm4"}
     for row in rows:
-        key, t = _row_key(row), _row_step(row)
-        row['step'] = t
-        row['epsilon'] = f"{eps_cache[(key, t)]:.5f}"
-        row['epsilon_theorem'] = thm_cache[key]
-        row['epsilon_substitution'] = f"{sub_cache[(key, t)]:.5f}"
-        row['epsilon_naive_opacus'] = f"{naive_cache[(key, t)]:.5f}"
-        row['delta'] = f"{args.delta:g}"
-        # Record the discretization the epsilon was computed at.  Without it a
-        # reader cannot tell whether this eps is comparable to a sigma that was
-        # calibrated at a different grid -- the matched-eps drivers calibrate at
-        # 1e-5 while every compute_epsilon call site uses the 1e-4 default.
-        row['epsilon_grid'] = f"{args.grid:g}"
-        row['union_safe_shells'] = str(not args.legacy_shells)
+        key, step = row_key(row), row_step(row)
+        for field in obsolete:
+            row.pop(field, None)
+        row["step"] = step
+        row["epsilon"] = f"{epsilon_cache[(key, step)]:.5f}"
+        row["epsilon_naive_opacus"] = f"{naive_cache[(key, step)]:.5f}"
+        row["delta"] = f"{args.delta:g}"
+        row["epsilon_grid"] = f"{args.grid:g}"
+        row["union_safe_shells"] = str(not args.legacy_shells)
 
-    # Warn if the run recorded an in-process calibration at a different
-    # discretization than the one used here, since the two epsilons then are
-    # not the same quantity.
-    mismatched = set()
-    for r in rows:
-        g = r.get('accounting_grid')
-        if not g:
-            continue
-        try:
-            if abs(float(g) - args.grid) > 1e-15:
-                mismatched.add(float(g))
-        except ValueError:
-            continue
-    if mismatched:
-        print(f"WARNING: rows were calibrated at grid={sorted(mismatched)} but "
-              f"epsilon here is computed at grid={args.grid:g}; the reported "
-              f"epsilon and the recorded calibrated_epsilon are not comparable.")
-
-    fieldnames = list(rows[0].keys())
-    with open(out_path, 'w', newline='') as fh:
-        w = csv.DictWriter(fh, fieldnames=fieldnames)
-        w.writeheader()
-        w.writerows(rows)
-    print(f"\naugmented results written to {out_path}")
-
-    # Compact frontier table: mean test acc per config vs epsilon, at each
-    # config's FINAL checkpoint (tracked intermediate rows live in the CSV).
-    from collections import defaultdict
-    acc = defaultdict(list)
-    for row in rows:
-        key = _row_key(row)
-        if _row_step(row) == max(steps_by_key[key]):
-            acc[key].append(float(row['test_acc']))
-    print(f"\n{'dir':>4} {'p1':>6} {'p2':>5} {'r':>3} {'sigma':>6} {'step':>6} "
-          f"{'test_acc':>9} {'epsilon':>10} {'eps_subst':>10} {'eps_naive':>10}")
-    print('-' * 77)
-    for key in sorted(acc, key=lambda k: eps_cache[(k, max(steps_by_key[k]))]):
-        direction, p1, p2, r, sigma, T, _, _ = key
-        t_max = max(steps_by_key[key])
-        m = sum(acc[key]) / len(acc[key])
-        print(f"{direction:>4} {p1:>6} {p2:>5} {r:>3} {sigma:>6} {t_max:>6} "
-              f"{m:>9.4f} {eps_cache[(key, t_max)]:>10.3f} "
-              f"{sub_cache[(key, t_max)]:>10.3f} "
-              f"{naive_cache[(key, t_max)]:>10.3f}")
+    fieldnames = list(rows[0])
+    for row in rows[1:]:
+        for field in row:
+            if field not in fieldnames:
+                fieldnames.append(field)
+    with open(out_path, "w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"wrote {out_path}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

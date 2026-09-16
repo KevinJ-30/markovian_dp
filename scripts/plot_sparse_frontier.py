@@ -32,10 +32,10 @@ def main():
     with open(args.csv, newline='') as fh:
         rows = list(csv.DictReader(fh))
 
-    # mean test metric per (p2, sigma), epsilon per config.  `epsilon_thm4` is
-    # the pre-orientation-fix column name; current CSVs use `epsilon` and record
-    # which theorem produced it in `epsilon_theorem`.
-    eps_col = 'epsilon' if 'epsilon' in rows[0] else 'epsilon_thm4'
+    # Mean test metric per (p2, sigma), with the sole Theorem 5.4 epsilon.
+    if 'epsilon' not in rows[0]:
+        raise SystemExit("CSV must be augmented by src.sparse.compute_epsilon")
+    eps_col = 'epsilon'
     acc = defaultdict(list)
     eps = {}
     for row in rows:
@@ -44,7 +44,7 @@ def main():
         eps[key] = float(row[eps_col])
     dataset = rows[0]['dataset']
     metric = rows[0].get('metric', 'accuracy')
-    theorem = rows[0].get('epsilon_theorem', 'Theorem 4.5')
+    theorem = 'Theorem 5.4 substitution'
     direction = rows[0].get('direction', 'out')
     meta = (f"p1={rows[0]['p1']}, r={rows[0]['r']}, K_in={rows[0]['K_in']}, "
             f"K_out={rows[0].get('K_out', '?')}, dir={direction}, "

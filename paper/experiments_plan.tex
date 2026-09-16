@@ -120,19 +120,10 @@ orientation is now an experiment in its own right
         degrees are capped ($3015,221 \to 5,5$ erases the asymmetry), but it is
         decisive on RelBench, where the corrected orientation moves
         rel-f1/driver-top3 from chance to $0.79$ AUROC.
-  \item \textbf{Privacy.} Reported as \texttt{epsilon\_substitution}, computed for
-        both orientations and so comparing like with like: in-expansion pays
-        $n_d{=}K_{\mathrm{out}}^d$ and out-expansion $n_d{=}K_{\mathrm{in}}^d$, so
-        the cheaper orientation is whichever direction the graph is thin in. Under
-        $K_{\mathrm{in}}{=}K_{\mathrm{out}}$ the two coincide exactly.
-  \item \textbf{Adjacency notion.} The tighter insertion/removal pair
-        (Theorem~4.5, sensitivity $C$ rather than $2C$) exists only for
-        out-expansion, so it is an ablation rather than the headline. Its shells
-        activate all-or-nothing, which at the small $p_1$ used here makes it
-        \emph{looser} than Theorem~6.4 despite the better sensitivity: on the
-        arxiv grid ($p_1{=}0.005$, $K{=}5$, $r{=}1$, $T{=}500$, $\sigma{=}10$,
-        $p_2{=}0.1$) it gives $\varepsilon{=}7.2$ where the substitution pair
-        gives $0.51$.
+  \item \textbf{Privacy.} Report the sole Theorem~5.4 node-substitution
+        \texttt{epsilon}. The accountant always uses the in-expansion shell law
+        $n_d=K_{\mathrm{out}}^d$ and does not select a different guarantee from
+        the training orientation.
 \end{itemize}
 
 \paragraph{RelBench specifics.} The relational graph is built from the raw

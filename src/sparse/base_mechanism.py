@@ -41,6 +41,9 @@ class BaseMechanism(ABC):
         #: when --eval_graph train is passed, so utility can be measured on the
         #: same graph the model was trained on.
         self.eval_edge_index = None
+        # Physical padding budget for the private root-first path.  It bounds
+        # B * N_max per forward chunk; logical DP batches may span chunks.
+        self.max_private_batch_nodes = 8192
 
     #: Above this many (arc x feature) elements, full-graph evaluation switches
     #: from an edge_index to a CSR adjacency.  Message passing over an
@@ -139,6 +142,16 @@ class BaseMechanism(ABC):
         if subgraphs:
             yield self.subgraph_losses(subgraphs)
 
+    def build_private_module(self) -> torch.nn.Module:
+        """Return a batch-first module sharing this mechanism's parameters."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement private padded training")
+
+    def private_losses(self, private_module: torch.nn.Module, batch) -> torch.Tensor:
+        """Return one scalar loss per padded rooted-subgraph sample."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement private padded training")
+
     @abstractmethod
     def evaluate(self, data) -> Dict[str, float]:
         """Return a dict of evaluation metrics (e.g. train/val/test accuracy)."""
@@ -151,34 +164,3 @@ class BaseMechanism(ABC):
             return params[0].sum() * 0.0
         return torch.zeros((), device=self.device, requires_grad=True)
 
-    # ── shared DP helpers (used by the engine's DP path) ──────────────────────
-
-    def clip_flat_grad(self, grads: List[torch.Tensor], C: float) -> List[torch.Tensor]:
-        """Clip a per-subgraph gradient list to global L2 norm C (in place-safe).
-
-        Returns a new list of tensors scaled by min(1, C / ||g||_2), matching
-        the per-example clipping in Assumption 3.2 (||g0(H)||_2 <= C).
-        """
-        total_sq = torch.stack([g.pow(2).sum() for g in grads]).sum()
-        coef = (C / (total_sq.sqrt() + 1e-12)).clamp(max=1.0)
-        return [g * coef for g in grads]
-
-    def gaussian_noise_like(self, grads: List[torch.Tensor], sigma: float,
-                            C: float, generator: torch.Generator = None
-                            ) -> List[torch.Tensor]:
-        """Draw N(0, (sigma*C)^2 I) noise shaped like `grads`.
-
-        CPU generator draws retain the seeded CPU/GPU noise stream. Reusing
-        pinned CPU staging and device buffers removes per-step allocation.
-        """
-        std = sigma * C
-        # One INDEPENDENT draw per gradient tensor.  A previous version cached a
-        # staging buffer keyed on (shape, device) and appended the cached tensor
-        # itself, so two parameters of the same shape received the *identical*
-        # draw -- which SAGEConv always triggers (lin_l.weight and lin_r.weight
-        # are the same shape at every layer).  That made the noise covariance
-        # singular: the difference of the two clipped-gradient sums was released
-        # with no noise at all, so the mechanism was not the Gaussian mechanism
-        # the accounting prices.  Do not reintroduce buffer reuse across tensors.
-        return [(torch.randn(grad.shape, generator=generator) * std).to(grad.device)
-                for grad in grads]

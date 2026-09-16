@@ -43,23 +43,21 @@ class SparseGNNAccountant(PrivacyAccountant):
     """Adapter around the repository's certified dominating-pair accountant."""
 
     def account(self, *, p1: float, p2: float, radius: int, k_in: int, k_out: int,
-                sigma: float, steps: int, delta: float, direction: str = "in",
-                theorem: str = "auto", grid: float = 1e-4) -> PrivacyResult:
-        from src.sparse.accounting import (
-            sparsegnn_epsilon, sparsegnn_theorem_label,
-        )
+                sigma: float, steps: int, delta: float,
+                grid: float = 1e-4) -> PrivacyResult:
+        from src.sparse.accounting import sparsegnn_epsilon
 
         epsilon = sparsegnn_epsilon(
             p1, p2, radius, k_in, sigma, steps, delta, K_out=k_out,
-            direction=direction, theorem=theorem, grid=grid,
+            grid=grid,
         )
         return PrivacyResult(
-            epsilon=float(epsilon), delta=delta, accountant="markovian_dp.dominating_pairs",
-            noise_multiplier=sigma, sampling_probability=p1, composition_count=steps,
+            epsilon=float(epsilon), delta=delta,
+            accountant="markovian_dp.theorem5_4",
+            noise_multiplier=sigma, sampling_probability=p1,
+            composition_count=steps,
             parameters={"edge_retention_probability": p2, "radius": radius,
-                        "k_in": k_in, "k_out": k_out, "direction": direction,
-                        "theorem": sparsegnn_theorem_label(direction, theorem),
-                        "grid": grid},
+                        "k_in": k_in, "k_out": k_out, "grid": grid},
         )
 
     def calibrate(self, target_epsilon: float, delta: float,
@@ -70,11 +68,11 @@ class SparseGNNAccountant(PrivacyAccountant):
             target_epsilon=target_epsilon, target_delta=delta,
             p1=kwargs["p1"], p2=kwargs["p2"], r=kwargs["radius"],
             K_in=kwargs["k_in"], K_out=kwargs["k_out"], steps=kwargs["steps"],
-            clip=kwargs.get("clip", 1.0), direction=kwargs.get("direction", "in"),
-            theorem=kwargs.get("theorem", "auto"), grid=kwargs.get("grid", 1e-4),
+            clip=kwargs.get("clip", 1.0), grid=kwargs.get("grid", 1e-4),
             sigma_rtol=kwargs.get("sigma_rtol", 1e-3),
             sigma_atol=kwargs.get("sigma_atol", 1e-6),
             max_sigma=kwargs.get("max_sigma", 1e6),
+            union_safe=kwargs.get("union_safe", True),
         )
         return calibration.as_dict()
 

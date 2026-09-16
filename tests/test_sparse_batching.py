@@ -1,9 +1,14 @@
 """Regression coverage for disconnected SparseGNN forward batching."""
 
+import pytest
 import torch
+import torch.nn.functional as F
+from opacus.grad_sample import GradSampleModule
 from torch_geometric.data import Data
 
 from src.sparse.gnn_mechanism import GNNMechanism
+from src.sparse.padded import pad_rooted_subgraphs
+from src.sparse.sparse_gnn import OpacusPrivateUpdate
 from src.sparse.sparse_expand import RootedSubgraph
 
 
@@ -27,9 +32,9 @@ def _subgraphs():
     ]
 
 
-def _mechanism(data, *, max_nodes):
+def _mechanism(data, *, max_nodes, aggr="mean"):
     return GNNMechanism(
-        data, 3, 2, hidden=4, num_layers=2, dropout=0.0,
+        data, 3, 2, hidden=4, num_layers=2, dropout=0.0, aggr=aggr,
         device=torch.device('cpu'), max_batched_subgraph_nodes=max_nodes,
     )
 
@@ -45,8 +50,10 @@ def _clipped_sum(mechanism, losses, clip=1.0):
         )
         grads = [grad if grad is not None else torch.zeros_like(parameter)
                  for grad, parameter in zip(grads, params)]
-        for total, grad in zip(accum, mechanism.clip_flat_grad(grads, clip)):
-            total.add_(grad)
+        norm = torch.sqrt(sum(grad.square().sum() for grad in grads))
+        scale = min(1.0, clip / (float(norm) + 1e-12))
+        for total, grad in zip(accum, grads):
+            total.add_(grad, alpha=scale)
     return accum
 
 
@@ -95,3 +102,116 @@ def test_chunked_and_oversized_fallback_match_unbounded_batch():
     unbounded_losses = unbounded.subgraph_losses(subgraphs)
     for got, expected in zip(chunked_losses, unbounded_losses):
         assert torch.allclose(got, expected, atol=1e-6)
+
+
+@pytest.mark.parametrize("aggr", ["mean", "gcn"])
+def test_padded_losses_match_sparse_pyg(aggr):
+    torch.manual_seed(12)
+    data = _data()
+    mechanism = _mechanism(data, max_nodes=32, aggr=aggr)
+    subgraphs = _subgraphs()
+    reference = torch.stack([
+        mechanism.subgraph_loss(subgraph) for subgraph in subgraphs])
+    batch = pad_rooted_subgraphs(
+        subgraphs, x=data.x, y=data.y, train_mask=data.train_mask,
+        device=torch.device("cpu"))
+    private_module = mechanism.build_private_module()
+    private_module.eval()
+    padded = mechanism.private_losses(private_module, batch)
+
+    assert torch.allclose(padded, reference, atol=1e-6)
+    assert batch.node_mask.tolist() == [[True, True], [True, True], [True, False]]
+    assert batch.edge_mask.tolist() == [[True], [True], [False]]
+    assert batch.root_index.tolist() == [0, 0, 0]
+
+
+def test_opacus_private_update_accepts_padded_gnn_batch():
+    torch.manual_seed(21)
+    mechanism = _mechanism(_data(), max_nodes=32)
+    mechanism.build_optimizer(lr=0.0, kind="sgd")
+    update = OpacusPrivateUpdate(
+        mechanism, C=1.0, sigma=0.0, expected_batch=2.0,
+        noise_gen=torch.Generator().manual_seed(7))
+
+    loss = update.step(_subgraphs()[:2])
+
+    assert loss > 0
+    for parameter in mechanism.parameters():
+        assert parameter.grad is not None
+        assert torch.isfinite(parameter.grad).all()
+
+
+def test_opacus_private_update_empty_batch_adds_noise():
+    mechanism = _mechanism(_data(), max_nodes=32)
+    mechanism.build_optimizer(lr=0.0, kind="sgd")
+    update = OpacusPrivateUpdate(
+        mechanism, C=0.5, sigma=1.0, expected_batch=3.0,
+        noise_gen=torch.Generator().manual_seed(7))
+
+    assert update.step([]) == 0.0
+    flat = torch.cat([parameter.grad.reshape(-1)
+                      for parameter in mechanism.parameters()])
+    assert flat.norm() > 0
+
+
+def test_private_physical_chunks_match_one_padded_batch():
+    torch.manual_seed(24)
+    data = _data()
+    chunked = _mechanism(data, max_nodes=2)
+    unbounded = _mechanism(data, max_nodes=32)
+    unbounded.module.load_state_dict(chunked.module.state_dict())
+    for mechanism in (chunked, unbounded):
+        mechanism.build_optimizer(lr=0.0, kind="sgd")
+    chunked_update = OpacusPrivateUpdate(
+        chunked, C=1.0, sigma=0.0, expected_batch=2.0,
+        noise_gen=torch.Generator().manual_seed(1))
+    unbounded_update = OpacusPrivateUpdate(
+        unbounded, C=1.0, sigma=0.0, expected_batch=2.0,
+        noise_gen=torch.Generator().manual_seed(1))
+
+    chunked_update.step(_subgraphs()[:2])
+    unbounded_update.step(_subgraphs()[:2])
+
+    for left, right in zip(chunked.parameters(), unbounded.parameters()):
+        assert torch.allclose(left.grad, right.grad, atol=1e-6)
+
+
+@pytest.mark.parametrize("aggr", ["mean", "gcn"])
+def test_opacus_grad_samples_match_vmap_per_root_gradients(aggr):
+    torch.manual_seed(31)
+    data = _data()
+    mechanism = _mechanism(data, max_nodes=32, aggr=aggr)
+    batch = pad_rooted_subgraphs(
+        _subgraphs()[:2], x=data.x, y=data.y, train_mask=data.train_mask,
+        device=torch.device("cpu"))
+    private_module = mechanism.build_private_module()
+    private_module.eval()
+    parameters = dict(private_module.named_parameters())
+    buffers = dict(private_module.named_buffers())
+
+    def single_loss(params, state, features, node_mask, edge_index,
+                    edge_mask, root_index, label, loss_mask):
+        output = torch.func.functional_call(
+            private_module, (params, state),
+            (features.unsqueeze(0), edge_index.unsqueeze(0),
+             edge_mask.unsqueeze(0), node_mask.unsqueeze(0)))
+        root_logits = F.log_softmax(output[0, 0], dim=-1)
+        loss = F.nll_loss(root_logits.unsqueeze(0), label.long().view(1))
+        return loss * loss_mask.to(loss.dtype)
+
+    reference = torch.func.vmap(
+        torch.func.grad(single_loss),
+        in_dims=(None, None, 0, 0, 0, 0, 0, 0, 0),
+    )(
+        parameters, buffers, batch.features, batch.node_mask,
+        batch.edge_index, batch.edge_mask, batch.root_index, batch.labels,
+        batch.loss_mask)
+
+    wrapped = GradSampleModule(
+        private_module, batch_first=True, loss_reduction="mean", strict=True)
+    wrapped.train()
+    mechanism.private_losses(wrapped, batch).mean().backward()
+    for name, parameter in private_module.named_parameters():
+        assert parameter.grad_sample.shape[0] == batch.batch_size
+        assert torch.allclose(
+            parameter.grad_sample, reference[name], atol=1e-6, rtol=1e-5)

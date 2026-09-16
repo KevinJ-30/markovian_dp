@@ -207,11 +207,10 @@ def parse_args():
     p.add_argument('--split_seed', type=int, default=0,
                    help='seed identifying the common saved inductive split')
     p.add_argument('--direction', choices=['in', 'out'], default='in',
-                   help="SparseExpand orientation: 'in' = Algorithm 5, expand "
-                        "along incoming edges so messages flow toward the root "
-                        "(correct for message passing; accounted by Theorem "
-                        "6.4); 'out' = legacy Algorithm 2/4, kept for the "
-                        "orientation ablation (accounted by Theorem 4.5)")
+                   help="SparseExpand orientation: 'in' expands along incoming "
+                        "edges so messages flow toward the root; 'out' is the "
+                        "legacy orientation ablation. Privacy accounting uses "
+                        "the in-expansion Theorem 5.4 pair independently.")
     # Paper parameters (each accepts one or more values → swept as a grid)
     p.add_argument('--p1', type=float, nargs='+', default=[0.5],
                    help='root-sampling probability p1 (Bernoulli per node); '
@@ -248,15 +247,12 @@ def parse_args():
     noise_selection = p.add_mutually_exclusive_group()
     noise_selection.add_argument(
         '--sigma', type=float, nargs='+',
-        help='noise multiplier(s); pass several to sweep, e.g. --sigma 2 5 10')
+        help='Opacus noise multiplier(s); pass several to sweep, e.g. --sigma 2 5 10')
     noise_selection.add_argument(
         '--target_epsilon', type=float,
         help='calibrate one noise multiplier per (p1, p2, r) configuration')
     p.add_argument('--target_delta', type=float,
                    help='target delta required with --target_epsilon')
-    p.add_argument('--accounting_theorem',
-                   choices=['auto', 'substitution', 'thm45'], default='auto',
-                   help='SparseGNN dominating-pair theorem used for calibration')
     p.add_argument('--legacy_shells', action='store_true',
                    help='drop the union-graph correction in the in-process '
                         'calibration (n_d = K^d instead of 2*K^d)')
@@ -611,8 +607,8 @@ def main():
                     'K_out', 'cap_mode', 'eval_graph', 'optimizer', 'lr',
                     'momentum', 'T', 'L', 'dp',
                     'target_epsilon', 'target_delta', 'calibrated_epsilon',
-                    'accounting_theorem', 'accounting_grid',
-                    'calibration_rtol', 'calibration_evaluations',
+                    'accounting_grid', 'calibration_rtol',
+                    'calibration_evaluations',
                     'noise_std', 'noise_variance', 'seed', 'step',
                     'roots_from', 'hidden', 'dropout', 'weight_decay', 'seeds',
                     'cap_seed', 'K_in_achieved', 'K_out_achieved',
@@ -654,7 +650,6 @@ def main():
                     target_epsilon=args.target_epsilon,
                     target_delta=args.target_delta, p1=p1, p2=p2, r=r,
                     K_in=K_in_req, K_out=K_out_req, steps=args.T, clip=args.clip,
-                    direction=args.direction, theorem=args.accounting_theorem,
                     grid=args.accounting_grid,
                     sigma_rtol=args.calibration_rtol,
                     sigma_atol=args.calibration_atol,
@@ -667,7 +662,7 @@ def main():
                       f"delta={calibration.delta:g}) "
                       f"epsilon={calibration.epsilon:.6g} "
                       f"sigma={calibration.noise_multiplier:.6g} "
-                      f"theorem={calibration.theorem} "
+                      f"noise_std={calibration.noise_std:.6g} "
                       f"evaluations={calibration.evaluations}")
             else:
                 p1, p2, r, sigma = cell
@@ -675,10 +670,9 @@ def main():
                       (f" sigma={sigma}]" if args.dp else "]"))
             calibration_fields = (
                 [calibration.target_epsilon, calibration.delta,
-                 calibration.epsilon, calibration.theorem,
-                 args.accounting_grid, args.calibration_rtol,
-                 calibration.evaluations]
-                if calibration is not None else [""] * 7)
+                 calibration.epsilon, args.accounting_grid,
+                 args.calibration_rtol, calibration.evaluations]
+                if calibration is not None else [""] * 6)
             noise_fields = (
                 [sigma * args.clip, (sigma * args.clip) ** 2]
                 if args.dp else ["", ""])

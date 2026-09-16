@@ -94,6 +94,23 @@ class MLPMechanism(BaseMechanism):
                 out[0], self.data.y[root].float())
         return F.nll_loss(out, self.data.y[root].view(1))
 
+    def build_private_module(self) -> nn.Module:
+        # The ordinary MLP is already batch-first; the GradSample wrapper owns
+        # this view while evaluation continues through the same shared module.
+        return self.module
+
+    def private_losses(self, private_module: nn.Module, batch) -> torch.Tensor:
+        rows = torch.arange(batch.batch_size, device=self.device)
+        root_features = batch.features[rows, batch.root_index]
+        out = private_module(root_features)
+        if self.multilabel:
+            losses = F.binary_cross_entropy_with_logits(
+                out, batch.labels.float(), reduction="none").mean(dim=-1)
+        else:
+            losses = F.nll_loss(
+                out, batch.labels.long().view(-1), reduction="none")
+        return losses * batch.loss_mask.to(losses.dtype)
+
     @torch.no_grad()
     def evaluate(self, data=None) -> Dict[str, float]:
         data = data or self.data

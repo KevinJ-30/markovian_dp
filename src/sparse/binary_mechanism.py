@@ -18,7 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base_mechanism import BaseMechanism
-from .layers import build_conv_stack
+from .layers import PaddedGNNStack, build_conv_stack
 
 
 class _BinaryGNN(nn.Module):
@@ -84,6 +84,19 @@ class BinaryGNNMechanism(BaseMechanism):
         root_logit = out[0:1]
         root_y = self.data.y[root].view(1).float()
         return F.binary_cross_entropy_with_logits(root_logit, root_y)
+
+    def build_private_module(self) -> nn.Module:
+        return PaddedGNNStack(
+            self.module.convs, dropout=self.module.dropout).to(self.device)
+
+    def private_losses(self, private_module: nn.Module, batch) -> torch.Tensor:
+        logits = private_module(
+            batch.features, batch.edge_index, batch.edge_mask, batch.node_mask)
+        rows = torch.arange(batch.batch_size, device=self.device)
+        root_logits = logits[rows, batch.root_index, 0]
+        losses = F.binary_cross_entropy_with_logits(
+            root_logits, batch.labels.float().view(-1), reduction="none")
+        return losses * batch.loss_mask.to(losses.dtype)
 
     @torch.no_grad()
     def evaluate(self, data=None) -> Dict[str, float]:

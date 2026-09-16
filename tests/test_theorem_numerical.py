@@ -120,8 +120,8 @@ def test_real_expansion_reproduces_the_theorem_sampling_law(p1, p2, K_out):
     # correction is switched off.  union_safe=False gives n_1 = K_out, which is
     # the count on THIS graph -- which is what the Monte-Carlo above measures,
     # since it samples a single star rather than a union of two.
-    pi = sparsegnn_mixture_weights(p1, p2, r=1, K_in=1, K_out=K_out,
-                                   direction='in', union_safe=False)
+    pi = sparsegnn_mixture_weights(
+        p1, p2, r=1, K_in=1, K_out=K_out, union_safe=False)
     assert np.abs(np.asarray(pi) - exact).max() < 1e-9
 
     # With the correction ON (the default) n_1 = 2*K_out, so pi is no longer
@@ -129,7 +129,7 @@ def test_real_expansion_reproduces_the_theorem_sampling_law(p1, p2, K_out):
     # property the guarantee actually rests on.  Check stochastic dominance:
     # the survival function is pointwise at least as large everywhere.
     pi_safe = np.asarray(sparsegnn_mixture_weights(
-        p1, p2, r=1, K_in=1, K_out=K_out, direction='in'))
+        p1, p2, r=1, K_in=1, K_out=K_out))
     m = max(len(pi_safe), len(exact))
     tail_safe = np.cumsum(np.pad(pi_safe, (0, m - len(pi_safe)))[::-1])[::-1]
     tail_true = np.cumsum(np.pad(exact, (0, m - len(exact)))[::-1])[::-1]
@@ -146,9 +146,9 @@ def test_real_expansion_reproduces_the_theorem_sampling_law(p1, p2, K_out):
 @pytest.mark.parametrize("alpha", [1.0, 1.5, 2.0, 5.0, 20.0])
 def test_dominating_pair_upper_bounds_the_true_mechanism(p1, p2, K_out, sigma,
                                                          alpha):
-    """H_alpha(M_g || M_g') <= H_alpha(P || Q): Theorem 6.4, Eq. (48)."""
-    pi = np.asarray(sparsegnn_mixture_weights(p1, p2, r=1, K_in=1, K_out=K_out,
-                                              direction='in'))
+    """H_alpha(M_g || M_g') <= H_alpha(P || Q): Theorem 5.4."""
+    pi = np.asarray(sparsegnn_mixture_weights(
+        p1, p2, r=1, K_in=1, K_out=K_out))
     ks = np.arange(len(pi))
 
     # True mechanism, in units of C: adversarial g0 puts the two graphs at
@@ -170,8 +170,8 @@ def test_the_slack_is_the_corollary_6_5_factor_of_two():
     rather than mysterious.
     """
     p1, p2, K_out, sigma, alpha = 0.5, 0.5, 4, 1.0, 2.0
-    pi = np.asarray(sparsegnn_mixture_weights(p1, p2, r=1, K_in=1, K_out=K_out,
-                                              direction='in'))
+    pi = np.asarray(sparsegnn_mixture_weights(
+        p1, p2, r=1, K_in=1, K_out=K_out))
     ks = np.arange(len(pi))
     claimed = _hockey_stick(alpha, -2.0 * ks, pi, +2.0 * ks, pi, sigma)
     true_at_half_sigma = _hockey_stick(alpha, -ks, pi, +ks, pi, sigma / 2.0)
@@ -183,8 +183,8 @@ def test_the_slack_is_the_corollary_6_5_factor_of_two():
 def test_bound_is_tight_enough_to_be_meaningful():
     """The claimed divergence must stay well below 1 (the trivial bound) and
     above the true one, at a configuration we actually run."""
-    pi = np.asarray(sparsegnn_mixture_weights(0.01, 0.1, r=1, K_in=5, K_out=5,
-                                              direction='in'))
+    pi = np.asarray(sparsegnn_mixture_weights(
+        0.01, 0.1, r=1, K_in=5, K_out=5))
     ks = np.arange(len(pi))
     for alpha in (1.0, 2.0):
         true = _hockey_stick(alpha, -ks, pi, +ks, pi, 5.0)

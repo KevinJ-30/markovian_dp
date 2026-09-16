@@ -18,7 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base_mechanism import BaseMechanism
-from .layers import build_conv_stack
+from .layers import PaddedGNNStack, build_conv_stack
 
 
 class _NodeGNN(nn.Module):
@@ -62,6 +62,7 @@ class GNNMechanism(BaseMechanism):
         if max_batched_subgraph_nodes <= 0:
             raise ValueError("max_batched_subgraph_nodes must be positive")
         self.max_batched_subgraph_nodes = int(max_batched_subgraph_nodes)
+        self.max_private_batch_nodes = self.max_batched_subgraph_nodes
         self.data = data
         # Root ids originate in CPU SparseExpand. Keeping the lookup on CPU
         # avoids synchronizing CUDA once per sampled root.
@@ -83,6 +84,20 @@ class GNNMechanism(BaseMechanism):
 
     def _is_supervised(self, subgraph) -> bool:
         return bool(self._train_mask[subgraph.root])
+
+    def build_private_module(self) -> nn.Module:
+        return PaddedGNNStack(
+            self.module.convs, dropout=self.module.dropout).to(self.device)
+
+    def private_losses(self, private_module: nn.Module, batch) -> torch.Tensor:
+        logits = private_module(
+            batch.features, batch.edge_index, batch.edge_mask, batch.node_mask)
+        rows = torch.arange(batch.batch_size, device=self.device)
+        root_logits = F.log_softmax(
+            logits[rows, batch.root_index], dim=-1)
+        losses = F.nll_loss(
+            root_logits, batch.labels.long().view(-1), reduction="none")
+        return losses * batch.loss_mask.to(losses.dtype)
 
     def _batched_loss_chunk(self, subgraphs: Sequence) -> List[torch.Tensor]:
         """Evaluate supervised disconnected components in one GNN forward."""

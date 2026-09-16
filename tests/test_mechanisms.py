@@ -14,7 +14,10 @@ import torch
 from torch_geometric.data import Data
 
 from src.sparse.binary_mechanism import BinaryGNNMechanism, _auroc
+from src.sparse.gnn_mechanism import GNNMechanism
+from src.sparse.mlp_mechanism import MLPMechanism
 from src.sparse.multilabel_mechanism import MultiLabelGNNMechanism, _micro_f1
+from src.sparse.regression_mechanism import RegressionGNNMechanism
 from src.sparse.relbench_data import parse_relbench_name
 from src.sparse.sparse_expand import build_adjacency, sparse_expand
 
@@ -118,6 +121,41 @@ def test_mechanism_trains_through_the_engine():
                                r=2, T=20,
                                candidate_nodes=torch.where(data.train_mask)[0],
                                seed=0)
+    assert {"train", "val", "test"} <= set(metrics)
+
+
+@pytest.mark.parametrize(
+    "kind", ["multiclass", "mlp", "binary", "multilabel", "regression"])
+def test_every_mechanism_trains_one_private_padded_step(kind):
+    from src.sparse.sparse_gnn import train_sparse_gnn
+
+    if kind == "binary":
+        data = _toy_data(binary=True)
+        mechanism = BinaryGNNMechanism(
+            data, 4, 2, hidden=8, num_layers=2, dropout=0.0)
+    elif kind == "multilabel":
+        data = _toy_data(num_labels=3)
+        mechanism = MultiLabelGNNMechanism(
+            data, 4, 3, hidden=8, num_layers=2, dropout=0.0)
+    elif kind == "regression":
+        data = _toy_data()
+        data.y = data.y.float()
+        mechanism = RegressionGNNMechanism(
+            data, 4, 1, hidden=8, num_layers=2, dropout=0.0)
+    elif kind == "mlp":
+        data = _toy_data()
+        mechanism = MLPMechanism(
+            data, 4, 2, hidden=8, num_layers=2, dropout=0.0)
+    else:
+        data = _toy_data()
+        mechanism = GNNMechanism(
+            data, 4, 2, hidden=8, num_layers=2, dropout=0.0)
+
+    mechanism.build_optimizer(lr=0.01, kind="sgd")
+    metrics = train_sparse_gnn(
+        mechanism, data, direction="in", p1=1.0, p2=1.0, r=1, T=1,
+        candidate_nodes=torch.where(data.train_mask)[0], dp=True, clip=1.0,
+        sigma=1.0, seed=4)
     assert {"train", "val", "test"} <= set(metrics)
 
 

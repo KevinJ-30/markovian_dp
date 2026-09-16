@@ -25,7 +25,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base_mechanism import BaseMechanism
-from .layers import build_conv_stack
+from .layers import PaddedGNNStack, build_conv_stack
 
 
 class _RegressionGNN(nn.Module):
@@ -76,6 +76,19 @@ class RegressionGNNMechanism(BaseMechanism):
         root_pred = out[0:1]
         root_y = self.data.y[root].view(1).float()
         return F.mse_loss(root_pred, root_y)
+
+    def build_private_module(self) -> nn.Module:
+        return PaddedGNNStack(
+            self.module.convs, dropout=self.module.dropout).to(self.device)
+
+    def private_losses(self, private_module: nn.Module, batch) -> torch.Tensor:
+        predictions = private_module(
+            batch.features, batch.edge_index, batch.edge_mask, batch.node_mask)
+        rows = torch.arange(batch.batch_size, device=self.device)
+        root_predictions = predictions[rows, batch.root_index, 0]
+        losses = F.mse_loss(
+            root_predictions, batch.labels.float().view(-1), reduction="none")
+        return losses * batch.loss_mask.to(losses.dtype)
 
     @torch.no_grad()
     def evaluate(self, data=None) -> Dict[str, float]:

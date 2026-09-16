@@ -13,9 +13,8 @@
 # against that ceiling.  lr differs by design: Adam at 0.01 for non-DP, SGD at
 # 1.0 for DP, where the noisy sum is divided by the expected batch.
 #
-# Stage 3 attaches epsilon from Theorem 6.4 (node substitution), because these
-# runs use --direction in.  The tighter Theorem 4.5 marked pair exists only for
-# out-expansion; scripts/orientation_ablation.sh reports both side by side.
+# Stage 3 attaches Theorem 5.4 node-substitution epsilon using the sole
+# in-expansion dominating pair.
 
 set -e
 cd "$(dirname "$0")/.."

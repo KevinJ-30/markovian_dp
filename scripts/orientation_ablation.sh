@@ -5,15 +5,14 @@
 #
 # Runs identical configurations twice, once per expansion orientation:
 #
-#   --direction in    Algorithm 5.  Traverses incoming edges, so the retained arcs
-#                     point AT the root and a message-passing layer actually
-#                     delivers neighbour features to it.  Accounted by Theorem 6.4,
-#                     whose shells are n_d = K_out^d.
-#   --direction out   Legacy Algorithm 2/4.  The root sits on the source side of
-#                     every arc, so during training its representation is exactly
-#                     that of an isolated node.  Accounted by Theorem 1/2 (same
-#                     adjacency notion, n_d = K_in^d) and by the tighter
-#                     insertion/removal Theorem 4.5.
+#   --direction in    Algorithm 5. Traverses incoming edges, so the retained arcs
+#                     point at the root and message passing delivers neighbor
+#                     features to it.
+#   --direction out   Legacy Algorithm 2/4. The root sits on the source side of
+#                     every arc, so its training representation is isolated.
+#
+# Accounting always applies the in-expansion Theorem 5.4 dominating pair; this
+# script varies orientation only as a utility/sampling ablation.
 #
 # ONLY DIRECTED GRAPHS ARE INFORMATIVE HERE.  Measured reciprocal-arc fractions:
 #
@@ -26,12 +25,8 @@
 # So the ablation runs on arxiv and RelBench only; adding Flickr/PPI/Reddit would
 # just reproduce each run twice.
 #
-# Two things to read off the output:
-#   1. The "mean rooted-subgraph size" line, and how far each orientation's utility
-#      sits above the graph-blind MLP baseline.
-#   2. epsilon_substitution in the augmented CSV, which is computed for BOTH
-#      orientations and is therefore the apples-to-apples privacy comparison; the
-#      `epsilon` column instead reports each row's own applicable theorem.
+# Read the mean rooted-subgraph size and each orientation's utility above the
+# graph-blind MLP baseline. The augmented CSV contains the sole `epsilon` column.
 #
 # On arxiv, note that capping to K_in=K_out=5 removes most of the 3015-vs-221
 # degree asymmetry, so the uncapped ceiling block is the one that discriminates.

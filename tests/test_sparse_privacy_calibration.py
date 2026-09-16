@@ -19,7 +19,6 @@ def _calibration(multiplier=2.5):
         epsilon=0.9,
         target_epsilon=1.0,
         delta=1e-5,
-        theorem="thm6.4-substitution",
         evaluations=7,
     )
 
@@ -43,7 +42,7 @@ def test_train_sparse_gnn_with_budget_calibrates_once_and_forwards(monkeypatch):
     metrics, result = sparse_gnn.train_sparse_gnn_with_budget(
         "mechanism", "data", target_epsilon=1.0, target_delta=1e-5,
         K_in=3, K_out=4, p1=0.2, p2=0.3, r=2, T=10, clip=1.5,
-        direction="out", theorem="thm45", accounting_grid=2e-4,
+        direction="out", accounting_grid=2e-4, union_safe=True,
         calibration_rtol=2e-3, calibration_atol=3e-6, max_sigma=99.0,
         adj="adj", candidate_nodes="roots", seed=8, eval_every=9,
         track_every=10, eval_alt_edge_index="alt", verbose=True,
@@ -55,9 +54,9 @@ def test_train_sparse_gnn_with_budget_calibrates_once_and_forwards(monkeypatch):
     assert calibration_calls == [{
         "target_epsilon": 1.0, "target_delta": 1e-5,
         "p1": 0.2, "p2": 0.3, "r": 2, "K_in": 3, "K_out": 4,
-        "steps": 10, "clip": 1.5, "direction": "out", "theorem": "thm45",
-        "grid": 2e-4, "sigma_rtol": 2e-3, "sigma_atol": 3e-6,
-        "max_sigma": 99.0,
+        "steps": 10, "clip": 1.5, "grid": 2e-4,
+        "sigma_rtol": 2e-3, "sigma_atol": 3e-6,
+        "max_sigma": 99.0, "union_safe": True,
     }]
     assert train_calls == [("mechanism", "data", {
         "p1": 0.2, "p2": 0.3, "r": 2, "T": 10, "adj": "adj",
@@ -103,7 +102,6 @@ def test_target_cli_calibrates_each_cell_once_and_records_metadata(
             epsilon=0.95,
             target_epsilon=kwargs["target_epsilon"],
             delta=kwargs["target_delta"],
-            theorem="thm6.4-substitution",
             evaluations=5,
         )
 
@@ -134,7 +132,6 @@ def test_target_cli_calibrates_each_cell_once_and_records_metadata(
     assert {row["sigma"] for row in rows} == {"2.2", "2.4"}
     assert {row["target_epsilon"] for row in rows} == {"1.0"}
     assert {row["calibrated_epsilon"] for row in rows} == {"0.95"}
-    assert {row["accounting_theorem"] for row in rows} == {"thm6.4-substitution"}
     assert {row["noise_variance"] for row in rows} == {"4.840000000000001", "5.76"}
 
 

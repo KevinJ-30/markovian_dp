@@ -94,9 +94,9 @@ def main():
                 c = calibrate_sparsegnn_noise(
                     target_epsilon=eps, target_delta=delta, p1=p1, p2=p2,
                     r=a.r, K_in=k_in, K_out=k_out, steps=a.T, clip=1.0,
-                    direction='in', grid=a.grid)
-                print(f"    p2={p2:<5} eps={eps:<4} -> sigma {c.noise_multiplier:9.3f}",
-                      file=w)
+                    grid=a.grid)
+                print(f"    p2={p2:<5} eps={eps:<4} -> "
+                      f"sigma {c.noise_multiplier:9.3f}", file=w)
             except (RuntimeError, ValueError) as exc:
                 print(f"    p2={p2:<5} eps={eps:<4} -> UNREACHABLE ({exc})",
                       file=w)

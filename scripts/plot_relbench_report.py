@@ -17,7 +17,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt   # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from src.sparse.accounting import sparsegnn_substitution_epsilon as eps_of  # noqa: E402
+from src.sparse.accounting import sparsegnn_epsilon as eps_of  # noqa: E402
 
 # Validated categorical palette (light surface #fcfcfb): all six checks pass.
 # Contrast WARN on slots 3-4 obliges visible labels, so every series is

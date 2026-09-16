@@ -11,9 +11,9 @@ Algorithm 1: SparseGNN — the model-agnostic training engine.
   * non-DP (default):  loss = sum_{H in S_t} g0_loss(H); a single backward gives
     the summed gradient G(y) = sum_v g0(y_v); optimizer.step().
 
-  * DP (dp=True): per-subgraph backward, clip each g0(H) to L2 norm C, sum,
-    add Gaussian noise N(0, (sigma*C)^2 I) (Assumption 6.3), then step.
-    Accounted post-hoc by the dominating pairs in accounting.py.
+  * DP (dp=True): a padded root-first batch gives Opacus one gradient sample
+    per rooted subgraph; Opacus globally clips each to C, sums, adds Gaussian
+    noise N(0, (sigma*C)^2 I), and applies the optimizer.
 
 The engine only talks to a BaseMechanism, so it is identical for the GNN node
 classifier and a future non-GNN anomaly detector.
@@ -24,14 +24,15 @@ from typing import Any, Callable, Dict, List, Optional
 import torch
 
 from .base_mechanism import BaseMechanism
-from .sparse_expand import SparseAdjacency, build_adjacency, sample_roots, sparse_expand
 from .accounting import SparseGNNNoiseCalibration, calibrate_sparsegnn_noise
+from .padded import iter_padded_root_batches
+from .sparse_expand import SparseAdjacency, build_adjacency, sample_roots, sparse_expand
 
 
-def _make_generator(seed):
+def _make_generator(seed, device="cpu"):
     if seed is None:
         return None
-    g = torch.Generator()
+    g = torch.Generator(device=device)
     g.manual_seed(int(seed))
     return g
 
@@ -63,54 +64,63 @@ def _step_nondp(mechanism: BaseMechanism, subgraphs: List,
     return float(total.detach())
 
 
-def _step_dp(mechanism: BaseMechanism, subgraphs: List, *, C: float,
-             sigma: float, noise_gen: torch.Generator,
-             expected_batch: float = 1.0) -> float:
-    """DP update: per-subgraph clip to C, sum, add N(0,(sigma*C)^2 I), step.
+class OpacusPrivateUpdate:
+    """One logical SparseGNN Gaussian update, possibly in physical chunks."""
 
-    The noisy sum is divided by `expected_batch` (E[|V_root|] = p1 * |pool|)
-    before the optimizer step — standard DP-SGD normalization.  This is
-    post-processing of the Gaussian mechanism, so it has no privacy cost, but
-    it decouples the learning rate from the batch size.
-    """
-    mechanism.train_mode()
-    params = mechanism.parameters()
-    opt = mechanism.optimizer
-    denom = max(float(expected_batch), 1.0)
+    def __init__(self, mechanism: BaseMechanism, *, C: float, sigma: float,
+                 expected_batch: float, noise_gen: torch.Generator):
+        if mechanism.optimizer is None:
+            raise ValueError("build the base optimizer before enabling DP")
+        from opacus.grad_sample import GradSampleModule
+        from opacus.optimizers import DPOptimizer
 
-    if not subgraphs:
-        noise = mechanism.gaussian_noise_like(
-            params, sigma, C, generator=noise_gen)
-        opt.zero_grad()
-        for p, z in zip(params, noise):
-            p.grad = z / denom
-        opt.step()
-        return 0.0
+        self.mechanism = mechanism
+        self.private_module = GradSampleModule(
+            mechanism.build_private_module(), batch_first=True,
+            loss_reduction="mean", strict=True)
+        self.optimizer = DPOptimizer(
+            optimizer=mechanism.optimizer,
+            noise_multiplier=float(sigma),
+            max_grad_norm=float(C),
+            expected_batch_size=max(float(expected_batch), 1.0),
+            loss_reduction="mean",
+            generator=noise_gen,
+            secure_mode=False,
+        )
+        mechanism.optimizer = self.optimizer
 
-    grad_accum = [torch.zeros_like(p) for p in params]
-    running = None
-    for losses in mechanism.iter_subgraph_loss_batches(subgraphs):
-        batch_running = None
-        for i, loss_H in enumerate(losses):
-            grads = torch.autograd.grad(
-                loss_H, params, retain_graph=i < len(losses) - 1,
-                allow_unused=True)
-            grads = [g if g is not None else torch.zeros_like(p)
-                     for g, p in zip(grads, params)]
-            clipped = mechanism.clip_flat_grad(grads, C)
-            for acc, g in zip(grad_accum, clipped):
-                acc.add_(g)
-            batch_running = (loss_H.detach() if batch_running is None
-                             else batch_running + loss_H.detach())
-        running = (batch_running if running is None else running + batch_running)
+    def _process(self, batch, *, final: bool) -> torch.Tensor:
+        losses = self.mechanism.private_losses(self.private_module, batch)
+        if losses.ndim != 1 or losses.numel() != batch.batch_size:
+            raise RuntimeError("private_losses must return one scalar per sample")
+        losses.mean().backward()
+        if not final:
+            self.optimizer.signal_skip_step(True)
+        self.optimizer.step()
+        return losses.detach().sum()
 
-    noise = mechanism.gaussian_noise_like(
-        grad_accum, sigma, C, generator=noise_gen)
-    opt.zero_grad()
-    for p, acc, z in zip(params, grad_accum, noise):
-        p.grad = (acc + z) / denom
-    opt.step()
-    return float(running) if running is not None else 0.0
+    def step(self, subgraphs: List) -> float:
+        self.mechanism.train_mode()
+        self.private_module.train()
+        self.optimizer.zero_grad()
+        batches = iter_padded_root_batches(
+            subgraphs,
+            x=self.mechanism.data.x,
+            y=self.mechanism.data.y,
+            train_mask=self.mechanism.data.train_mask,
+            device=self.mechanism.device,
+            max_padded_nodes=self.mechanism.max_private_batch_nodes,
+        )
+        current = next(iter(batches))
+        running = torch.zeros((), device=self.mechanism.device)
+        for following in batches:
+            running = running + self._process(current, final=False)
+            # On a skipped physical step Opacus retains summed_grad while
+            # clearing grad_sample for the next chunk.
+            self.optimizer.zero_grad()
+            current = following
+        running = running + self._process(current, final=True)
+        return float(running)
 
 
 def _evaluate(mechanism, data, alt_edge_index):
@@ -159,8 +169,8 @@ def train_sparse_gnn(
                          For per-root supervised training, restricting this to
                          training nodes avoids wasting steps on unlabeled roots.
         dp:              enable the DP clip+noise path (default False).
-        clip, sigma:     DP clipping norm C and noise multiplier sigma (required
-                         when dp=True; sigma scales noise std = sigma*C).
+        clip, sigma:     clipping norm C and Opacus noise multiplier (required
+                         when dp=True; absolute noise std is sigma*C).
         seed:            base seed for reproducible root/edge sampling.
         eval_every:      if >0 and verbose, evaluate every `eval_every` steps.
         eval_alt_edge_index: if given, every evaluation is also run against
@@ -188,11 +198,21 @@ def train_sparse_gnn(
             raise ValueError("dp=True requires both `clip` (C) and `sigma`.")
 
     sample_gen = _make_generator(seed)
-    noise_gen = _make_generator(seed + 10_000 if seed is not None else None)
 
     pool_size = (num_nodes if candidate_nodes is None
                  else int(candidate_nodes.numel()))
     expected_batch = p1 * pool_size
+    private_update = None
+    if dp:
+        params = mechanism.parameters()
+        if not params:
+            raise ValueError("DP training requires trainable parameters")
+        noise_gen = _make_generator(
+            seed + 10_000 if seed is not None else None,
+            device=params[0].device)
+        private_update = OpacusPrivateUpdate(
+            mechanism, C=clip, sigma=sigma, expected_batch=expected_batch,
+            noise_gen=noise_gen)
 
     history: List[Dict[str, float]] = []
     for t in range(1, T + 1):
@@ -203,12 +223,9 @@ def train_sparse_gnn(
                      for v in roots.tolist()]
 
         if dp:
-            # Run the DP step even when no root was sampled: the analyzed base
-            # mechanism (Assumption 3.2 / 6.3) adds Gaussian noise to G(y)
-            # unconditionally, including on the all-empty batch, so a
-            # noise-only update is what matches the accounting.
-            loss = _step_dp(mechanism, subgraphs, C=clip, sigma=sigma,
-                            noise_gen=noise_gen, expected_batch=expected_batch)
+            # Always execute the logical mechanism.  An empty root draw becomes
+            # a masked zero-signal batch and therefore a noise-only update.
+            loss = private_update.step(subgraphs)
         else:
             if roots.numel() == 0:
                 continue
@@ -247,8 +264,8 @@ def train_sparse_gnn_with_budget(
     T: int,
     clip: float,
     direction: str = "in",
-    theorem: str = "auto",
     accounting_grid: float = 1e-4,
+    union_safe: bool = True,
     calibration_rtol: float = 1e-3,
     calibration_atol: float = 1e-6,
     max_sigma: float = 1e6,
@@ -266,9 +283,9 @@ def train_sparse_gnn_with_budget(
     calibration = calibrate_sparsegnn_noise(
         target_epsilon=target_epsilon, target_delta=target_delta,
         p1=p1, p2=p2, r=r, K_in=K_in, K_out=K_out, steps=T, clip=clip,
-        direction=direction, theorem=theorem, grid=accounting_grid,
-        sigma_rtol=calibration_rtol, sigma_atol=calibration_atol,
-        max_sigma=max_sigma,
+        grid=accounting_grid, sigma_rtol=calibration_rtol,
+        sigma_atol=calibration_atol, max_sigma=max_sigma,
+        union_safe=union_safe,
     )
     metrics = train_sparse_gnn(
         mechanism, data, p1=p1, p2=p2, r=r, T=T, adj=adj,

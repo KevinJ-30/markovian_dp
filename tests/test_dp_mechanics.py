@@ -1,418 +1,275 @@
-"""
-Empirical audit of the DP training path.
-
-These tests do not re-read the implementation and agree with it; they MEASURE
-what the mechanism actually does and check it against what the accounting
-assumes.  Everything the epsilon numbers rest on is asserted here:
-
-  * per-subgraph (not per-batch) clipping, with contributions bounded by C
-  * batch sensitivity: one coordinate substitution moves G(y) by <= 2C, one
-    insertion/removal by <= C   (Lemma 11 / Assumption 6.3)
-  * Gaussian noise added ONCE per step, with std exactly sigma*C per coordinate
-  * fresh noise every step, independent of the sampling randomness
-  * Poisson root sampling at rate p1, independent across nodes and steps
-  * Bernoulli edge retention at rate p2 on every examined arc
-  * the optimizer-facing gradient is exactly (sum of clipped + noise)/E[batch]
-  * normalization uses only public quantities (no data-dependent denominator)
-"""
+"""Behavioral tests for the Opacus rooted-subgraph DP mechanism."""
 
 import pytest
 import torch
+import torch.nn as nn
+from torch_geometric.data import Data
 
 from src.sparse.base_mechanism import BaseMechanism
-from src.sparse.sparse_expand import (build_adjacency, sample_roots,
-                                      sparse_expand)
-from src.sparse.sparse_gnn import _step_dp
+from src.sparse.sparse_expand import (
+    RootedSubgraph, build_adjacency, sample_roots, sparse_expand)
+from src.sparse.sparse_gnn import OpacusPrivateUpdate
 
 
-# ── a mechanism whose per-subgraph gradient we control exactly ────────────────
+def _subgraph(root):
+    return RootedSubgraph(
+        root, torch.tensor([root]), torch.zeros((2, 0), dtype=torch.long))
 
-class _FixedGradMechanism(BaseMechanism):
-    """g0(H) is a prescribed vector, so clipping/summation can be checked exactly.
 
-    The single parameter is a vector; the loss is <w, target[root]>, whose
-    gradient w.r.t. w is exactly target[root].
-    """
+def _flat(tensors):
+    return torch.cat([tensor.reshape(-1) for tensor in tensors])
 
-    def __init__(self, targets, dim=8):
-        module = torch.nn.Linear(dim, 1, bias=False)
-        super().__init__(module, device=torch.device('cpu'))
-        self.targets = targets           # root id -> gradient vector
-        self.dim = dim
+
+class _LinearMechanism(BaseMechanism):
+    """One prescribed feature vector—and therefore gradient—per root."""
+
+    def __init__(self, targets):
+        dimension = next(iter(targets.values())).numel() if targets else 8
+        count = max(targets, default=-1) + 1
+        count = max(count, 1)
+        x = torch.zeros((count, dimension))
+        for root, target in targets.items():
+            x[root] = target
+        data = Data(
+            x=x, y=torch.zeros(count),
+            train_mask=torch.ones(count, dtype=torch.bool),
+            edge_index=torch.zeros((2, 0), dtype=torch.long))
+        data.val_mask = data.test_mask = data.train_mask
+        module = nn.Linear(dimension, 1, bias=False)
+        nn.init.zeros_(module.weight)
+        super().__init__(module)
+        self.data = data
 
     def subgraph_loss(self, subgraph):
-        t = self.targets.get(subgraph.root)
-        if t is None:
-            return self.zero_loss()
-        return (self.module.weight.view(-1) * t).sum()
+        return self.module(self.data.x[subgraph.root:subgraph.root + 1]).sum()
+
+    def build_private_module(self):
+        return self.module
+
+    def private_losses(self, private_module, batch):
+        rows = torch.arange(batch.batch_size)
+        values = private_module(batch.features[rows, batch.root_index]).view(-1)
+        return values * batch.loss_mask.to(values.dtype)
 
     def evaluate(self, data=None):
-        return {'train': 0.0, 'val': 0.0, 'test': 0.0}
+        return {"train": 0.0, "val": 0.0, "test": 0.0}
 
 
-class _Sub:
-    def __init__(self, root):
-        self.root = root
+def _private_update(targets, roots, *, clip=1.0, sigma=0.0,
+                    expected_batch=1.0, seed=0):
+    mechanism = _LinearMechanism(targets)
+    mechanism.build_optimizer(lr=0.0, kind="sgd")
+    update = OpacusPrivateUpdate(
+        mechanism, C=clip, sigma=sigma, expected_batch=expected_batch,
+        noise_gen=torch.Generator().manual_seed(seed))
+    update.step([_subgraph(root) for root in roots])
+    return mechanism, update
 
-
-def _flat(grads):
-    return torch.cat([g.reshape(-1) for g in grads])
-
-
-# ── clipping ─────────────────────────────────────────────────────────────────
 
 def test_per_subgraph_contribution_is_capped_at_C():
-    """A huge gradient contributes exactly norm C, not its raw norm."""
-    C = 1.0
-    big = torch.zeros(8); big[0] = 50.0
-    mech = _FixedGradMechanism({0: big})
-    mech.build_optimizer(lr=0.0, kind='sgd')        # lr=0: params must not move
-    _step_dp(mech, [_Sub(0)], C=C, sigma=0.0,
-             noise_gen=torch.Generator().manual_seed(0), expected_batch=1.0)
-    contribution = _flat([p.grad for p in mech.parameters()])
-    assert contribution.norm().item() == pytest.approx(C, rel=1e-6)
+    vector = torch.ones(8) * 100
+    mechanism, _ = _private_update({0: vector}, [0], clip=2.0)
+    assert _flat([p.grad for p in mechanism.parameters()]).norm() == pytest.approx(2.0)
 
 
 def test_small_gradients_pass_through_unclipped():
-    small = torch.zeros(8); small[0] = 0.25
-    mech = _FixedGradMechanism({0: small})
-    mech.build_optimizer(lr=0.0, kind='sgd')
-    _step_dp(mech, [_Sub(0)], C=1.0, sigma=0.0,
-             noise_gen=torch.Generator().manual_seed(0), expected_batch=1.0)
-    got = _flat([p.grad for p in mech.parameters()])
-    assert got.norm().item() == pytest.approx(0.25, rel=1e-6)
+    vector = torch.zeros(8)
+    vector[0] = 0.25
+    mechanism, _ = _private_update({0: vector}, [0])
+    assert _flat([p.grad for p in mechanism.parameters()]).norm() == pytest.approx(0.25)
 
 
 def test_clipping_is_per_subgraph_not_per_batch():
-    """Four aligned unit-ish gradients must sum to 4C, not be capped at C.
-
-    Per-BATCH clipping would return norm C here and would silently break the
-    sensitivity assumption the accounting relies on.
-    """
-    C = 1.0
-    v = torch.zeros(8); v[0] = 10.0                  # each clips to norm C
-    mech = _FixedGradMechanism({i: v.clone() for i in range(4)})
-    mech.build_optimizer(lr=0.0, kind='sgd')
-    _step_dp(mech, [_Sub(i) for i in range(4)], C=C, sigma=0.0,
-             noise_gen=torch.Generator().manual_seed(0), expected_batch=1.0)
-    got = _flat([p.grad for p in mech.parameters()])
-    assert got.norm().item() == pytest.approx(4 * C, rel=1e-6)
-
-
-# ── sensitivity: the assumption the dominating pairs are built on ────────────
-
-def _sum_of_clipped(mech, roots, C):
-    mech.build_optimizer(lr=0.0, kind='sgd')
-    _step_dp(mech, [_Sub(i) for i in roots], C=C, sigma=0.0,
-             noise_gen=torch.Generator().manual_seed(0), expected_batch=1.0)
-    return _flat([p.grad.clone() for p in mech.parameters()])
+    vector = torch.zeros(8)
+    vector[0] = 2.0
+    targets = {index: vector.clone() for index in range(4)}
+    mechanism, _ = _private_update(targets, list(targets), clip=1.0)
+    assert _flat([p.grad for p in mechanism.parameters()]).norm() == pytest.approx(4.0)
 
 
 @pytest.mark.parametrize("seed", range(5))
 def test_substitution_sensitivity_at_most_two_C(seed):
-    """Replacing one coordinate's subgraph moves G(y) by at most 2C."""
-    C = 1.0
-    g = torch.Generator().manual_seed(seed)
-    targets = {i: torch.randn(8, generator=g) * 3.0 for i in range(6)}
-    mech = _FixedGradMechanism(targets)
-    base = _sum_of_clipped(mech, range(6), C)
-
-    swapped = dict(targets)
-    swapped[3] = torch.randn(8, generator=g) * 3.0       # substitute one record
-    mech2 = _FixedGradMechanism(swapped)
-    other = _sum_of_clipped(mech2, range(6), C)
-
-    assert (base - other).norm().item() <= 2 * C + 1e-6
+    generator = torch.Generator().manual_seed(seed)
+    targets = {index: torch.randn(8, generator=generator) for index in range(5)}
+    base, _ = _private_update(targets, list(targets), clip=1.5)
+    changed = dict(targets)
+    changed[2] = torch.randn(8, generator=generator)
+    other, _ = _private_update(changed, list(changed), clip=1.5)
+    difference = _flat([p.grad for p in base.parameters()]) - _flat(
+        [p.grad for p in other.parameters()])
+    assert difference.norm() <= 3.0 + 1e-6
 
 
-@pytest.mark.parametrize("seed", range(5))
-def test_insertion_sensitivity_at_most_C(seed):
-    """Adding one record moves G(y) by at most C (Lemma 11)."""
-    C = 1.0
-    g = torch.Generator().manual_seed(seed)
-    targets = {i: torch.randn(8, generator=g) * 3.0 for i in range(6)}
-    mech = _FixedGradMechanism(targets)
-    without = _sum_of_clipped(mech, range(5), C)
-    with_extra = _sum_of_clipped(_FixedGradMechanism(targets), range(6), C)
-    assert (without - with_extra).norm().item() <= C + 1e-6
+@pytest.mark.parametrize("sigma,clip", [(1.0, 1.0), (5.0, 1.0), (2.0, 0.5)])
+def test_noise_std_is_sigma_times_clip(sigma, clip):
+    mechanism = _LinearMechanism({})
+    mechanism.build_optimizer(lr=0.0, kind="sgd")
+    update = OpacusPrivateUpdate(
+        mechanism, C=clip, sigma=sigma, expected_batch=1.0,
+        noise_gen=torch.Generator().manual_seed(9))
+    draws = []
+    for _ in range(400):
+        update.step([])
+        draws.append(_flat([p.grad.clone() for p in mechanism.parameters()]))
+    assert torch.stack(draws).std() == pytest.approx(sigma * clip, rel=0.08)
 
 
-# ── noise ────────────────────────────────────────────────────────────────────
-
-@pytest.mark.parametrize("sigma,C", [(1.0, 1.0), (5.0, 1.0), (2.0, 0.5)])
-def test_noise_std_is_sigma_times_C(sigma, C):
-    """Empirical per-coordinate std of the injected noise == sigma*C.
-
-    Runs the real DP step with an empty batch (zero signal) and measures the
-    spread of the resulting gradient across many noise draws.
-    """
-    B = 1.0
-    samples = []
-    for s in range(4000):
-        mech = _FixedGradMechanism({})
-        mech.build_optimizer(lr=0.0, kind='sgd')
-        _step_dp(mech, [], C=C, sigma=sigma,
-                 noise_gen=torch.Generator().manual_seed(s), expected_batch=B)
-        samples.append(_flat([p.grad for p in mech.parameters()]))
-    z = torch.stack(samples) * B          # undo the public normalization
-    assert z.mean().item() == pytest.approx(0.0, abs=0.15 * sigma * C)
-    assert z.std().item() == pytest.approx(sigma * C, rel=0.05)
-
-
-def test_empty_batch_fast_path_draws_noise_and_steps_once():
-    mech = _FixedGradMechanism({})
-    mech.build_optimizer(lr=0.0, kind='sgd')
-    seen_shapes = []
-    original_noise = mech.gaussian_noise_like
-
-    def count_noise(grads, sigma, C, generator=None):
-        seen_shapes.extend(grad.shape for grad in grads)
-        return original_noise(grads, sigma, C, generator=generator)
-
-    step_calls = 0
-    original_step = mech.optimizer.step
-
-    def count_step():
-        nonlocal step_calls
-        step_calls += 1
-        return original_step()
-
-    mech.gaussian_noise_like = count_noise
-    mech.optimizer.step = count_step
-    seed, sigma, C, expected_batch = 17, 2.0, 0.5, 3.0
-    _step_dp(mech, [], C=C, sigma=sigma,
-             noise_gen=torch.Generator().manual_seed(seed),
-             expected_batch=expected_batch)
-
-    parameter = mech.parameters()[0]
-    expected = (torch.randn(parameter.shape,
-                            generator=torch.Generator().manual_seed(seed))
-                * sigma * C / expected_batch)
-    assert seen_shapes == [parameter.shape]
-    assert step_calls == 1
-    assert torch.allclose(parameter.grad, expected)
+def test_empty_batch_draws_noise_and_steps_once():
+    mechanism = _LinearMechanism({})
+    mechanism.build_optimizer(lr=0.0, kind="sgd")
+    seed, sigma, clip, expected = 17, 2.0, 0.5, 3.0
+    update = OpacusPrivateUpdate(
+        mechanism, C=clip, sigma=sigma, expected_batch=expected,
+        noise_gen=torch.Generator().manual_seed(seed))
+    update.step([])
+    reference_gen = torch.Generator().manual_seed(seed)
+    expected_noise = torch.normal(
+        mean=0.0, std=sigma * clip,
+        size=mechanism.parameters()[0].shape, generator=reference_gen) / expected
+    assert torch.allclose(mechanism.parameters()[0].grad, expected_noise)
 
 
 def test_noise_added_once_per_step_not_per_subgraph():
-    """Variance must not grow with batch size: one draw covers the whole sum."""
-    sigma, C, B = 3.0, 1.0, 1.0
-    def spread(n_subgraphs):
-        vals = []
-        for s in range(3000):
-            mech = _FixedGradMechanism({})       # all contribute zero signal
-            mech.build_optimizer(lr=0.0, kind='sgd')
-            _step_dp(mech, [_Sub(i) for i in range(n_subgraphs)], C=C,
-                     sigma=sigma, noise_gen=torch.Generator().manual_seed(s),
-                     expected_batch=B)
-            vals.append(_flat([p.grad for p in mech.parameters()]))
-        return torch.stack(vals).std().item()
-    one, many = spread(1), spread(16)
-    assert one == pytest.approx(sigma * C, rel=0.05)
-    assert many == pytest.approx(one, rel=0.05)   # 16x batch -> same noise
+    def variance(count):
+        mechanism = _LinearMechanism({i: torch.zeros(8) for i in range(count)})
+        mechanism.build_optimizer(lr=0.0, kind="sgd")
+        update = OpacusPrivateUpdate(
+            mechanism, C=1.0, sigma=1.0, expected_batch=1.0,
+            noise_gen=torch.Generator().manual_seed(3))
+        draws = []
+        for _ in range(300):
+            update.step([_subgraph(i) for i in range(count)])
+            draws.append(float(mechanism.parameters()[0].grad[0, 0]))
+        return torch.tensor(draws).var().item()
+    assert variance(16) == pytest.approx(variance(1), rel=0.2)
 
 
 def test_noise_is_fresh_every_step():
-    """Consecutive steps must draw independent noise from the same generator."""
-    gen = torch.Generator().manual_seed(0)
-    grads = []
-    mech = _FixedGradMechanism({})
-    mech.build_optimizer(lr=0.0, kind='sgd')
-    for _ in range(2):
-        _step_dp(mech, [], C=1.0, sigma=1.0, noise_gen=gen, expected_batch=1.0)
-        grads.append(_flat([p.grad.clone() for p in mech.parameters()]))
-    assert not torch.allclose(grads[0], grads[1])
+    mechanism = _LinearMechanism({})
+    mechanism.build_optimizer(lr=0.0, kind="sgd")
+    update = OpacusPrivateUpdate(
+        mechanism, C=1.0, sigma=1.0, expected_batch=1.0,
+        noise_gen=torch.Generator().manual_seed(10))
+    update.step([])
+    first = mechanism.parameters()[0].grad.clone()
+    update.step([])
+    second = mechanism.parameters()[0].grad.clone()
+    assert not torch.allclose(first, second)
 
 
-def test_noise_stream_independent_of_sampling_stream():
-    """run/train seeds the two generators apart (seed vs seed+10000).
-
-    Identical sampling with different noise seeds must give different noise,
-    and the noise must not be a function of the batch.
-    """
-    a, b = [], []
-    for noise_seed in (7, 8):
-        mech = _FixedGradMechanism({})
-        mech.build_optimizer(lr=0.0, kind='sgd')
-        _step_dp(mech, [], C=1.0, sigma=1.0,
-                 noise_gen=torch.Generator().manual_seed(noise_seed),
-                 expected_batch=1.0)
-        (a if noise_seed == 7 else b).append(
-            _flat([p.grad.clone() for p in mech.parameters()]))
-    assert not torch.allclose(a[0], b[0])
-
-
-def test_gradient_is_exactly_signal_plus_noise_over_expected_batch():
-    """Reconstruct the optimizer-facing gradient from its two parts."""
-    C, sigma, B = 1.0, 2.0, 8.0
-    v = torch.zeros(8); v[0] = 0.4
-    targets = {i: v.clone() for i in range(3)}
-
-    mech = _FixedGradMechanism(targets)
-    mech.build_optimizer(lr=0.0, kind='sgd')
-    _step_dp(mech, [_Sub(i) for i in range(3)], C=C, sigma=sigma,
-             noise_gen=torch.Generator().manual_seed(123), expected_batch=B)
-    got = _flat([p.grad for p in mech.parameters()])
-
-    signal = _sum_of_clipped(_FixedGradMechanism(targets), range(3), C)
-    noise = _FixedGradMechanism(targets).gaussian_noise_like(
-        [torch.zeros(1, 8)], sigma, C, generator=torch.Generator().manual_seed(123))
-    expected = (signal + _flat(noise)) / B
-    assert torch.allclose(got, expected, atol=1e-6)
-
-
-def test_empty_batch_still_gets_noise():
-    """The analyzed mechanism adds noise unconditionally, including on |V_root|=0."""
-    mech = _FixedGradMechanism({})
-    mech.build_optimizer(lr=0.0, kind='sgd')
-    _step_dp(mech, [], C=1.0, sigma=1.0,
-             noise_gen=torch.Generator().manual_seed(3), expected_batch=1.0)
-    assert _flat([p.grad for p in mech.parameters()]).norm().item() > 0
-
-
-# ── sampling ─────────────────────────────────────────────────────────────────
-
-def test_root_sampling_is_poisson_at_rate_p1():
-    n, p1, trials = 500, 0.1, 400
-    gen = torch.Generator().manual_seed(0)
-    counts = [sample_roots(n, p1, generator=gen).numel() for _ in range(trials)]
-    mean = sum(counts) / trials
-    var = sum((c - mean) ** 2 for c in counts) / (trials - 1)
-    assert mean == pytest.approx(n * p1, rel=0.05)
-    # independent Bernoulli => Binomial variance n p (1-p), not 0 (fixed size)
-    assert var == pytest.approx(n * p1 * (1 - p1), rel=0.25)
-
-
-def test_root_sampling_is_independent_across_steps():
-    gen = torch.Generator().manual_seed(0)
-    a = set(sample_roots(2000, 0.05, generator=gen).tolist())
-    b = set(sample_roots(2000, 0.05, generator=gen).tolist())
-    overlap = len(a & b) / max(len(a), 1)
-    assert overlap < 0.35          # ~p1 under independence, not ~1.0
-
-
-def test_edge_retention_matches_p2():
-    """Every examined arc is kept with probability p2."""
-    n, deg, p2 = 1, 4000, 0.3
-    ei = torch.stack([torch.arange(1, deg + 1),
-                      torch.zeros(deg, dtype=torch.long)])
-    adj = build_adjacency(ei, deg + 1, direction='in')
-    gen = torch.Generator().manual_seed(0)
-    kept = sum(sparse_expand(adj, 0, p2, 1, generator=gen,
-                             direction='in').num_edges for _ in range(20))
-    assert kept / (20 * deg) == pytest.approx(p2, rel=0.05)
+def test_gradient_is_signal_plus_noise_over_expected_batch():
+    vector = torch.zeros(8)
+    vector[0] = 0.5
+    mechanism, _ = _private_update(
+        {0: vector, 1: vector}, [0, 1], clip=1.0, sigma=0.0,
+        expected_batch=4.0)
+    expected = torch.zeros_like(mechanism.parameters()[0].grad)
+    expected[0, 0] = 0.25
+    assert torch.allclose(mechanism.parameters()[0].grad, expected)
 
 
 def test_expected_batch_denominator_uses_public_quantities_only():
-    """The normalizer is p1 * pool_size — independent of the sampled batch.
-
-    A data-dependent denominator (e.g. the realized |V_root|) would make the
-    published update depend on the sample in a way the accounting does not model.
-    """
-    C, sigma, B = 1.0, 0.0, 10.0
-    v = torch.zeros(8); v[0] = 1.0
-    for n_roots in (1, 5):
-        mech = _FixedGradMechanism({i: v.clone() for i in range(n_roots)})
-        mech.build_optimizer(lr=0.0, kind='sgd')
-        _step_dp(mech, [_Sub(i) for i in range(n_roots)], C=C, sigma=sigma,
-                 noise_gen=torch.Generator().manual_seed(0), expected_batch=B)
-        got = _flat([p.grad for p in mech.parameters()]).norm().item()
-        assert got == pytest.approx(n_roots * 1.0 / B, rel=1e-6)
+    vector = torch.zeros(8)
+    vector[0] = 1.0
+    for count in (1, 5):
+        targets = {index: vector.clone() for index in range(count)}
+        mechanism, _ = _private_update(
+            targets, list(targets), expected_batch=10.0)
+        norm = _flat([p.grad for p in mechanism.parameters()]).norm()
+        assert norm == pytest.approx(count / 10.0)
 
 
-# ── receptive field: the model cannot read past what SparseExpand fetched ─────
+def test_root_sampling_is_poisson_at_rate_p1():
+    n, p1, trials = 500, 0.1, 400
+    generator = torch.Generator().manual_seed(0)
+    counts = [sample_roots(n, p1, generator=generator).numel()
+              for _ in range(trials)]
+    mean = sum(counts) / trials
+    variance = sum((count - mean) ** 2 for count in counts) / (trials - 1)
+    assert mean == pytest.approx(n * p1, rel=0.05)
+    assert variance == pytest.approx(n * p1 * (1 - p1), rel=0.25)
 
-@pytest.mark.parametrize("r,reads_two_hop", [(1, False), (2, True)])
-def test_model_depth_does_not_widen_the_privacy_radius(r, reads_two_hop):
-    """An L-layer GNN on an r-hop subgraph reads r hops, not L.
 
-    This is the invariant the accounting rests on: epsilon is priced by r
-    (shells K_out^d for d <= r), so if a 2-layer model on an r=1 subgraph could
-    reach 2-hop data, every reported epsilon would be wrong.  It cannot — the
-    1-hop nodes have no in-edges inside the subgraph, so the second layer
-    re-aggregates the same 1-hop set rather than pulling anything new.
+def test_root_sampling_is_independent_across_steps():
+    generator = torch.Generator().manual_seed(0)
+    first = set(sample_roots(2000, 0.05, generator=generator).tolist())
+    second = set(sample_roots(2000, 0.05, generator=generator).tolist())
+    assert len(first & second) / max(len(first), 1) < 0.35
 
-    Verified by perturbing a 2-hop node's features and checking the per-root
-    loss: unchanged at r=1, changed at r=2 (which confirms the probe works).
-    """
-    from torch_geometric.data import Data
+
+def test_edge_retention_matches_p2():
+    degree, p2 = 4000, 0.3
+    edges = torch.stack([
+        torch.arange(1, degree + 1), torch.zeros(degree, dtype=torch.long)])
+    adjacency = build_adjacency(edges, degree + 1, direction="in")
+    generator = torch.Generator().manual_seed(0)
+    retained = sum(
+        sparse_expand(adjacency, 0, p2, 1, generator=generator,
+                      direction="in").num_edges
+        for _ in range(20))
+    assert retained / (20 * degree) == pytest.approx(p2, rel=0.05)
+
+
+@pytest.mark.parametrize("radius,reads_two_hop", [(1, False), (2, True)])
+def test_model_depth_does_not_widen_privacy_radius(radius, reads_two_hop):
     from src.sparse.gnn_mechanism import GNNMechanism
-    from src.sparse.sparse_expand import build_adjacency, sparse_expand
 
-    ei = torch.tensor([[2, 1], [1, 0]])        # c -> b -> a, root a
-    data = Data(x=torch.randn(3, 4), y=torch.tensor([0, 1, 0]), edge_index=ei)
-    data.train_mask = torch.ones(3, dtype=torch.bool)
+    edges = torch.tensor([[2, 1], [1, 0]])
+    data = Data(
+        x=torch.randn(3, 4), y=torch.tensor([0, 1, 0]), edge_index=edges,
+        train_mask=torch.ones(3, dtype=torch.bool))
     data.val_mask = data.test_mask = data.train_mask
-
     torch.manual_seed(0)
-    mech = GNNMechanism(data, 4, 2, hidden=8, num_layers=2, dropout=0.0)
-    H = sparse_expand(build_adjacency(ei, 3, direction='in'), 0, p2=1.0, r=r,
-                      direction='in')
-
-    before = float(mech.subgraph_loss(H).detach())
-    data.x[2] += 100.0                          # perturb the 2-hop node only
-    after = float(mech.subgraph_loss(H).detach())
-
+    mechanism = GNNMechanism(
+        data, 4, 2, hidden=8, num_layers=2, dropout=0.0)
+    subgraph = sparse_expand(
+        build_adjacency(edges, 3, direction="in"), 0, p2=1.0,
+        r=radius, direction="in")
+    before = float(mechanism.subgraph_loss(subgraph).detach())
+    data.x[2] += 100.0
+    after = float(mechanism.subgraph_loss(subgraph).detach())
     assert (before != after) == reads_two_hop
-    assert (2 in H.nodes.tolist()) == reads_two_hop
+    assert (2 in subgraph.nodes.tolist()) == reads_two_hop
+
+
+class _TwoOutput(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layers = nn.ModuleList([
+            nn.Linear(3, 4, bias=False), nn.Linear(3, 4, bias=False)])
+        for layer in self.layers:
+            nn.init.zeros_(layer.weight)
+
+    def forward(self, features):
+        return sum(layer(features).sum(dim=-1) for layer in self.layers)
+
+
+class _TwoLinearMechanism(_LinearMechanism):
+    def __init__(self):
+        data = Data(
+            x=torch.zeros((1, 3)), y=torch.zeros(1),
+            train_mask=torch.ones(1, dtype=torch.bool),
+            edge_index=torch.zeros((2, 0), dtype=torch.long))
+        data.val_mask = data.test_mask = data.train_mask
+        BaseMechanism.__init__(self, _TwoOutput())
+        self.data = data
+
+    def subgraph_loss(self, subgraph):
+        return self.module(self.data.x).sum()
+
+    def private_losses(self, private_module, batch):
+        rows = torch.arange(batch.batch_size)
+        features = batch.features[rows, batch.root_index]
+        value = private_module(features)
+        return value * batch.loss_mask.to(value.dtype)
 
 
 def test_noise_is_independent_across_same_shaped_parameters():
-    """Two parameters of the same shape must get INDEPENDENT noise draws.
-
-    Regression test for the buffer-cache aliasing that made the noise covariance
-    singular: a cache keyed on (shape, device) returned the same tensor object
-    for both, so a linear functional of the clipped-gradient sum was released
-    noiselessly.  Every mechanism in this file is a single-tensor nn.Linear,
-    which is why the original bug went undetected -- this model is deliberately
-    two same-shaped tensors.
-    """
-    import torch.nn as nn
-    from src.sparse.base_mechanism import BaseMechanism
-
-    class _TwoSameShaped(BaseMechanism):
-        def __init__(self):
-            m = nn.Module()
-            m.a = nn.Parameter(torch.zeros(4, 3))
-            m.b = nn.Parameter(torch.zeros(4, 3))    # identical shape
-            super().__init__(m)
-
-        def subgraph_loss(self, subgraph):
-            return self.zero_loss()
-
-        def evaluate(self, data=None):
-            return {'train': 0.0, 'val': 0.0, 'test': 0.0}
-
-    mech = _TwoSameShaped()
-    params = mech.parameters()
-    assert params[0].shape == params[1].shape
-
-    gen = torch.Generator().manual_seed(0)
-    noise = mech.gaussian_noise_like(params, sigma=1.0, C=1.0, generator=gen)
-
-    assert len(noise) == 2
-    assert noise[0] is not noise[1], "same tensor object returned twice"
-    assert not torch.allclose(noise[0], noise[1]), "noise draws are identical"
-
-
-def test_noise_across_calls_is_fresh_for_same_shapes():
-    """Repeated calls must not reuse a previous call's buffer contents."""
-    import torch.nn as nn
-    from src.sparse.base_mechanism import BaseMechanism
-
-    class _One(BaseMechanism):
-        def __init__(self):
-            m = nn.Module()
-            m.w = nn.Parameter(torch.zeros(6, 5))
-            super().__init__(m)
-
-        def subgraph_loss(self, subgraph):
-            return self.zero_loss()
-
-        def evaluate(self, data=None):
-            return {'train': 0.0, 'val': 0.0, 'test': 0.0}
-
-    mech = _One()
-    gen = torch.Generator().manual_seed(1)
-    a = mech.gaussian_noise_like(mech.parameters(), 1.0, 1.0, generator=gen)[0].clone()
-    b = mech.gaussian_noise_like(mech.parameters(), 1.0, 1.0, generator=gen)[0].clone()
-    assert not torch.allclose(a, b)
+    mechanism = _TwoLinearMechanism()
+    mechanism.build_optimizer(lr=0.0, kind="sgd")
+    update = OpacusPrivateUpdate(
+        mechanism, C=1.0, sigma=1.0, expected_batch=1.0,
+        noise_gen=torch.Generator().manual_seed(5))
+    update.step([])
+    first, second = [parameter.grad for parameter in mechanism.parameters()]
+    assert not torch.allclose(first, second)

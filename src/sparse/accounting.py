@@ -1,74 +1,43 @@
-"""
-Dominating pairs for one SparseGNN step.
+"""Theorem 5.4 substitution accounting for SparseGNN.
 
-NOTE ON THEOREM NUMBERS: this module was written against manuscript v36. The
-theory doc has since been revised and renumbered: the in-expansion
-substitution result below is Theorem 5.4 in the current draft (was Theorem
-6.4 in v36). The out-expansion insertion/removal result (Theorem 4.5 in v36)
-has not been restated under any number in the current draft, which currently
-only covers the incoming-edge orientation — treat --direction='out' accounting
-as unconfirmed against the current theory doc until that section is rewritten.
-The formulas themselves (Eq. 43-47 below) are unchanged by the renumbering.
+For in-expansion, let ``pi`` be the law of the number of affected sampled
+rooted subgraphs.  The one-step mechanism is dominated by
 
-Substitution (Theorem 5.4, v36: Theorem 6.4, for in-expansion; Theorem 1/2 for
-out-expansion):
+    P = sum_k pi[k] N(-2k, sigma^2)
+    Q = sum_k pi[k] N(+2k, sigma^2).
 
-    K   = min(K_in, K_out)
-    q_0 = 1,   q_d = 1 - prod_{l=d..r} (1 - p2^l)^{K^{l-1}}      (Eq. 43)
-    n_0 = 1,   n_d = 2*K_out^d ('in') or 2*K_in^d ('out')        (Eq. 44)
-               the factor 2 is the UNION-GRAPH correction: Assumption 5.2
-               bounds g u g', we can only cap g, and only s's own degree
-               doubles.  shell_sizes(..., union_safe=False) drops it.
-    sum_k pi_k z^k = prod_{d=0..r} (1 - p1 q_d + p1 q_d z)^{n_d} (Eq. 46)
-    P = sum_k pi_k N(-2k, sigma^2),  Q = sum_k pi_k N(+2k, sigma^2)  (Eq. 47)
-
-Insertion/removal (Theorem 4.5, out-expansion only), with a_d = p1 * q_d and
-n_d = K_in^d:
-
-    sum_j pi_j z^j = prod_{d=1..r} (1 - a_d + a_d z)^{n_d}       (Eq. 29)
-    P_ins = (+)_j pi_j N(-j, sigma^2)
-    Q_ins = (+)_j pi_j [ (1-p1) N(j, sigma^2) + p1 N(j+1, sigma^2) ]
-
-Composition and epsilon(delta) are delegated to Google's
-`dp_accounting.pld.privacy_loss_distribution`.  The pair handed to it is built
-to dominate the analytic pair, so the reported epsilon is an upper bound: cell
-masses are exact CDF differences, each cell takes the larger of its two edge
-losses (valid because monotonicity is asserted at construction), the
-denominator mass is num_mass * exp(-loss) <= the true mass, and all trimmed
-mass becomes an infinite-loss outcome.
+Here ``sigma`` is the Opacus noise multiplier; training adds Gaussian noise
+with standard deviation ``sigma*C`` after clipping each contribution at ``C``.
+The analytic pair is handed to Google ``dp_accounting`` for pessimistic
+connect-the-dots discretization, composition, and epsilon(delta).  Training
+orientation is intentionally not validated here; this module always constructs
+the in-expansion shell law.
 """
 
 from dataclasses import asdict, dataclass
 import math
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence
 
 import numpy as np
 
-# Mass below these floors is dropped to the infinite-loss outcome, which is
-# pessimistic — the choice of floor cannot make epsilon an underestimate.
-_COMPONENT_MASS_FLOOR = 1e-14
-_CELL_MASS_FLOOR = 1e-18
+from .privacy_loss import DoubleMixtureGaussianPrivacyLoss
 
 
 def _q_products(p2: float, r: int, K: int) -> List[float]:
-    """q_0..q_r from Eq. (3) / (43): the multiplicative path-retention bounds.
-
-    q_0 = 1 and q_d = 1 - prod_{l=d..r} (1 - p2^l)^{K^{l-1}} for d >= 1.  The
-    product is taken in log space so that large K^{l-1} exponents stay stable.
-    """
+    """Path-retention bounds q_0..q_r from Theorem 5.4."""
     q = [1.0]
     for d in range(1, r + 1):
         if p2 >= 1.0:
             q.append(1.0)
             continue
-        log_keep = sum((K ** (l - 1)) * math.log1p(-(p2 ** l))
-                       for l in range(d, r + 1))
+        log_keep = sum((K ** (level - 1)) * math.log1p(-(p2 ** level))
+                       for level in range(d, r + 1))
         q.append(1.0 - math.exp(log_keep))
     return q
 
 
 def _binom_pmf(n: int, p: float) -> np.ndarray:
-    """pmf of Binomial(n, p) as a length-(n+1) array; exact at p in {0, 1}."""
+    """Binomial(n, p) PMF, including exact endpoint behavior."""
     if p <= 0.0:
         out = np.zeros(n + 1)
         out[0] = 1.0
@@ -78,401 +47,107 @@ def _binom_pmf(n: int, p: float) -> np.ndarray:
         out[n] = 1.0
         return out
     from scipy.stats import binom
-    pmf = binom.pmf(np.arange(n + 1), n, p)
-    pmf = np.clip(pmf, 0.0, None)
+    pmf = np.clip(binom.pmf(np.arange(n + 1), n, p), 0.0, None)
     return pmf / pmf.sum()
 
 
-def shell_sizes(r: int, K_in: int, K_out: Optional[int] = None,
-                direction: str = 'in', union_safe: bool = True) -> List[int]:
-    """n_0..n_r, the per-distance shell sizes of the substitution pairs.
+def shell_sizes(r: int, K_out: int, union_safe: bool = True) -> List[int]:
+    """In-expansion shell bounds n_0..n_r.
 
-    n_0 = 1 always (the substituted vertex itself as a root).  For d >= 1:
-
-        direction='in'   n_d = K_out^d   (Eq. 44) — a substituted vertex s
-                         reaches a root v only if v is in s's FORWARD
-                         neighbourhood, whose d-th shell has size <= K_out^d.
-        direction='out'  n_d = K_in^d    — the mirror statement.
-
-    UNION-GRAPH CORRECTION (`union_safe`, the default)
-    --------------------------------------------------
-    Assumption 5.2 bounds the degrees of the UNION H = g u g', not of the single
-    graph we hold.  `cap_degrees` can only enforce a bound on g; g' is the
-    counterfactual.  If both are K-capped then H is 2K-capped at the substituted
-    vertex s, so the bound the theorem consumes is 2K, not K.
-
-    The correction is a factor of 2 per shell, NOT (2K)^d.  Definition 5.1 puts
-    E(sym-diff)E' inside ({s} x V) u (V x {s}), so for u,w != s the arc (u,w) is
-    in E iff it is in E' — every arc of H between two non-s vertices is common,
-    and only s's own out-degree doubles.  A shortest path from s never revisits
-    s, so only its FIRST step sees the inflated degree:
-
-        n_d <= 2*K_out * K_out^(d-1) = 2*K_out^d
-
-    n_0 stays 1: s is a single vertex in both graphs.  q_d is unaffected
-    whenever K_in <= K_out, because the backward path count from v never steps
-    out of s and so carries no factor of 2.
-
-    Cost, measured: 1.35x-2.69x epsilon depending on p2 and r (the sparse arm
-    pays least), equivalently a (1+2A)/(1+A) multiplier on the required sigma
-    with A = sum_{d>=1} n_d q_d.  At r=1 it is exactly one step down the p2
-    grid: doubling K and halving p2 leave epsilon identical.
-
-    Pass union_safe=False to recover the pre-correction bound.  That is the
-    right choice only for reproducing older numbers, or if the theory is
-    restated to bound g rather than g u g'.
+    The default factor two is the union-graph correction: only the substituted
+    node's first step can double, hence n_d = 2*K_out**d rather than (2K)^d.
     """
-    if direction not in ('in', 'out'):
-        raise ValueError(f"direction must be 'in' or 'out', got {direction!r}")
-    base = (K_out if K_out is not None else K_in) if direction == 'in' else K_in
+    if r < 0 or K_out < 1:
+        raise ValueError("need r >= 0 and K_out >= 1")
     factor = 2 if union_safe else 1
-    return [1] + [factor * base ** d for d in range(1, r + 1)]
+    return [1] + [factor * K_out ** d for d in range(1, r + 1)]
 
 
-def sparsegnn_mixture_weights(p1: float, p2: float, r: int, K_in: int,
-                              K_out: Optional[int] = None,
-                              direction: str = 'in',
-                              union_safe: bool = True) -> np.ndarray:
-    """Mixture weights of the substitution pairs (Eq. 46).
-
-    pi is the law of J = sum_d Binomial(n_d, p1 q_d); length N_r + 1.
-    """
+def sparsegnn_mixture_weights(
+    p1: float,
+    p2: float,
+    r: int,
+    K_in: int,
+    K_out: Optional[int] = None,
+    union_safe: bool = True,
+) -> np.ndarray:
+    """Theorem 5.4 mixture weights for in-expansion."""
     if not (0.0 <= p1 <= 1.0 and 0.0 <= p2 <= 1.0):
         raise ValueError("p1 and p2 must lie in [0, 1]")
     if r < 0 or K_in < 1:
         raise ValueError("need r >= 0 and K_in >= 1")
-    K = min(K_in, K_out if K_out is not None else K_in)
-    q = _q_products(p2, r, K)
-    n = shell_sizes(r, K_in, K_out, direction=direction,
-                    union_safe=union_safe)
-
-    pi = np.array([1.0])
-    for d in range(0, r + 1):
-        pi = np.convolve(pi, _binom_pmf(n[d], p1 * q[d]))
-    pi = np.clip(pi, 0.0, None)
-    pi /= pi.sum()
-    return pi
-
-
-def thm4_fiber_weights(p1: float, p2: float, r: int, K_in: int,
-                       K_out: Optional[int] = None) -> np.ndarray:
-    """Fiber weights of the Theorem 4.5 marked mixture: sum_d Binomial(n_d, a_d).
-
-    Applies to direction='out' only — Theorem 4.5 has no in-expansion
-    counterpart.
-    """
-    if not (0.0 <= p1 <= 1.0 and 0.0 <= p2 <= 1.0):
-        raise ValueError("p1 and p2 must lie in [0, 1]")
-    if r < 0 or K_in < 1:
-        raise ValueError("need r >= 0 and K_in >= 1")
-    K = min(K_in, K_out if K_out is not None else K_in)
-    pi = np.array([1.0])
-    for d in range(1, r + 1):
-        if p2 >= 1.0:
-            qx = 1.0
-        else:
-            log_keep = sum((K ** (l - 1)) * math.log1p(-(p2 ** l))
-                           for l in range(d, r + 1))
-            qx = 1.0 - math.exp(log_keep)
-        pi = np.convolve(pi, _binom_pmf(K_in ** d, p1 * qx))
-    pi = np.clip(pi, 0.0, None)
-    pi /= pi.sum()
-    return pi
+    K_out = K_in if K_out is None else K_out
+    if K_out < 1:
+        raise ValueError("K_out must be at least one")
+    q = _q_products(p2, r, min(K_in, K_out))
+    sizes = shell_sizes(r, K_out, union_safe=union_safe)
+    weights = np.array([1.0])
+    for n_d, q_d in zip(sizes, q):
+        weights = np.convolve(weights, _binom_pmf(n_d, p1 * q_d))
+    weights = np.clip(weights, 0.0, None)
+    return weights / weights.sum()
 
 
-# ══ certified-pessimistic PLD construction ════════════════════════════════════
-
-def _mixture_cdf(x: np.ndarray, means: Sequence[float],
-                 weights: Sequence[float], sigma: float) -> np.ndarray:
-    from scipy.special import ndtr
-    out = np.zeros_like(x, dtype=float)
-    for mu, w in zip(means, weights):
-        out += w * ndtr((x - mu) / sigma)
-    return out
-
-
-def _mixture_logpdf(x: np.ndarray, means: Sequence[float],
-                    weights: Sequence[float], sigma: float) -> np.ndarray:
-    const = math.log(sigma * math.sqrt(2.0 * math.pi))
-    out = np.full_like(x, -np.inf, dtype=float)
-    for mu, w in zip(means, weights):
-        if w <= 0.0:
-            continue
-        out = np.logaddexp(
-            out, math.log(w) - 0.5 * ((x - mu) / sigma) ** 2 - const)
-    return out
-
-
-def _pld_from_fibers(
-    fibers: Sequence[Tuple[float, Sequence[float], Sequence[float],
-                           Sequence[float], Sequence[float]]],
-    sigma: float,
-    discretization: float,
-    n_sigma: float = 10.0,
-    atoms_per_sigma: float = 400.0,
-    cell_mass_floor: float = _CELL_MASS_FLOOR,
+def mixture_gaussian_pld(
+    weights: Sequence[float], sigma: float, grid: float = 1e-4,
 ):
-    """dp_accounting PLD dominating the marked sum of (Num_f, Den_f) fibers.
+    """Build a pessimistic dp_accounting PLD from integer-mark weights.
 
-    Each fiber is (weight, num_means, num_weights, den_means, den_weights).
-    Fibers are disjoint, so the fiber weight cancels out of the privacy loss
-    and only scales the mass (Theorem 4.4); one fiber of weight 1 is the plain
-    unmarked pair.
+    Clipping and noise both scale by ``C`` during training, so normalization by
+    ``C`` leaves mixture centers ``+-2k`` and Gaussian standard deviation
+    ``sigma``.
     """
-    from dp_accounting.pld import privacy_loss_distribution as _PLD
+    from dp_accounting.pld.privacy_loss_distribution import (
+        PrivacyLossDistribution, _create_pld_pmf_from_additive_noise)
 
-    log_upper = {}
-    log_lower = {}
-    inf_mass = 0.0          # num mass at loss = +infinity
-    lower_total = 0.0       # accumulated den mass placed so far
+    weights = np.asarray(weights, dtype=float)
+    if weights.ndim != 1 or not len(weights):
+        raise ValueError("weights must be a non-empty one-dimensional distribution")
+    if np.any(~np.isfinite(weights)) or np.any(weights < 0):
+        raise ValueError("weights must be finite and nonnegative")
+    if not math.isclose(float(weights.sum()), 1.0, rel_tol=1e-9, abs_tol=1e-12):
+        raise ValueError("weights must sum to one")
+    if not math.isfinite(sigma) or sigma <= 0:
+        raise ValueError("sigma must be finite and positive")
+    if not math.isfinite(grid) or grid <= 0:
+        raise ValueError("grid must be finite and positive")
 
-    for f, (w_f, num_means, num_w, den_means, den_w) in enumerate(fibers):
-        if w_f <= 0.0:
-            continue
-        lo = min(min(num_means), min(den_means)) - n_sigma * sigma
-        hi = max(max(num_means), max(den_means)) + n_sigma * sigma
-        n_atoms = int(min(2_000_000,
-                          max(2000, (hi - lo) * atoms_per_sigma / sigma)))
-        edges = np.linspace(lo, hi, n_atoms + 1)
-
-        num_mass = w_f * np.diff(_mixture_cdf(edges, num_means, num_w, sigma))
-        edge_loss = (_mixture_logpdf(edges, num_means, num_w, sigma)
-                     - _mixture_logpdf(edges, den_means, den_w, sigma))
-        d = np.diff(edge_loss)
-        if not ((d <= 1e-9).all() or (d >= -1e-9).all()):
-            raise AssertionError(
-                "edge-loss sequence is not monotone; the per-cell endpoint "
-                "maximum is not a certified bound for this pair")
-        cell_loss = np.maximum(edge_loss[:-1], edge_loss[1:])
-
-        # Grid tails (num mass beyond [lo, hi]) go to the infinity outcome.
-        inf_mass += max(0.0, w_f - float(num_mass.sum()))
-
-        keep = num_mass >= cell_mass_floor
-        inf_mass += float(num_mass[~keep].sum())
-        for i in np.flatnonzero(keep):
-            m = float(num_mass[i])
-            lm = math.log(m)
-            log_upper[(f, int(i))] = lm
-            log_lower[(f, int(i))] = lm - float(cell_loss[i])
-            lower_total += m * math.exp(-float(cell_loss[i]))
-
-    if inf_mass > 0.0:
-        log_upper['inf'] = math.log(inf_mass)      # absent from lower: loss=+inf
-    deficit = max(0.0, 1.0 - lower_total)
-    if deficit > 0.0:
-        log_lower['rest'] = math.log(deficit)      # absent from upper: harmless
-
-    # symmetric=True: this helper builds one direction and callers handle
-    # pairing.  With symmetric=False dp_accounting also derives the swapped
-    # direction from these dicts, where 'rest' becomes real infinity mass and
-    # epsilon collapses to inf.
-    return _PLD.from_two_probability_mass_functions(
-        log_lower, log_upper, pessimistic_estimate=True,
-        value_discretization_interval=discretization, symmetric=True)
+    support = np.flatnonzero(weights > 0)
+    if support.size == 1 and int(support[0]) == 0:
+        return PrivacyLossDistribution.identity(grid)
+    probabilities = weights[support]
+    sensitivities = 2.0 * support.astype(float)
+    privacy_loss = DoubleMixtureGaussianPrivacyLoss(
+        standard_deviation=sigma,
+        sensitivities_upper=sensitivities,
+        sensitivities_lower=sensitivities,
+        sampling_probs_upper=probabilities,
+        sampling_probs_lower=probabilities,
+        pessimistic_estimate=True,
+    )
+    pmf = _create_pld_pmf_from_additive_noise(
+        privacy_loss,
+        pessimistic_estimate=True,
+        value_discretization_interval=grid,
+        use_connect_dots=True,
+    )
+    return PrivacyLossDistribution(pmf)
 
 
-# ══ epsilon entry points ══════════════════════════════════════════════════════
-
-def _substitution_pld_from_weights(pi, sigma, grid, n_sigma, atoms_per_sigma):
-    """Single-step substitution PLD from already-prepared mixture weights."""
-    kept = np.flatnonzero(pi >= _COMPONENT_MASS_FLOOR)
-    weights = [float(pi[k]) for k in kept]
-    p_means = [-2.0 * float(k) for k in kept]
-    q_means = [+2.0 * float(k) for k in kept]
-    return _pld_from_fibers(
-        [(1.0, p_means, weights, q_means, weights)], sigma,
-        discretization=grid, n_sigma=n_sigma, atoms_per_sigma=atoms_per_sigma)
-
-
-def _substitution_pld(p1, p2, r, K_in, K_out, sigma, direction, grid,
-                      n_sigma, atoms_per_sigma):
-    """Single-step PLD for the substitution pair (Thm 6.4 / Thm 1-2)."""
-    return _substitution_pld_from_weights(
-        sparsegnn_mixture_weights(p1, p2, r, K_in, K_out, direction=direction),
-        sigma, grid, n_sigma, atoms_per_sigma)
-
-
-def _substitution_pld(p1, p2, r, K_in, K_out, sigma, direction, grid,
-                      n_sigma, atoms_per_sigma, union_safe=True):
-    """Single-step PLD for the substitution pair (Thm 5.4 / Thm 1-2)."""
-    pi = sparsegnn_mixture_weights(p1, p2, r, K_in, K_out, direction=direction,
-                                   union_safe=union_safe)
-    return _substitution_pld_from_weights(
-        pi, sigma, grid, n_sigma, atoms_per_sigma)
-
-
-def _compose_schedule(base_plds, steps, eval_fn):
-    """{t: eval_fn(compositions)} over sorted checkpoints.
-
-    Single-step PLDs are advanced in lockstep by one incremental compose per
-    gap, so the whole schedule costs about one FFT per checkpoint.
-    """
+def _compose_schedule(base_pld, steps, delta: float):
     out = {}
-    cur = [None] * len(base_plds)
+    current = None
     last = 0
-    for t in sorted({int(s) for s in steps}):
-        if t < 1:
-            raise ValueError(f"checkpoints must be >= 1, got {t}")
-        gap = t - last
-        if gap > 0:
-            for i, base in enumerate(base_plds):
-                block = base if gap == 1 else base.self_compose(gap)
-                cur[i] = block if cur[i] is None else cur[i].compose(block)
-            last = t
-        out[t] = eval_fn(cur)
+    for step in sorted({int(value) for value in steps}):
+        if step < 1:
+            raise ValueError(f"checkpoints must be >= 1, got {step}")
+        gap = step - last
+        if gap:
+            block = base_pld if gap == 1 else base_pld.self_compose(gap)
+            current = block if current is None else current.compose(block)
+            last = step
+        out[step] = current.get_epsilon_for_delta(delta)
     return out
-
-
-def sparsegnn_substitution_epsilon_schedule(
-    p1: float,
-    p2: float,
-    r: int,
-    K_in: int,
-    sigma: float,
-    steps,
-    delta: float,
-    K_out: Optional[int] = None,
-    direction: str = 'in',
-    grid: float = 1e-4,
-    n_sigma: float = 10.0,
-    atoms_per_sigma: float = 400.0,
-    union_safe: bool = True,
-):
-    """{t: epsilon} per checkpoint under node substitution.
-
-    Each entry is a valid (eps(t), delta) guarantee for the iterate released
-    at step t.
-    """
-    base = _substitution_pld(p1, p2, r, K_in, K_out, sigma, direction, grid,
-                             n_sigma, atoms_per_sigma, union_safe=union_safe)
-    return _compose_schedule(
-        [base], steps, lambda cur: cur[0].get_epsilon_for_delta(delta))
-
-
-def sparsegnn_substitution_epsilon(
-    p1: float,
-    p2: float,
-    r: int,
-    K_in: int,
-    sigma: float,
-    steps: int,
-    delta: float,
-    K_out: Optional[int] = None,
-    direction: str = 'in',
-    grid: float = 1e-4,
-    n_sigma: float = 10.0,
-    atoms_per_sigma: float = 400.0,
-    union_safe: bool = True,
-) -> float:
-    """(eps, delta) for T steps under node substitution.
-
-    Theorem 6.4 for direction='in', Theorem 1/2 for 'out'.  One orientation
-    suffices: Q is P reflected through the origin, so the pair is its own
-    reverse.  `grid` is dp_accounting's value_discretization_interval.
-    """
-    pld = _substitution_pld(p1, p2, r, K_in, K_out, sigma, direction, grid,
-                            n_sigma, atoms_per_sigma, union_safe=union_safe)
-    return pld.self_compose(steps).get_epsilon_for_delta(delta)
-
-
-def _thm4_plds_from_weights(pi, p1, sigma, grid, n_sigma, atoms_per_sigma):
-    """Theorem 4.5 PLDs from already-prepared marked-mixture weights."""
-    kept = [(j, float(pij)) for j, pij in enumerate(pi)
-            if pij >= _COMPONENT_MASS_FLOOR]
-    plds = []
-    for swap in (False, True):
-        fibers = []
-        for j, pij in kept:
-            p_side = ([-float(j)], [1.0])
-            q_side = ([float(j), float(j) + 1.0], [1.0 - p1, p1])
-            num, den = (q_side, p_side) if swap else (p_side, q_side)
-            fibers.append((pij, num[0], num[1], den[0], den[1]))
-        plds.append(_pld_from_fibers(
-            fibers, sigma, discretization=grid, n_sigma=n_sigma,
-            atoms_per_sigma=atoms_per_sigma))
-    return plds
-
-
-def _thm4_plds(p1, p2, r, K_in, K_out, sigma, grid, n_sigma, atoms_per_sigma):
-    """Single-step PLDs (insertion direction, removal direction) for Thm 4.5."""
-    pi = thm4_fiber_weights(p1, p2, r, K_in, K_out)
-    return _thm4_plds_from_weights(
-        pi, p1, sigma, grid, n_sigma, atoms_per_sigma)
-
-
-def sparsegnn_thm4_epsilon_schedule(
-    p1: float,
-    p2: float,
-    r: int,
-    K_in: int,
-    sigma: float,
-    steps,
-    delta: float,
-    K_out: Optional[int] = None,
-    grid: float = 1e-4,
-    n_sigma: float = 10.0,
-    atoms_per_sigma: float = 400.0,
-):
-    """{t: epsilon} per checkpoint for the Theorem 4.5 pair (max over both
-    orientations)."""
-    plds = _thm4_plds(p1, p2, r, K_in, K_out, sigma, grid, n_sigma,
-                      atoms_per_sigma)
-    return _compose_schedule(
-        plds, steps,
-        lambda cur: max(c.get_epsilon_for_delta(delta) for c in cur))
-
-
-def sparsegnn_thm4_epsilon(
-    p1: float,
-    p2: float,
-    r: int,
-    K_in: int,
-    sigma: float,
-    steps: int,
-    delta: float,
-    K_out: Optional[int] = None,
-    grid: float = 1e-4,
-    n_sigma: float = 10.0,
-    atoms_per_sigma: float = 400.0,
-) -> float:
-    """(eps, delta) for T steps via the Theorem 4.5 marked pair, out-expansion
-    only.
-
-    The pair is not symmetric, so both orientations (insertion and removal) are
-    composed and the max returned.
-    """
-    plds = _thm4_plds(p1, p2, r, K_in, K_out, sigma, grid, n_sigma,
-                      atoms_per_sigma)
-    return max(p.self_compose(steps).get_epsilon_for_delta(delta)
-               for p in plds)
-
-
-def resolve_sparsegnn_theorem(direction: str, theorem: str = "auto") -> str:
-    """Resolve the applicable SparseGNN dominating-pair theorem selector."""
-    if direction not in ("in", "out"):
-        raise ValueError(f"direction must be 'in' or 'out', got {direction!r}")
-    if theorem not in ("auto", "substitution", "thm45"):
-        raise ValueError(
-            "theorem must be 'auto', 'substitution', or 'thm45', "
-            f"got {theorem!r}")
-    resolved = "substitution" if theorem == "auto" and direction == "in" else theorem
-    if theorem == "auto" and direction == "out":
-        resolved = "thm45"
-    if resolved == "thm45" and direction != "out":
-        raise ValueError(
-            "Theorem 4.5 is stated for out-expansion (Algorithm 4) only; "
-            "use theorem='substitution' for in-expansion.")
-    return resolved
-
-
-def sparsegnn_theorem_label(direction: str, theorem: str = "auto") -> str:
-    """Reporting label for the selected applicable SparseGNN theorem."""
-    resolved = resolve_sparsegnn_theorem(direction, theorem)
-    if resolved == "thm45":
-        return "thm4.5-insertion-removal"
-    return ("thm6.4-substitution" if direction == "in"
-            else "thm1.2-substitution")
 
 
 def sparsegnn_epsilon_schedule(
@@ -484,22 +159,13 @@ def sparsegnn_epsilon_schedule(
     steps,
     delta: float,
     K_out: Optional[int] = None,
-    direction: str = "in",
-    theorem: str = "auto",
     grid: float = 1e-4,
-    n_sigma: float = 10.0,
-    atoms_per_sigma: float = 400.0,
     union_safe: bool = True,
 ):
-    """Checkpoint epsilon schedule under the selected applicable theorem."""
-    if resolve_sparsegnn_theorem(direction, theorem) == "thm45":
-        return sparsegnn_thm4_epsilon_schedule(
-            p1, p2, r, K_in, sigma, steps, delta, K_out=K_out, grid=grid,
-            n_sigma=n_sigma, atoms_per_sigma=atoms_per_sigma)
-    return sparsegnn_substitution_epsilon_schedule(
-        p1, p2, r, K_in, sigma, steps, delta, K_out=K_out,
-        direction=direction, grid=grid, n_sigma=n_sigma,
-        atoms_per_sigma=atoms_per_sigma, union_safe=union_safe)
+    weights = sparsegnn_mixture_weights(
+        p1, p2, r, K_in, K_out, union_safe=union_safe)
+    return _compose_schedule(
+        mixture_gaussian_pld(weights, sigma, grid), steps, delta)
 
 
 def sparsegnn_epsilon(
@@ -511,35 +177,22 @@ def sparsegnn_epsilon(
     steps: int,
     delta: float,
     K_out: Optional[int] = None,
-    direction: str = "in",
-    theorem: str = "auto",
     grid: float = 1e-4,
-    n_sigma: float = 10.0,
-    atoms_per_sigma: float = 400.0,
     union_safe: bool = True,
 ) -> float:
-    """Final-iterate epsilon under the selected applicable theorem."""
-    if resolve_sparsegnn_theorem(direction, theorem) == "thm45":
-        return sparsegnn_thm4_epsilon(
-            p1, p2, r, K_in, sigma, steps, delta, K_out=K_out, grid=grid,
-            n_sigma=n_sigma, atoms_per_sigma=atoms_per_sigma)
-    return sparsegnn_substitution_epsilon(
-        p1, p2, r, K_in, sigma, steps, delta, K_out=K_out,
-        direction=direction, grid=grid, n_sigma=n_sigma,
-        atoms_per_sigma=atoms_per_sigma, union_safe=union_safe)
+    return sparsegnn_epsilon_schedule(
+        p1, p2, r, K_in, sigma, [steps], delta, K_out=K_out,
+        grid=grid, union_safe=union_safe)[int(steps)]
 
 
 @dataclass(frozen=True)
 class SparseGNNNoiseCalibration:
-    """Noise calibration from a certified SparseGNN PLD inversion."""
-
     noise_multiplier: float
     noise_std: float
     noise_variance: float
     epsilon: float
     target_epsilon: float
     delta: float
-    theorem: str
     evaluations: int
 
     def as_dict(self) -> dict:
@@ -548,23 +201,31 @@ class SparseGNNNoiseCalibration:
 
 def _positive_finite(name: str, value: float) -> float:
     value = float(value)
-    if not math.isfinite(value) or value <= 0.0:
+    if not math.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be finite and positive")
     return value
 
 
 def calibrate_sparsegnn_noise(
-    *, target_epsilon: float, target_delta: float,
-    p1: float, p2: float, r: int, K_in: int, K_out: int,
-    steps: int, clip: float = 1.0, direction: str = "in",
-    theorem: str = "auto", grid: float = 1e-4,
-    sigma_rtol: float = 1e-3, sigma_atol: float = 1e-6,
-    max_sigma: float = 1e6, union_safe: bool = True,
+    *,
+    target_epsilon: float,
+    target_delta: float,
+    p1: float,
+    p2: float,
+    r: int,
+    K_in: int,
+    K_out: int,
+    steps: int,
+    clip: float = 1.0,
+    grid: float = 1e-4,
+    sigma_rtol: float = 1e-3,
+    sigma_atol: float = 1e-6,
+    max_sigma: float = 1e6,
+    union_safe: bool = True,
 ) -> SparseGNNNoiseCalibration:
-    """Find the smallest known-safe multiplier for a SparseGNN privacy budget."""
+    """Find the smallest known-safe Opacus noise multiplier."""
     target_epsilon = _positive_finite("target_epsilon", target_epsilon)
-    target_delta = float(target_delta)
-    if not math.isfinite(target_delta) or not 0.0 < target_delta < 1.0:
+    if not math.isfinite(target_delta) or not 0 < target_delta < 1:
         raise ValueError("target_delta must be finite and lie in (0, 1)")
     if not isinstance(steps, int) or isinstance(steps, bool) or steps < 1:
         raise ValueError("steps must be a positive integer")
@@ -573,40 +234,20 @@ def calibrate_sparsegnn_noise(
     sigma_rtol = _positive_finite("sigma_rtol", sigma_rtol)
     sigma_atol = _positive_finite("sigma_atol", sigma_atol)
     max_sigma = _positive_finite("max_sigma", max_sigma)
-    if max_sigma < 1.0:
+    if max_sigma < 1:
         raise ValueError("max_sigma must be at least 1")
 
-    resolved = resolve_sparsegnn_theorem(direction, theorem)
-    if resolved == "substitution":
-        weights = sparsegnn_mixture_weights(
-            p1, p2, r, K_in, K_out, direction=direction,
-            union_safe=union_safe)
-
-        def build(sigma):
-            return _substitution_pld_from_weights(
-                weights, sigma, grid, n_sigma=10.0, atoms_per_sigma=400.0)
-
-        def epsilon_from_pld(pld):
-            return pld.self_compose(steps).get_epsilon_for_delta(target_delta)
-    else:
-        weights = thm4_fiber_weights(p1, p2, r, K_in, K_out)
-
-        def build(sigma):
-            return _thm4_plds_from_weights(
-                weights, p1, sigma, grid, n_sigma=10.0, atoms_per_sigma=400.0)
-
-        def epsilon_from_pld(plds):
-            return max(p.self_compose(steps).get_epsilon_for_delta(target_delta)
-                       for p in plds)
-
+    weights = sparsegnn_mixture_weights(
+        p1, p2, r, K_in, K_out, union_safe=union_safe)
     values = {}
 
     def epsilon_at(sigma):
         if sigma not in values:
-            epsilon = float(epsilon_from_pld(build(sigma)))
+            epsilon = float(
+                mixture_gaussian_pld(weights, sigma, grid)
+                .self_compose(steps).get_epsilon_for_delta(target_delta))
             if math.isnan(epsilon):
-                raise RuntimeError(
-                    f"SparseGNN accountant returned NaN at sigma={sigma}")
+                raise RuntimeError(f"SparseGNN accountant returned NaN at sigma={sigma}")
             values[sigma] = epsilon
         return values[sigma]
 
@@ -616,18 +257,17 @@ def calibrate_sparsegnn_noise(
         low = high
         if high >= max_sigma:
             raise RuntimeError(
-                "failed to bracket a SparseGNN noise multiplier at "
+                f"failed to bracket a SparseGNN noise multiplier at "
                 f"max_sigma={max_sigma}")
-        high = min(high * 2.0, max_sigma)
+        high = min(high * 2, max_sigma)
         high_epsilon = epsilon_at(high)
-
     while high - low > max(sigma_atol, sigma_rtol * high):
-        mid = (low + high) / 2.0
-        mid_epsilon = epsilon_at(mid)
-        if math.isinf(mid_epsilon) or mid_epsilon > target_epsilon:
-            low = mid
+        midpoint = (low + high) / 2
+        midpoint_epsilon = epsilon_at(midpoint)
+        if math.isinf(midpoint_epsilon) or midpoint_epsilon > target_epsilon:
+            low = midpoint
         else:
-            high, high_epsilon = mid, mid_epsilon
+            high, high_epsilon = midpoint, midpoint_epsilon
 
     noise_std = high * clip
     return SparseGNNNoiseCalibration(
@@ -637,26 +277,21 @@ def calibrate_sparsegnn_noise(
         epsilon=high_epsilon,
         target_epsilon=target_epsilon,
         delta=target_delta,
-        theorem=sparsegnn_theorem_label(direction, resolved),
         evaluations=len(values),
     )
 
 
-def naive_opacus_epsilon(sigma: float, sample_rate: float, steps: int,
-                         delta: float, mechanism: str = 'prv') -> float:
-    """Opacus epsilon for a Poisson-subsampled Gaussian at rate `sample_rate`.
-
-    This is what accounting would claim if a node only influenced its own
-    subgraph — it ignores that a node appears in neighbours' expansions, so it
-    is NOT a valid node-level guarantee; it is a floor showing the price of
-    graph structure.  PRV by default, RDP fallback.
-    """
+def naive_opacus_epsilon(
+    sigma: float, sample_rate: float, steps: int, delta: float,
+    mechanism: str = "prv",
+) -> float:
+    """Conventional subsampled-Gaussian comparator, not a graph guarantee."""
     from opacus.accountants import create_accountant
     try:
         accountant = create_accountant(mechanism=mechanism)
         accountant.history = [(sigma, sample_rate, steps)]
         return accountant.get_epsilon(delta=delta)
     except Exception:
-        accountant = create_accountant(mechanism='rdp')
+        accountant = create_accountant(mechanism="rdp")
         accountant.history = [(sigma, sample_rate, steps)]
         return accountant.get_epsilon(delta=delta)

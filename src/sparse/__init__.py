@@ -27,8 +27,7 @@ from .base_mechanism import BaseMechanism
 from .gnn_mechanism import GNNMechanism
 from .accounting import (
     SparseGNNNoiseCalibration, calibrate_sparsegnn_noise,
-    resolve_sparsegnn_theorem, sparsegnn_epsilon, sparsegnn_epsilon_schedule,
-    sparsegnn_theorem_label,
+    mixture_gaussian_pld, sparsegnn_epsilon, sparsegnn_epsilon_schedule,
 )
 
 __all__ = [
@@ -46,9 +45,8 @@ __all__ = [
     "BaseMechanism",
     "SparseGNNNoiseCalibration",
     "calibrate_sparsegnn_noise",
-    "resolve_sparsegnn_theorem",
+    "mixture_gaussian_pld",
     "sparsegnn_epsilon",
     "sparsegnn_epsilon_schedule",
-    "sparsegnn_theorem_label",
     "GNNMechanism",
 ]

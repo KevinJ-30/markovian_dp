@@ -188,11 +188,6 @@ def cap_degrees(
     passes only REMOVE arcs, so the out-cap cannot re-violate the in-cap.  The
     capped graph is fixed once before training (one-time preprocessing).
 
-    Caveat (same as Daigavane et al. 2021): under node insertion/removal the
-    capping randomness at a surviving node can depend on the inserted node's
-    arcs, so strictly the accounting applies to the capped graph as given.  We
-    follow the standard practice of capping once and accounting with (K_in,
-    K_out) on the result.
 
     Returns a new edge_index [2, E'] (original node ids, arbitrary order).
     """

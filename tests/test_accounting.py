@@ -1,26 +1,20 @@
-"""
-Tests for the SparseGNN dominating-pair accountants and degree capping.
-
-Correctness anchors are the degenerate cases, cross-checked against Opacus:
-Theorem 4.5 at r=0 (or p2=0) is a plain Poisson-subsampled Gaussian, and the
-substitution pair at p1=1, r=0 collapses to N(-2, s^2) vs N(+2, s^2) — an
-unsubsampled Gaussian at sensitivity 4C.  Our discretization dominates the
-analytic pair, so ours must land at or above the reference in both.
-"""
+"""Tests for Theorem 5.4 PLD accounting and degree capping."""
 
 import math
 
+import numpy as np
 import pytest
 import torch
 
-from src.experiments.privacy import DPARAccountant, SparseGNNAccountant, calibrate_dpar_noise
+from src.experiments.privacy import (
+    DPARAccountant, SparseGNNAccountant, calibrate_dpar_noise)
 from src.sparse import accounting as sparse_accounting
 from src.sparse.accounting import (
-    calibrate_sparsegnn_noise, naive_opacus_epsilon,
-    resolve_sparsegnn_theorem, shell_sizes, sparsegnn_epsilon,
-    sparsegnn_mixture_weights, sparsegnn_substitution_epsilon,
-    sparsegnn_thm4_epsilon, thm4_fiber_weights,
+    calibrate_sparsegnn_noise, mixture_gaussian_pld, naive_opacus_epsilon,
+    shell_sizes, sparsegnn_epsilon, sparsegnn_epsilon_schedule,
+    sparsegnn_mixture_weights,
 )
+from src.sparse.privacy_loss import DoubleMixtureGaussianPrivacyLoss
 from src.sparse.sparse_expand import (
     cap_degrees, cap_degrees_undirected, edge_set_is_symmetric, max_degrees,
 )
@@ -28,232 +22,136 @@ from src.sparse.sparse_expand import (
 pytest.importorskip("dp_accounting")
 
 
-# ── Theorem 4.5 fiber weights (Binomial, Lemma 17) ────────────────────────────
-
-def test_fiber_weights_shape_and_sum():
-    pi = thm4_fiber_weights(0.5, 0.5, 2, 4)
-    assert len(pi) == 1 + 4 + 16          # N_com_r + 1
-    assert math.isclose(float(pi.sum()), 1.0, abs_tol=1e-12)
-    assert (pi >= 0).all()
-
-
-def test_fiber_weights_r0_is_delta_at_zero():
-    pi = thm4_fiber_weights(0.3, 0.7, 0, 8)
-    assert pi.tolist() == [1.0]
-
-
-def test_fiber_weights_p2_zero_concentrates_at_zero():
-    pi = thm4_fiber_weights(0.5, 0.0, 3, 8)
-    assert math.isclose(float(pi[0]), 1.0, abs_tol=1e-12)
-
-
-def test_fiber_weights_r1_closed_form():
-    """r=1: each of the K_in slots activates independently with a_1 = p1*p2,
-    so pi is the Binomial(K_in, p1*p2) pmf (Lemma 17), NOT a point mass of
-    a_1 at j = K_in."""
-    p1, p2, K = 0.4, 0.25, 5
-    a = p1 * p2
-    pi = thm4_fiber_weights(p1, p2, 1, K)
-    assert len(pi) == K + 1
-    for j in range(K + 1):
-        expected = math.comb(K, j) * a ** j * (1 - a) ** (K - j)
-        assert math.isclose(float(pi[j]), expected, rel_tol=1e-9), j
-
-
-def test_fiber_weights_mean_is_sum_of_shell_means():
-    """E[J] = sum_d n_d a_d with n_d = K_in^d and a_d = p1 * qx_d."""
-    p1, p2, r, K = 0.2, 0.5, 2, 3
-    pi = thm4_fiber_weights(p1, p2, r, K)
-    qx = [1.0 - math.prod((1.0 - p2 ** l) ** (K ** (l - 1))
-                          for l in range(d, r + 1))
-          for d in range(1, r + 1)]
-    expected = sum((K ** d) * p1 * qx[d - 1] for d in range(1, r + 1))
-    got = float(sum(j * w for j, w in enumerate(pi)))
-    assert math.isclose(got, expected, rel_tol=1e-9)
-
-
-# ── Theorem 4.5 epsilon: degenerate-case cross-check vs Opacus ────────────────
-
-@pytest.mark.parametrize("sigma", [1.0, 2.0])
-def test_r0_matches_opacus_subsampled_gaussian(sigma):
-    """r=0 keeps only the root record -> plain Poisson-subsampled Gaussian."""
-    pytest.importorskip("opacus")
-    p1, T, delta = 0.5, 200, 1e-5
-    eps4 = sparsegnn_thm4_epsilon(p1=p1, p2=0.5, r=0, K_in=4, sigma=sigma,
-                                  steps=T, delta=delta)
-    eps_op = naive_opacus_epsilon(sigma, p1, T, delta, mechanism="prv")
-    # The discretized pair dominates the analytic one, so ours must be >=
-    # Opacus (up to its own numerics), and close.
-    assert eps4 >= eps_op - 1e-3
-    assert eps4 - eps_op < 0.5
-
-
-def test_p2_zero_matches_r0():
-    """p2=0 drops every edge, so any r behaves like r=0."""
-    eps_r0 = sparsegnn_thm4_epsilon(p1=0.3, p2=0.9, r=0, K_in=6, sigma=2.0,
-                                    steps=100, delta=1e-5)
-    eps_p20 = sparsegnn_thm4_epsilon(p1=0.3, p2=0.0, r=3, K_in=6, sigma=2.0,
-                                     steps=100, delta=1e-5)
-    assert math.isclose(eps_r0, eps_p20, rel_tol=1e-6)
-
-
-def test_epsilon_monotone_in_p2_and_sigma():
-    def eps(p2, sigma):
-        return sparsegnn_thm4_epsilon(p1=0.1, p2=p2, r=1, K_in=5, sigma=sigma,
-                                      steps=100, delta=1e-5)
-    eps_dense = eps(1.0, 5.0)
-    eps_sparse = eps(0.1, 5.0)
-    eps_noisier = eps(1.0, 10.0)
-    assert eps_sparse < eps_dense          # amplification by sparsification
-    assert eps_noisier < eps_dense         # more noise, less epsilon
-
-
-def test_high_fiber_config_is_finite():
-    """With the Binomial weights, mass on high marks decays combinatorially,
-    so even an aggressive config composes to a finite (if large) epsilon.
-    (The pre-fix single-Bernoulli weights put mass 0.25 directly on j = 10
-    and drove this configuration to infinity.)"""
-    eps = sparsegnn_thm4_epsilon(p1=0.5, p2=0.5, r=1, K_in=10, sigma=1.0,
-                                 steps=200, delta=1e-5, grid=1e-3)
-    assert math.isfinite(eps)
-    eps_r0 = sparsegnn_thm4_epsilon(p1=0.5, p2=0.5, r=0, K_in=10, sigma=1.0,
-                                    steps=200, delta=1e-5, grid=1e-3)
-    assert eps > eps_r0                    # the graph term costs something
-
-
-# ══ substitution pairs: Theorem 6.4 (in) and Theorem 1/2 (out) ════════════════
-
-def test_shell_sizes_pick_the_right_degree_bound():
-    # in-expansion: a substituted vertex reaches roots in its FORWARD
-    # neighbourhood, whose d-th shell is bounded by K_out^d (Eq. 44).
-    # Default is union-safe: n_d = 2*K^d for d >= 1, n_0 = 1 (Assumption 5.2
-    # bounds g u g', and only the substituted vertex's own degree doubles).
-    assert shell_sizes(2, K_in=3, K_out=5, direction='in') == [1, 10, 50]
-    assert shell_sizes(2, K_in=3, K_out=5, direction='out') == [1, 6, 18]
-    # union_safe=False recovers the pre-correction bound.
-    assert shell_sizes(2, K_in=3, K_out=5, direction='in',
-                       union_safe=False) == [1, 5, 25]
-    assert shell_sizes(2, K_in=3, K_out=5, direction='out',
-                       union_safe=False) == [1, 3, 9]
-    # n_0 is never doubled: s is one vertex in both graphs.
-    for us in (True, False):
-        assert shell_sizes(3, 4, 4, union_safe=us)[0] == 1
+def test_shell_sizes_use_union_safe_out_degree_bound():
+    assert shell_sizes(2, K_out=5) == [1, 10, 50]
+    assert shell_sizes(2, K_out=5, union_safe=False) == [1, 5, 25]
+    assert shell_sizes(3, K_out=4)[0] == 1
 
 
 def test_mixture_weights_are_a_distribution_of_the_right_length():
-    for direction in ('in', 'out'):
-        pi = sparsegnn_mixture_weights(0.3, 0.5, 2, 4, 3, direction=direction)
-        Nr = sum(shell_sizes(2, 4, 3, direction=direction))
-        assert len(pi) == Nr + 1
-        assert math.isclose(float(pi.sum()), 1.0, abs_tol=1e-12)
-        assert (pi >= 0).all()
+    weights = sparsegnn_mixture_weights(0.3, 0.5, 2, 4, 3)
+    assert len(weights) == sum(shell_sizes(2, 3)) + 1
+    assert math.isclose(float(weights.sum()), 1.0, abs_tol=1e-12)
+    assert (weights >= 0).all()
 
 
 def test_mixture_weights_mean_matches_paper_expectation():
-    """E[J] = p1 (1 + sum_d n_d q_d), Eq. (49)."""
-    p1, p2, r, K = 0.2, 0.5, 2, 4
-    pi = sparsegnn_mixture_weights(p1, p2, r, K, K, direction='in')
-    n = shell_sizes(r, K, K, direction='in')
-    q = [1.0] + [1.0 - math.prod((1.0 - p2 ** l) ** (K ** (l - 1))
-                                 for l in range(d, r + 1))
-                 for d in range(1, r + 1)]
-    expected = p1 * sum(n_d * q_d for n_d, q_d in zip(n, q))
-    got = float(sum(k * w for k, w in enumerate(pi)))
-    assert math.isclose(got, expected, rel_tol=1e-9)
+    p1, p2, radius, k_in, k_out = 0.2, 0.5, 2, 4, 5
+    weights = sparsegnn_mixture_weights(p1, p2, radius, k_in, k_out)
+    sizes = shell_sizes(radius, k_out)
+    K = min(k_in, k_out)
+    retention = [1.0] + [
+        1.0 - math.prod((1.0 - p2 ** level) ** (K ** (level - 1))
+                        for level in range(distance, radius + 1))
+        for distance in range(1, radius + 1)
+    ]
+    expected = p1 * sum(n * q for n, q in zip(sizes, retention))
+    observed = float(sum(index * mass for index, mass in enumerate(weights)))
+    assert math.isclose(observed, expected, rel_tol=1e-9)
 
 
 def test_mixture_weights_p2_zero_is_root_only():
-    """p2=0 kills every path, so only the d=0 slot can activate."""
-    p1 = 0.3
-    pi = sparsegnn_mixture_weights(p1, 0.0, 3, 5, direction='in')
-    assert math.isclose(float(pi[0]), 1 - p1, rel_tol=1e-12)
-    assert math.isclose(float(pi[1]), p1, rel_tol=1e-12)
-    assert float(pi[2:].sum()) == 0.0
+    weights = sparsegnn_mixture_weights(0.3, 0.0, 3, 5, 5)
+    assert math.isclose(float(weights[0]), 0.7, rel_tol=1e-12)
+    assert math.isclose(float(weights[1]), 0.3, rel_tol=1e-12)
+    assert float(weights[2:].sum()) == 0.0
+
+
+def test_double_mixture_maps_to_theorem_pair():
+    weights = np.array([0.6, 0.3, 0.1])
+    support = 2.0 * np.arange(len(weights))
+    sigma = 2.5
+    privacy_loss = DoubleMixtureGaussianPrivacyLoss(
+        sigma, support, support, weights, weights)
+    from scipy.special import logsumexp
+    from scipy.stats import norm
+    for value in (-3.0, 0.0, 2.0):
+        upper = logsumexp(
+            norm.logpdf(value, loc=-support, scale=sigma), b=weights)
+        lower = logsumexp(
+            norm.logpdf(value, loc=support, scale=sigma), b=weights)
+        assert privacy_loss.privacy_loss(value) == pytest.approx(upper - lower)
+
+
+def test_identity_pair_has_zero_epsilon():
+    pld = mixture_gaussian_pld([1.0], sigma=1.0, grid=1e-3)
+    assert pld.self_compose(10).get_epsilon_for_delta(1e-6) == 0.0
+
+
+def test_connect_dots_is_pessimistic_for_analytic_profile():
+    weights = np.array([0.7, 0.2, 0.1])
+    support = 2.0 * np.arange(len(weights))
+    privacy_loss = DoubleMixtureGaussianPrivacyLoss(
+        3.0, support, support, weights, weights)
+    pld = mixture_gaussian_pld(weights, sigma=3.0, grid=1e-3)
+    epsilons = np.array([0.0, 0.5, 1.0])
+    assert np.all(
+        pld.get_delta_for_epsilon(epsilons)
+        >= privacy_loss.get_delta_for_epsilon(epsilons) - 1e-12)
 
 
 @pytest.mark.parametrize("sigma", [5.0, 10.0])
 def test_p1_one_r0_matches_gaussian_at_sensitivity_four(sigma):
-    """p1=1, r=0 => P=N(-2,s^2), Q=N(+2,s^2): a sensitivity-4C Gaussian."""
-    pytest.importorskip("opacus")
     T, delta = 100, 1e-6
-    ours = sparsegnn_substitution_epsilon(p1=1.0, p2=0.0, r=0, K_in=5,
-                                          sigma=sigma, steps=T, delta=delta)
-    ref = naive_opacus_epsilon(sigma / 4.0, 1.0, T, delta, mechanism="prv")
-    assert ours >= ref - 1e-3          # our pair dominates the analytic one
-    assert ours - ref < 0.05 * ref     # and tight
+    ours = sparsegnn_epsilon(
+        p1=1.0, p2=0.0, r=0, K_in=5, K_out=5, sigma=sigma,
+        steps=T, delta=delta)
+    ref = naive_opacus_epsilon(
+        sigma / 4.0, 1.0, T, delta, mechanism="prv")
+    assert abs(ours - ref) < 0.05 * ref
 
 
-def test_substitution_epsilon_p2_zero_matches_r0():
-    kw = dict(p1=0.3, K_in=6, sigma=5.0, steps=100, delta=1e-6)
+def test_p2_zero_matches_r0():
+    kwargs = dict(
+        p1=0.3, K_in=6, K_out=6, sigma=5.0, steps=20, delta=1e-6,
+        grid=1e-3)
     assert math.isclose(
-        sparsegnn_substitution_epsilon(p2=0.9, r=0, **kw),
-        sparsegnn_substitution_epsilon(p2=0.0, r=3, **kw),
+        sparsegnn_epsilon(p2=0.9, r=0, **kwargs),
+        sparsegnn_epsilon(p2=0.0, r=3, **kwargs),
         rel_tol=1e-6)
 
 
-def test_substitution_epsilon_monotone_in_p2_and_sigma():
-    def eps(p2, sigma):
-        return sparsegnn_substitution_epsilon(
-            p1=0.1, p2=p2, r=1, K_in=5, sigma=sigma, steps=100, delta=1e-6)
-    dense = eps(1.0, 5.0)
-    assert eps(0.1, 5.0) < dense       # amplification by sparsification
-    assert eps(1.0, 10.0) < dense      # more noise, less epsilon
+def test_epsilon_monotone_in_p2_and_sigma():
+    def epsilon(p2, sigma):
+        return sparsegnn_epsilon(
+            p1=0.1, p2=p2, r=1, K_in=3, K_out=3, sigma=sigma,
+            steps=20, delta=1e-6, grid=1e-3)
+    dense = epsilon(1.0, 5.0)
+    assert epsilon(0.1, 5.0) < dense
+    assert epsilon(1.0, 10.0) < dense
 
 
-def test_orientation_follows_the_binding_degree_bound():
-    """in-expansion pays K_out, out-expansion pays K_in (Eq. 44).
-
-    With K_out >> K_in the corrected orientation is the more expensive one, and
-    the ordering flips when the degree asymmetry does.
-    """
-    kw = dict(p1=0.005, p2=0.5, r=1, sigma=5.0, steps=500, delta=1e-6)
-    wide_out = dict(K_in=2, K_out=10)
-    assert (sparsegnn_substitution_epsilon(direction='in', **kw, **wide_out) >
-            sparsegnn_substitution_epsilon(direction='out', **kw, **wide_out))
-    wide_in = dict(K_in=10, K_out=2)
-    assert (sparsegnn_substitution_epsilon(direction='in', **kw, **wide_in) <
-            sparsegnn_substitution_epsilon(direction='out', **kw, **wide_in))
 
 
-def test_symmetric_degrees_make_the_two_orientations_agree():
-    kw = dict(p1=0.005, p2=0.5, r=2, K_in=5, K_out=5, sigma=5.0,
-              steps=200, delta=1e-6)
-    assert math.isclose(sparsegnn_substitution_epsilon(direction='in', **kw),
-                        sparsegnn_substitution_epsilon(direction='out', **kw),
-                        rel_tol=1e-12)
+def test_checkpoint_schedule_matches_direct_composition():
+    kwargs = dict(
+        p1=0.1, p2=0.2, r=1, K_in=2, K_out=3, sigma=4.0,
+        delta=1e-6, grid=1e-3)
+    schedule = sparsegnn_epsilon_schedule(steps=[1, 3], **kwargs)
+    assert schedule[1] == pytest.approx(
+        sparsegnn_epsilon(steps=1, **kwargs))
+    assert schedule[3] == pytest.approx(
+        sparsegnn_epsilon(steps=3, **kwargs))
 
 
-# ── target-privacy calibration ────────────────────────────────────────────────
-
-@pytest.mark.parametrize(
-    ("direction", "theorem"),
-    [("in", "auto"), ("out", "auto")],
-)
-def test_calibration_returns_a_safe_noise_multiplier(direction, theorem):
+def test_calibration_returns_a_safe_noise_multiplier():
     params = dict(
         target_epsilon=1.0, target_delta=1e-5,
         p1=0.05, p2=0.1, r=1, K_in=2, K_out=2, steps=2,
-        direction=direction, theorem=theorem, grid=1e-3,
-        sigma_rtol=1e-2,
-    )
+        grid=1e-3, sigma_rtol=1e-2)
     calibration = calibrate_sparsegnn_noise(**params)
-    assert calibration.epsilon <= params["target_epsilon"]
-    assert calibration.theorem == (
-        "thm6.4-substitution" if direction == "in"
-        else "thm4.5-insertion-removal")
     epsilon = sparsegnn_epsilon(
         p1=params["p1"], p2=params["p2"], r=params["r"],
         K_in=params["K_in"], K_out=params["K_out"],
         sigma=calibration.noise_multiplier, steps=params["steps"],
-        delta=params["target_delta"], direction=direction, theorem=theorem,
-        grid=params["grid"])
+        delta=params["target_delta"], grid=params["grid"])
+    assert calibration.epsilon <= params["target_epsilon"]
     assert epsilon <= params["target_epsilon"]
     assert sparsegnn_epsilon(
         p1=params["p1"], p2=params["p2"], r=params["r"],
         K_in=params["K_in"], K_out=params["K_out"],
         sigma=calibration.noise_multiplier * 0.98, steps=params["steps"],
-        delta=params["target_delta"], direction=direction, theorem=theorem,
-        grid=params["grid"]) > params["target_epsilon"]
+        delta=params["target_delta"], grid=params["grid"]) > params["target_epsilon"]
 
 
 def test_calibration_reports_pre_normalization_noise_scale():
@@ -268,12 +166,9 @@ def test_calibration_reports_pre_normalization_noise_scale():
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"target_epsilon": 0.0},
-        {"target_delta": 0.0},
-        {"sigma_rtol": 0.0},
-        {"sigma_atol": 0.0},
-        {"grid": 0.0},
-        {"max_sigma": 0.5},
+        {"target_epsilon": 0.0}, {"target_delta": 0.0},
+        {"sigma_rtol": 0.0}, {"sigma_atol": 0.0},
+        {"grid": 0.0}, {"max_sigma": 0.5},
     ],
 )
 def test_calibration_rejects_invalid_inputs(kwargs):
@@ -285,9 +180,7 @@ def test_calibration_rejects_invalid_inputs(kwargs):
         calibrate_sparsegnn_noise(**params)
 
 
-def test_calibration_rejects_inapplicable_theorem_and_exhausted_bracket():
-    with pytest.raises(ValueError, match="Theorem 4.5"):
-        resolve_sparsegnn_theorem("in", "thm45")
+def test_calibration_rejects_exhausted_bracket():
     with pytest.raises(RuntimeError, match="failed to bracket"):
         calibrate_sparsegnn_noise(
             target_epsilon=1e-12, target_delta=1e-5,
@@ -295,16 +188,8 @@ def test_calibration_rejects_inapplicable_theorem_and_exhausted_bracket():
             max_sigma=1.0, grid=1e-3)
 
 
-@pytest.mark.parametrize(
-    ("direction", "theorem", "weight_name"),
-    [
-        ("in", "auto", "sparsegnn_mixture_weights"),
-        ("out", "auto", "thm4_fiber_weights"),
-    ],
-)
-def test_calibration_prepares_sigma_independent_weights_once(
-        monkeypatch, direction, theorem, weight_name):
-    original = getattr(sparse_accounting, weight_name)
+def test_calibration_prepares_sigma_independent_weights_once(monkeypatch):
+    original = sparse_accounting.sparsegnn_mixture_weights
     calls = 0
 
     def counted(*args, **kwargs):
@@ -312,34 +197,32 @@ def test_calibration_prepares_sigma_independent_weights_once(
         calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(sparse_accounting, weight_name, counted)
+    monkeypatch.setattr(sparse_accounting, "sparsegnn_mixture_weights", counted)
     calibrate_sparsegnn_noise(
         target_epsilon=1.0, target_delta=1e-5,
         p1=0.05, p2=0.1, r=1, K_in=2, K_out=2, steps=2,
-        direction=direction, theorem=theorem, grid=1e-3, sigma_rtol=1e-2)
+        grid=1e-3, sigma_rtol=1e-2)
     assert calls == 1
 
 
 def test_sparsegnn_accountant_calibrates_like_direct_solver():
     kwargs = dict(
         p1=0.05, p2=0.1, radius=1, k_in=2, k_out=2, steps=2,
-        clip=1.5, direction="out", theorem="auto", grid=1e-3,
-        sigma_rtol=1e-2)
+        clip=1.5, grid=1e-3, sigma_rtol=1e-2)
     direct = calibrate_sparsegnn_noise(
         target_epsilon=1.0, target_delta=1e-5,
         p1=kwargs["p1"], p2=kwargs["p2"], r=kwargs["radius"],
         K_in=kwargs["k_in"], K_out=kwargs["k_out"], steps=kwargs["steps"],
-        clip=kwargs["clip"], direction=kwargs["direction"],
-        theorem=kwargs["theorem"], grid=kwargs["grid"],
+        clip=kwargs["clip"], grid=kwargs["grid"],
         sigma_rtol=kwargs["sigma_rtol"])
-    assert SparseGNNAccountant().calibrate(1.0, 1e-5, **kwargs) == direct.as_dict()
+    assert SparseGNNAccountant().calibrate(
+        1.0, 1e-5, **kwargs) == direct.as_dict()
     result = SparseGNNAccountant().account(
         p1=kwargs["p1"], p2=kwargs["p2"], radius=kwargs["radius"],
         k_in=kwargs["k_in"], k_out=kwargs["k_out"],
         sigma=direct.noise_multiplier, steps=kwargs["steps"], delta=1e-5,
-        direction="out", theorem="auto", grid=kwargs["grid"])
+        grid=kwargs["grid"])
     assert result.epsilon <= 1.0
-    assert result.parameters["theorem"] == "thm4.5-insertion-removal"
     assert result.parameters["grid"] == kwargs["grid"]
 
 

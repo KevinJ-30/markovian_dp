@@ -44,9 +44,6 @@ def parse_args():
                         'on the symmetric/undirected path')
     p.add_argument('--T', type=int, required=True)
     p.add_argument('--clip', type=float, default=1.0)
-    p.add_argument('--direction', choices=['in', 'out'], default='in')
-    p.add_argument('--theorem', choices=['auto', 'substitution', 'thm45'],
-                   default='auto')
     p.add_argument('--legacy_shells', action='store_true',
                    help='drop the union-graph correction (n_d = K^d not 2*K^d)')
     p.add_argument('--grid', type=float, default=1e-4,
@@ -67,7 +64,7 @@ def main():
 
     floor = a.T * a.grid
     print(f"# p1={a.p1} r={a.r} K={a.K} T={a.T} delta={delta:.4g} "
-          f"direction={a.direction} grid={a.grid:g}")
+          f"grid={a.grid:g}")
     if floor > min(a.eps) / 10.0:
         print(f"# WARNING discretization floor ~T*grid={floor:.4g} is not "
               f"negligible vs the smallest target {min(a.eps):g}; "
@@ -80,16 +77,16 @@ def main():
                 c = calibrate_sparsegnn_noise(
                     target_epsilon=eps, target_delta=delta, p1=a.p1, p2=p2,
                     r=a.r, K_in=a.K, K_out=a.K, steps=a.T, clip=a.clip,
-                    direction=a.direction, theorem=a.theorem, grid=a.grid,
-                    union_safe=not a.legacy_shells)
+                    grid=a.grid, union_safe=not a.legacy_shells)
             except (RuntimeError, ValueError) as exc:
                 print(f"# SKIP p2={p2} eps={eps}: {exc}", file=sys.stderr)
                 print(f"{p2} {eps} SKIP", flush=True)
                 continue
             print(f"# p2={p2} eps={eps}: sigma={c.noise_multiplier:.4f} "
+                  f"noise_std={c.noise_std:.4f} "
                   f"var={c.noise_variance:.4f} achieved={c.epsilon:.5f} "
-                  f"({c.evaluations} evals, {time.time() - t0:.1f}s) "
-                  f"{c.theorem}", file=sys.stderr)
+                  f"({c.evaluations} evals, {time.time() - t0:.1f}s)",
+                  file=sys.stderr)
             print(f"{p2} {eps} {c.noise_multiplier:.6f}", flush=True)
 
 
