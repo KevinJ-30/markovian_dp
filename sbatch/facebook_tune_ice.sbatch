@@ -37,7 +37,7 @@ DELTA=1e-5
 COMMON="--dataset facebook --direction in --aggr mean --model gnn \
         --p1 0.013 --p2 1.0 --r 1 --num_layers 2 --hidden 16 \
         --dp --sigma 5.0 --clip 1.0 --K_in 5 --K_out 5 \
-        --dropout 0.0 --weight_decay 0.0 --roots_from train --seeds 3 \
+        --dropout 0.0 --weight_decay 0.0 --seeds 3 \
         --T 500 --track_every 25"
 
 run_cell() {   # optimizer lr

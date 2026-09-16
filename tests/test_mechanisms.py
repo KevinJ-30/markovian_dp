@@ -117,10 +117,9 @@ def test_mechanism_trains_through_the_engine():
     data = _toy_data(num_labels=3)
     mech = MultiLabelGNNMechanism(data, 4, 3, hidden=8, num_layers=2)
     mech.build_optimizer(lr=0.05, kind='adam')
-    metrics = train_sparse_gnn(mech, data, direction='in', p1=1.0, p2=1.0,
-                               r=2, T=20,
-                               candidate_nodes=torch.where(data.train_mask)[0],
-                               seed=0)
+    metrics = train_sparse_gnn(
+        mech, data, data, direction='in', p1=1.0, p2=1.0, r=2, T=20,
+        seed=0)
     assert {"train", "val", "test"} <= set(metrics)
 
 
@@ -153,9 +152,8 @@ def test_every_mechanism_trains_one_private_padded_step(kind):
 
     mechanism.build_optimizer(lr=0.01, kind="sgd")
     metrics = train_sparse_gnn(
-        mechanism, data, direction="in", p1=1.0, p2=1.0, r=1, T=1,
-        candidate_nodes=torch.where(data.train_mask)[0], dp=True, clip=1.0,
-        sigma=1.0, seed=4)
+        mechanism, data, data, direction="in", p1=1.0, p2=1.0, r=1,
+        T=1, dp=True, clip=1.0, sigma=1.0, seed=4)
     assert {"train", "val", "test"} <= set(metrics)
 
 

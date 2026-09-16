@@ -39,12 +39,12 @@ def main() -> None:
             steps = math.ceil(config["training_epochs"] / p1)
             output = out_root / dataset / f"p1-{p1:g}"
             command = [
-                sys.executable, "-m", "src.sparse.run", "--dataset", dataset, "--inductive",
+                sys.executable, "-m", "src.sparse.run", "--dataset", dataset,
                 "--common_inductive_split", "--split_seed", str(config["seed"]),
                 "--direction", "in", "--model", "gnn", "--aggr", "mean", "--p1", str(p1),
                 "--p2", *(str(rate) for rate in edge_rates), "--r", str(config["radius"]),
                 "--K_in", str(config["degree_caps"]["k_in"]), "--K_out", str(config["degree_caps"]["k_out"]),
-                "--T", str(steps), "--seeds", "1", "--roots_from", "train",
+                "--T", str(steps), "--seeds", "1",
                 "--out_dir", str(output),
             ]
             if config["privacy"]["enabled"]:

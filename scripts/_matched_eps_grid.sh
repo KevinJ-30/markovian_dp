@@ -50,8 +50,8 @@ echo "    N_train=$NTRAIN batch=$BATCH -> p1=$P1"
 echo "    T=$T K=$K hidden=$HIDDEN dropout=$DROPOUT seeds=$SEEDS delta=$DELTA"
 echo "    multilabel -> micro-F1 primary, micro-AUROC alongside"
 
-COMMON="--dataset $DS --inductive --p1 $P1 --hidden $HIDDEN --clip 1.0
-        --dropout $DROPOUT --weight_decay 0.0 --roots_from train
+COMMON="--dataset $DS --p1 $P1 --hidden $HIDDEN --clip 1.0
+        --dropout $DROPOUT --weight_decay 0.0 
         --optimizer adam --lr 0.01 --T $T --seeds $SEEDS
         --track_every $TRACK_EVERY"
 

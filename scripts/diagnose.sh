@@ -17,26 +17,27 @@ from src.sparse.multilabel_mechanism import (
     MultiLabelGNNMechanism, _micro_f1, _micro_auroc)
 from src.sparse.sparse_expand import (
     build_adjacency, cap_degrees_undirected)
+from src.sparse.run import make_training_graph
 from src.sparse.sparse_gnn import train_sparse_gnn
 
 ds, data = load_dataset(sys.argv[1])
-ei = torch.unique(data.edge_index.cpu(), dim=1)
+train_data = make_training_graph(data)
+ei = torch.unique(train_data.edge_index.cpu(), dim=1)
 ei = cap_degrees_undirected(
-    ei, int(data.num_nodes), 5,
+    ei, int(train_data.num_nodes), 5,
     generator=torch.Generator().manual_seed(12345))
-adj = build_adjacency(ei, int(data.num_nodes), direction='in')
-train_nodes = torch.where(data.train_mask)[0]
+adj = build_adjacency(ei, int(train_data.num_nodes), direction='in')
 te = data.test_mask
 
 def train(dp, T, p1, sigma, lr):
     model = MultiLabelGNNMechanism(
-        data, ds.num_features, ds.num_classes,
+        train_data, ds.num_features, ds.num_classes,
         hidden=64, num_layers=2, dropout=0.0)
     model.build_optimizer(lr=lr, weight_decay=0.0, kind='adam')
     train_sparse_gnn(
-        model, data, adj=adj, direction='in', p1=p1, p2=0.1, r=1,
-        T=T, candidate_nodes=train_nodes, dp=dp,
-        clip=1.0 if dp else None, sigma=sigma if dp else None, seed=0)
+        model, train_data, data, adj=adj, direction='in', p1=p1, p2=0.1,
+        r=1, T=T, dp=dp, clip=1.0 if dp else None,
+        sigma=sigma if dp else None, seed=0)
     return model
 
 ones = torch.ones_like(data.y[te]).float()

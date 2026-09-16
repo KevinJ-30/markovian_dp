@@ -33,9 +33,9 @@ SEEDS=${SEEDS:-3}
 
 mkdir -p "$OUT_ROOT" results/logs
 
-BASE=(--dataset ogbn-arxiv --direction in --aggr mean --inductive
+BASE=(--dataset ogbn-arxiv --direction in --aggr mean 
       --p1 $P1 --hidden 256 --K_in $K --K_out $K --num_layers 2
-      --clip 1.0 --dropout 0.0 --weight_decay 0.0 --roots_from train
+      --clip 1.0 --dropout 0.0 --weight_decay 0.0 
       --seeds "$SEEDS" --T $T --optimizer adam --lr 0.01)
 
 run_cell() {   # out_dir, then extra flags

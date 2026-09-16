@@ -9,8 +9,9 @@
 #SBATCH -oReport-facebook-dp-%j.out
 #SBATCH --mail-type=END,FAIL
 #
-# GAP/ProGAP head-to-head on their Facebook (UIllinois20, 26,406 nodes, 6
-# classes), transductive.  Two arms, one per submission:
+# SparseGNN on Facebook UIllinois20 (26,406 nodes, 6 classes). The masks define
+# a train-induced graph; evaluation receives the separate full graph. Two arms,
+# one per submission:
 #
 #   sbatch --export=ARM=matched sbatch/facebook_settings.sbatch
 #   sbatch --export=ARM=sparse  sbatch/facebook_settings.sbatch
@@ -40,7 +41,7 @@ DELTA=1e-5
 # batch 256 over ~19808 train nodes -> p1 ~= 0.013 (matches their batch size).
 COMMON="--dataset facebook --direction in --aggr mean --model gnn \
         --p1 0.013 --r 1 --num_layers 2 --hidden 16 --clip 1.0 \
-        --dropout 0.0 --weight_decay 0.0 --roots_from train --seeds 3 \
+        --dropout 0.0 --weight_decay 0.0 --seeds 3 \
         --T 500 --track_every 25"
 
 ARM=${ARM:-sparse}

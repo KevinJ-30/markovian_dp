@@ -63,5 +63,5 @@ done
 
 echo
 echo "point the loader at it with:  export GRAPHSAINT_DATA_ROOT=$(cd "$DEST" && pwd)"
-echo "then e.g.:  python -m src.sparse.run --dataset ppi-large --model multilabel_gnn --inductive ..."
+echo "then e.g.:  python -m src.sparse.run --dataset ppi-large --model multilabel_gnn ..."
 exit $rc

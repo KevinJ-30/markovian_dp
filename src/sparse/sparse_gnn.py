@@ -15,8 +15,8 @@ Algorithm 1: SparseGNN — the model-agnostic training engine.
     per rooted subgraph; Opacus globally clips each to C, sums, adds Gaussian
     noise N(0, (sigma*C)^2 I), and applies the optimizer.
 
-The engine only talks to a BaseMechanism, so it is identical for the GNN node
-classifier and a future non-GNN anomaly detector.
+The engine only talks to a BaseMechanism, so the training loop is independent
+of the concrete node-classification model.
 """
 
 from typing import Any, Callable, Dict, List, Optional
@@ -123,18 +123,14 @@ class OpacusPrivateUpdate:
         return float(running)
 
 
-def _evaluate(mechanism, data, alt_edge_index):
-    """Metrics on the configured graph, plus `<key>_alt` on `alt_edge_index`."""
-    out = dict(mechanism.evaluate(data))
-    if alt_edge_index is not None:
-        for k, v in mechanism.evaluate_on(data, alt_edge_index).items():
-            out[f'{k}_alt'] = v
-    return out
+def _evaluate(mechanism, test_data):
+    return dict(mechanism.evaluate(test_data))
 
 
 def train_sparse_gnn(
     mechanism: BaseMechanism,
-    data,
+    train_data,
+    test_data,
     *,
     p1: float,
     p2: float,
@@ -142,41 +138,33 @@ def train_sparse_gnn(
     T: int,
     adj: Optional[SparseAdjacency] = None,
     direction: str = 'in',
-    candidate_nodes: Optional[torch.Tensor] = None,
     dp: bool = False,
     clip: Optional[float] = None,
     sigma: Optional[float] = None,
     seed: int = 0,
     eval_every: int = 0,
     track_every: int = 0,
-    eval_alt_edge_index=None,
     verbose: bool = False,
     checkpoint_callback: Optional[Callable[[Dict[str, float]], None]] = None,
 ) -> Dict[str, float]:
     """Run T steps of SparseGNN and return the final evaluation metrics.
 
     Args:
-        mechanism:       a BaseMechanism (GNN or anomaly detector).
-        data:            PyG Data (must expose num_nodes, edge_index; masks used
-                         by the mechanism's evaluate).
+        mechanism:       a BaseMechanism built against `train_data`.
+        train_data:      PyG training graph. Its train mask defines eligible
+                         roots and its edges are the only edges expanded.
+        test_data:       separate PyG graph used for every evaluation.
         p1, p2, r, T:    paper parameters (root prob, edge prob, distance, steps).
         adj:             optional precomputed adjacency from
                          `build_adjacency(..., direction)`; built if None.
         direction:       'in' (Algorithm 5, expansion along incoming edges — the
                          orientation a message-passing GNN needs) or 'out' (the
                          legacy Algorithm 2/4 orientation, for the ablation).
-        candidate_nodes: optional pool of eligible roots (defaults to all nodes).
-                         For per-root supervised training, restricting this to
-                         training nodes avoids wasting steps on unlabeled roots.
         dp:              enable the DP clip+noise path (default False).
         clip, sigma:     clipping norm C and Opacus noise multiplier (required
                          when dp=True; absolute noise std is sigma*C).
         seed:            base seed for reproducible root/edge sampling.
         eval_every:      if >0 and verbose, evaluate every `eval_every` steps.
-        eval_alt_edge_index: if given, every evaluation is also run against
-                         this adjacency and reported under `<key>_alt`.  Used to
-                         record utility on both the training graph and the full
-                         one, which differ by the degree cap.
         track_every:     if >0, evaluate every `track_every` steps and return
                          the checkpoints under the 'history' key (a list of
                          {'step': t, <metrics>} dicts).  Evaluation draws no
@@ -186,12 +174,13 @@ def train_sparse_gnn(
                          first t steps (see compute_epsilon --track support).
 
     Returns:
-        dict of metrics from mechanism.evaluate(data); plus 'history' when
+        Metrics from `mechanism.evaluate(test_data)`; plus 'history' when
         track_every > 0.
     """
-    num_nodes = int(data.num_nodes)
+    num_nodes = int(train_data.num_nodes)
     if adj is None:
-        adj = build_adjacency(data.edge_index, num_nodes, direction=direction)
+        adj = build_adjacency(
+            train_data.edge_index, num_nodes, direction=direction)
 
     if dp:
         if clip is None or sigma is None:
@@ -199,9 +188,8 @@ def train_sparse_gnn(
 
     sample_gen = _make_generator(seed)
 
-    pool_size = (num_nodes if candidate_nodes is None
-                 else int(candidate_nodes.numel()))
-    expected_batch = p1 * pool_size
+    candidate_nodes = torch.where(train_data.train_mask)[0]
+    expected_batch = p1 * int(candidate_nodes.numel())
     private_update = None
     if dp:
         params = mechanism.parameters()
@@ -232,18 +220,17 @@ def train_sparse_gnn(
             loss = _step_nondp(mechanism, subgraphs, expected_batch)
 
         if track_every and (t % track_every == 0 or t == T):
-            checkpoint = {'step': t, **_evaluate(mechanism, data,
-                                                 eval_alt_edge_index)}
+            checkpoint = {'step': t, **_evaluate(mechanism, test_data)}
             history.append(checkpoint)
             if checkpoint_callback is not None:
                 checkpoint_callback(checkpoint)
 
         if verbose and eval_every and (t % eval_every == 0 or t == 1):
-            accs = mechanism.evaluate(data)
+            accs = mechanism.evaluate(test_data)
             print(f"  step {t:4d}/{T}  |V_root|={roots.numel():4d}  "
                   f"loss={loss:.4f}  val={accs['val']:.4f}  test={accs['test']:.4f}")
 
-    final = _evaluate(mechanism, data, eval_alt_edge_index)
+    final = _evaluate(mechanism, test_data)
     if track_every:
         final = dict(final)
         final['history'] = history
@@ -252,7 +239,8 @@ def train_sparse_gnn(
 
 def train_sparse_gnn_with_budget(
     mechanism: BaseMechanism,
-    data,
+    train_data,
+    test_data,
     *,
     target_epsilon: float,
     target_delta: float,
@@ -270,11 +258,9 @@ def train_sparse_gnn_with_budget(
     calibration_atol: float = 1e-6,
     max_sigma: float = 1e6,
     adj=None,
-    candidate_nodes=None,
     seed: int = 0,
     eval_every: int = 0,
     track_every: int = 0,
-    eval_alt_edge_index=None,
     verbose: bool = False,
     checkpoint_callback=None,
 ) -> tuple[dict[str, Any], SparseGNNNoiseCalibration]:
@@ -288,11 +274,10 @@ def train_sparse_gnn_with_budget(
         union_safe=union_safe,
     )
     metrics = train_sparse_gnn(
-        mechanism, data, p1=p1, p2=p2, r=r, T=T, adj=adj,
-        direction=direction, candidate_nodes=candidate_nodes, dp=True,
-        clip=clip, sigma=calibration.noise_multiplier, seed=seed,
-        eval_every=eval_every, track_every=track_every,
-        eval_alt_edge_index=eval_alt_edge_index, verbose=verbose,
+        mechanism, train_data, test_data, p1=p1, p2=p2, r=r, T=T, adj=adj,
+        direction=direction, dp=True, clip=clip,
+        sigma=calibration.noise_multiplier, seed=seed,
+        eval_every=eval_every, track_every=track_every, verbose=verbose,
         checkpoint_callback=checkpoint_callback,
     )
     return metrics, calibration

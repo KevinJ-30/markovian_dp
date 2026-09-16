@@ -53,7 +53,7 @@ mkdir -p "$OUT_ROOT" results/logs
 
 BASE=(--dataset facebook --direction in --aggr mean
       --p1 $P1 --num_layers 2 --clip 1.0 --dropout 0.0 --weight_decay 0.0
-      --roots_from train --seeds "$SEEDS" --T $T --K_in $K --K_out $K
+      --seeds "$SEEDS" --T $T --K_in $K --K_out $K
       --track_every 25)
 
 run_cell() {   # out_dir, then extra flags

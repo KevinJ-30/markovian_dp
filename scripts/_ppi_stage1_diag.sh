@@ -47,7 +47,7 @@ P1=${P1:-0.0114}          # 512 roots / 44,906 train nodes
 # is the GraphSAGE supervised setting.  dropout/wd 0 per _dataset_settings.sh.
 COMMON=(--dataset ppi --direction in --model multilabel_gnn --aggr mean
         --p1 "$P1" --p2 1.0 --num_layers 2 --clip 1.0
-        --dropout 0.0 --weight_decay 0.0 --roots_from train
+        --dropout 0.0 --weight_decay 0.0 
         --seeds "$SEEDS" --T "$T" --optimizer adam --lr 0.01
         --track_every 100)
 

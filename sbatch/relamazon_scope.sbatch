@@ -79,8 +79,8 @@ echo "  -> p1=$SCOPE_P1  K_in=$SCOPE_K_IN  K_out=$SCOPE_K_OUT  n=$SCOPE_N_NODES"
 # ── STAGE 1: references.  AUROC's floor is 0.5 (chance), so a graph-blind r=0
 #    run and a non-DP run bracket whatever the DP cells achieve.
 COMMON=(--dataset "$DS" --direction in --model binary_gnn --aggr mean
-        --inductive --p1 "$SCOPE_P1" --num_layers 2 --hidden 256 --clip 1.0
-        --dropout 0.0 --weight_decay 0.0 --roots_from train
+        --p1 "$SCOPE_P1" --num_layers 2 --hidden 256 --clip 1.0
+        --dropout 0.0 --weight_decay 0.0 
         --seeds $SEEDS --T $T --track_every 25
         --K_in "$SCOPE_K_IN" --K_out "$SCOPE_K_OUT")
 

@@ -54,6 +54,19 @@ def _set_seed(seed):
     torch.manual_seed(seed)
 
 
+def make_training_graph(test_graph):
+    """Return the graph visible to training, separate from the test graph."""
+    train_graph = test_graph.clone()
+    if hasattr(test_graph, 'train_edge_index'):
+        train_graph.edge_index = test_graph.train_edge_index
+    else:
+        is_train = test_graph.train_mask
+        edge_index = test_graph.edge_index
+        train_graph.edge_index = edge_index[
+            :, is_train[edge_index[0]] & is_train[edge_index[1]]]
+    return train_graph
+
+
 def _mean_std(xs):
     m = sum(xs) / len(xs)
     if len(xs) < 2:
@@ -195,10 +208,8 @@ def parse_args():
     p.add_argument('--relbench_reverse_edges', action='store_true',
                    help='RelBench only: also add parent->child arcs; enriches '
                         'neighbourhoods but raises K_out and hence epsilon')
-    p.add_argument('--inductive', action='store_true',
-                   help='train on the train-induced subgraph only (expansion '
-                        'never touches val/test nodes — the privacy-honest '
-                        'setting); evaluate with full-graph inductive inference')
+    # Training is always inductive: run.py constructs separate training and
+    # evaluation graphs before dispatching to SparseGNN.
     p.add_argument('--common_inductive_split', action='store_true',
                    help='use the saved deterministic 60/20/20 split and delete '
                         'all inter-partition edges before private training')
@@ -239,8 +250,6 @@ def parse_args():
                    help='SGD momentum for the DP path (post-processing, no '
                         'privacy cost; ignored by the non-DP Adam path)')
     p.add_argument('--weight_decay', type=float, default=5e-4)
-    p.add_argument('--roots_from', choices=['train', 'all'], default='train',
-                   help="eligible-root pool: 'train' (labeled roots only) or 'all'")
     # DP (off by default)
     p.add_argument('--dp', action='store_true', help='enable DP clip+noise path')
     p.add_argument('--clip', type=float, default=1.0, help='clipping norm C (DP)')
@@ -285,18 +294,6 @@ def parse_args():
                         'source of variance.  Pin it to an int to hold the '
                         'graph fixed across seeds (isolating model/sampling/'
                         'noise variance instead).')
-    p.add_argument('--eval_graph', choices=['auto', 'full', 'train'],
-                   default='auto',
-                   help="graph for `evaluate`.  'auto' (default) = 'full' "
-                        "always: no training-side preprocessing (degree cap, "
-                        "dedup, split filter) is applied to the graph a result "
-                        "is measured on.  'train' reproduces the older "
-                        "transductive policy of scoring on the capped graph.  "
-                        "'full' = data.edge_index (uncapped, unfiltered; for "
-                        "RelBench the test-cutoff graph); 'train' = the exact "
-                        "training graph (inductive-filtered, deduplicated, "
-                        "capped).  The other graph's metrics are always "
-                        "recorded alongside under the *_alt columns.")
     # General
     p.add_argument('--track_every', type=int, default=0,
                    help='if >0, evaluate every this many steps and write one '
@@ -328,20 +325,6 @@ def parse_args():
 
 def main():
     args = parse_args()
-    if args.eval_graph == 'auto':
-        # ALWAYS the unprocessed full graph, transductive or inductive.  No
-        # preprocessing we apply for training's benefit — degree capping,
-        # deduplication, the inductive split filter — may touch the graph a
-        # result is measured on.
-        #
-        # This reverses an earlier policy under which a transductive run scored
-        # on the CAPPED training graph, on the argument that the model never saw
-        # a node of degree > K so the uncapped graph is off-distribution.  That
-        # argument is real, but it buys in-distribution evaluation by
-        # preprocessing the test set, which is not a protocol we can defend --
-        # and it contradicted what both README.md and the paper already claimed.
-        # The capped-graph number is still recorded, as the `*_alt` columns.
-        args.eval_graph = 'full'
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(args.out_dir, exist_ok=True)
     tag = '_dp' if args.dp else ''
@@ -364,8 +347,7 @@ def main():
           f"direction={args.direction}  aggr={args.aggr}")
     print(f"  p1={args.p1}  p2={args.p2}  r={args.r}  {noise_description}  "
           f"T={args.T}  L={args.num_layers}  dp={args.dp}  seeds={args.seeds}")
-    print(f"  inductive={args.inductive}  eval_graph={args.eval_graph}  "
-          f"roots_from={args.roots_from}")
+    print("  training=inductive  evaluation=test graph")
     print(f"  sweep: {len(grid)} configuration(s) x {args.seeds} seed(s)")
     print('='*66)
 
@@ -443,34 +425,21 @@ def main():
               f"({task_type}) — --model binary_gnn (AUROC) is recommended, "
               f"got --model {args.model}")
 
-    edge_index = data.edge_index
-    if args.inductive:
-        if hasattr(data, 'train_edge_index'):
-            # The loader already built a training graph (RelBench: everything at
-            # or before the train cutoff).  Masking on train_mask would be wrong
-            # here — a labelled root's neighbours are unlabelled DB rows.
-            edge_index = data.train_edge_index
-            print(f"  inductive: using the loader's training graph, edges "
-                  f"{data.edge_index.size(1)} -> {edge_index.size(1)}")
-        else:
-            # Training graph = subgraph induced on train nodes: keep only arcs
-            # whose BOTH endpoints are training nodes, so SparseExpand can never
-            # reach a val/test node during training (no privacy leak).
-            # Evaluation still uses the full data.edge_index for inductive
-            # inference on held-out nodes.
-            is_train = data.train_mask
-            both_train = is_train[edge_index[0]] & is_train[edge_index[1]]
-            edge_index = edge_index[:, both_train]
-            print(f"  inductive: restrict to train-induced subgraph, edges "
-                  f"{data.edge_index.size(1)} -> {edge_index.size(1)} "
-                  f"(train nodes {int(is_train.sum())}/{int(data.num_nodes)})")
+    test_data = data
+    train_data = make_training_graph(test_data)
+    edge_index = train_data.edge_index
+    source = ('loader training graph' if hasattr(test_data, 'train_edge_index')
+              else 'train-induced graph')
+    print(f"  {source}: edges {test_data.edge_index.size(1)} -> "
+          f"{edge_index.size(1)}; training roots "
+          f"{int(train_data.train_mask.sum())}/{int(train_data.num_nodes)}")
 
     # The accounting (path counts, Lemma 20) assumes graphs WITHOUT parallel
     # edges; duplicates also get outsized survival odds under capping.  All
     # shipped loaders are simple graphs, but enforce it here so e.g. a RelBench
     # table with two foreign keys to the same parent row cannot break the
     # assumption silently.
-    n_nodes = int(data.num_nodes)
+    n_nodes = int(train_data.num_nodes)
     K_in_req = args.K_in
     K_out_req = args.K_out if args.K_out is not None else args.K_in
     raw_train_ei = edge_index
@@ -536,14 +505,6 @@ def main():
         cap's contribution to run-to-run variance.
         """
         train_ei, mode = _simplify_and_cap(raw_train_ei, label, cap_seed)
-        # Reference graph for the second set of metrics: capped but NOT
-        # split-filtered.  Filtering would leave held-out nodes with no edges at
-        # all (on PPI their mean in-degree drops 29.3 -> 0), so the comparison
-        # has to isolate the cap from the inductive filter.
-        if args.inductive and K_in_req is not None:
-            eval_capped, _ = _simplify_and_cap(data.edge_index, '', cap_seed)
-        else:
-            eval_capped = train_ei
         k_in, k_out = K_in_req, K_out_req
         if k_in is None and args.dp:
             if label:
@@ -552,9 +513,9 @@ def main():
                       "epsilon will use the graph's raw max degrees.")
             k_in, k_out = max_degrees(train_ei, n_nodes)
         achieved = max_degrees(train_ei, n_nodes)
-        return {'train_ei': train_ei, 'eval_capped': eval_capped,
-                'cap_mode': mode, 'K_in': k_in, 'K_out': k_out,
-                'cap_seed': cap_seed, 'achieved': achieved,
+        return {'train_ei': train_ei, 'cap_mode': mode,
+                'K_in': k_in, 'K_out': k_out, 'cap_seed': cap_seed,
+                'achieved': achieved,
                 'adj': build_adjacency(train_ei, n_nodes,
                                        direction=args.direction)}
 
@@ -570,11 +531,9 @@ def main():
 
     adj = graphs[0]['adj']          # for the subgraph-size report only
 
-    candidate_nodes = None
-    if args.roots_from == 'train':
-        candidate_nodes = torch.where(data.train_mask)[0]
+    candidate_nodes = torch.where(train_data.train_mask)[0]
 
-    _report_subgraph_size(adj, candidate_nodes, int(data.num_nodes),
+    _report_subgraph_size(adj, candidate_nodes, int(train_data.num_nodes),
                           p2=max(args.p2), r=max(args.r),
                           direction=args.direction)
 
@@ -586,7 +545,7 @@ def main():
     # call bincount on a float multi-hot target.
     if args.model == 'mlp' and getattr(dataset, 'multilabel', False):
         _metric = 'micro_f1'
-    trivial = trivial_baseline(data, _metric)
+    trivial = trivial_baseline(test_data, _metric)
     _better_high = _HIGHER_IS_BETTER.get(_metric, True)
     print(f"  trivial baseline ({_metric}) on test: {trivial:.4f} "
           f"— every result below must clear this")
@@ -602,16 +561,15 @@ def main():
         w = csv.writer(fh)
         # train_acc/val_acc/test_acc hold whatever `metric` names — accuracy for
         # single-label GNN/MLP, micro-F1 for multilabel, AUROC for binary.
-        w.writerow(['dataset', 'model', 'aggr', 'metric', 'inductive',
+        w.writerow(['dataset', 'model', 'aggr', 'metric',
                     'direction', 'p1', 'p2', 'r', 'sigma', 'clip', 'K_in',
-                    'K_out', 'cap_mode', 'eval_graph', 'optimizer', 'lr',
-                    'momentum', 'T', 'L', 'dp',
-                    'target_epsilon', 'target_delta', 'calibrated_epsilon',
-                    'accounting_grid', 'calibration_rtol',
-                    'calibration_evaluations',
-                    'noise_std', 'noise_variance', 'seed', 'step',
-                    'roots_from', 'hidden', 'dropout', 'weight_decay', 'seeds',
-                    'cap_seed', 'K_in_achieved', 'K_out_achieved',
+                    'K_out', 'cap_mode', 'optimizer', 'lr', 'momentum', 'T',
+                    'L', 'dp', 'target_epsilon', 'target_delta',
+                    'calibrated_epsilon', 'accounting_grid',
+                    'calibration_rtol', 'calibration_evaluations',
+                    'noise_std', 'noise_variance', 'seed', 'step', 'hidden',
+                    'dropout', 'weight_decay', 'seeds', 'cap_seed',
+                    'K_in_achieved', 'K_out_achieved',
                     'train_acc', 'val_acc', 'test_acc', 'trivial_baseline',
                     'train_auroc', 'val_auroc', 'test_auroc',
                     # Secondary metrics for regression (RegressionGNNMechanism
@@ -626,21 +584,7 @@ def main():
                     # Secondary metric for binary_gnn (metric_name="auroc" is
                     # primary, above): plain accuracy, meaningful only next to
                     # AUROC on an imbalanced split -- see binary_mechanism.py.
-                    'train_bin_acc', 'val_bin_acc', 'test_bin_acc',
-                    # Same metrics on the OTHER graph: the training graph when
-                    # eval_graph=full, the full graph when eval_graph=train.
-                    # They differ by the degree cap (and, for inductive runs,
-                    # the split filter), so both are recorded.
-                    'train_acc_alt', 'val_acc_alt', 'test_acc_alt',
-                    'train_auroc_alt', 'val_auroc_alt', 'test_auroc_alt',
-                    # _evaluate() suffixes EVERY key of the alt-graph pass, so
-                    # these were already computed and then dropped on the floor.
-                    # Without them the "measure the cap gap rather than assume
-                    # it" claim held only for the primary metric and AUROC, not
-                    # for regression or binary accuracy.
-                    'train_rmse_alt', 'val_rmse_alt', 'test_rmse_alt',
-                    'train_r2_alt', 'val_r2_alt', 'test_r2_alt',
-                    'train_bin_acc_alt', 'val_bin_acc_alt', 'test_bin_acc_alt'])
+                    'train_bin_acc', 'val_bin_acc', 'test_bin_acc'])
 
         for cell in grid:
             calibration = None
@@ -683,15 +627,10 @@ def main():
                 Mechanism = _MECHANISMS[args.model]
                 extra = {} if args.model == 'mlp' else {'aggr': args.aggr}
                 mech = Mechanism(
-                    data, num_features, num_classes,
+                    train_data, num_features, num_classes,
                     hidden=args.hidden, num_layers=args.num_layers,
                     dropout=args.dropout, device=device, **extra,
                 )
-                if args.eval_graph == 'train':
-                    mech.eval_edge_index = gph['train_ei'].to(device)
-                    alt_ei = data.edge_index                  # uncapped
-                else:
-                    alt_ei = gph['eval_capped'].to(device)    # capped
                 # Adam everywhere, DP or not.  Three reasons:
                 #   1. Every baseline we compare against is Adam -- DPAR is
                 #      literally DPAdamGaussianOptimizer upstream, ProGAP
@@ -716,12 +655,10 @@ def main():
                                   if args.verbose and args.progress_every is not None
                                   else args.eval_every)
                 accs = train_sparse_gnn(
-                    mech, data, adj=gph['adj'], direction=args.direction,
-                    p1=p1, p2=p2, r=r, T=args.T,
-                    candidate_nodes=candidate_nodes,
-                    dp=args.dp, clip=args.clip, sigma=sigma,
-                    seed=seed, eval_every=progress_every,
-                    track_every=args.track_every, eval_alt_edge_index=alt_ei,
+                    mech, train_data, test_data, adj=gph['adj'],
+                    direction=args.direction, p1=p1, p2=p2, r=r, T=args.T,
+                    dp=args.dp, clip=args.clip, sigma=sigma, seed=seed,
+                    eval_every=progress_every, track_every=args.track_every,
                     verbose=args.verbose,
                 )
                 history = accs.pop('history', [])
@@ -733,18 +670,16 @@ def main():
                 def _write_row(step, m):
                     w.writerow([args.dataset, args.model,
                                 '' if args.model == 'mlp' else args.aggr,
-                                mech.metric_name, args.inductive,
-                                args.direction, p1, p2, r, sigma, args.clip,
+                                mech.metric_name, args.direction, p1, p2, r,
+                                sigma, args.clip,
                                 gph['K_in'] if gph['K_in'] is not None else '',
                                 gph['K_out'] if gph['K_out'] is not None else '',
-                                gph['cap_mode'], args.eval_graph,
-                                opt_kind, args.lr, args.momentum,
+                                gph['cap_mode'], opt_kind, args.lr, args.momentum,
                                 args.T, args.num_layers, args.dp,
                                 *calibration_fields, *noise_fields, seed, step,
-                                args.roots_from, args.hidden, args.dropout,
-                                args.weight_decay, args.seeds,
-                                gph['cap_seed'], gph['achieved'][0],
-                                gph['achieved'][1],
+                                args.hidden, args.dropout, args.weight_decay,
+                                args.seeds, gph['cap_seed'],
+                                gph['achieved'][0], gph['achieved'][1],
                                 f"{m['train']:.5f}", f"{m['val']:.5f}",
                                 f"{m['test']:.5f}", f"{trivial:.5f}",
                                 *(f"{m[k]:.5f}" if k in m else ''
@@ -754,17 +689,7 @@ def main():
                                             'test_rmse',
                                             'train_r2', 'val_r2', 'test_r2',
                                             'train_bin_acc', 'val_bin_acc',
-                                            'test_bin_acc',
-                                            'train_alt', 'val_alt', 'test_alt',
-                                            'train_auroc_alt', 'val_auroc_alt',
-                                            'test_auroc_alt',
-                                            'train_rmse_alt', 'val_rmse_alt',
-                                            'test_rmse_alt',
-                                            'train_r2_alt', 'val_r2_alt',
-                                            'test_r2_alt',
-                                            'train_bin_acc_alt',
-                                            'val_bin_acc_alt',
-                                            'test_bin_acc_alt'))])
+                                            'test_bin_acc'))])
 
                 for h in history:
                     if h['step'] < args.T:   # final checkpoint == the T row

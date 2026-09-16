@@ -9,7 +9,6 @@
 #   MODEL        mechanism flags for the main runs
 #   BLIND        flags for the graph-blind baseline (same mechanism at --r 0, so
 #                the baseline is measured on the SAME metric as everything else)
-#   INDUCTIVE    --inductive, or empty for natively-inductive datasets
 #   P1           root-sampling probability, the SAME for DP and non-DP so the DP
 #                frontier is readable against its own non-DP ceiling
 #   T            training steps
@@ -74,14 +73,12 @@ case $_ds in
   ppi-large)
     MODEL=(--model multilabel_gnn --aggr mean)
     BLIND=(--model mlp --r 0)
-    INDUCTIVE=(--inductive)
     P1=0.011402; T=300
     CAP=(--K_in 5 --K_out 5)
     HIDDEN=512; DROPOUT=0.0
     ;;
   saint-reddit)
     MODEL=(--aggr mean); BLIND=(--model mlp --r 0)
-    INDUCTIVE=(--inductive)
     P1=0.003326; T=300
     CAP=(--K_in 5 --K_out 5)
     HIDDEN=128; DROPOUT=0.1
@@ -89,7 +86,6 @@ case $_ds in
   yelp)
     MODEL=(--model multilabel_gnn --aggr mean)
     BLIND=(--model mlp --r 0)
-    INDUCTIVE=(--inductive)
     P1=0.000952; T=300
     CAP=(--K_in 5 --K_out 5)
     HIDDEN=512; DROPOUT=0.1
@@ -97,59 +93,50 @@ case $_ds in
   amazon)
     MODEL=(--model multilabel_gnn --aggr mean)
     BLIND=(--model mlp --r 0)
-    INDUCTIVE=(--inductive)
     P1=0.000408; T=300
     CAP=(--K_in 5 --K_out 5)
     HIDDEN=512; DROPOUT=0.1
     ;;
   ppi)
-    # 24 disjoint graphs split 20/2/2 -> natively inductive, --inductive is a
-    # no-op.  121-way multilabel, so BCE + micro-F1; plain --model gnn crashes
-    # here ("shape '[1]' is invalid for input of size 121").
+    # 24 disconnected graphs split 20/2/2. The training graph contains only the
+    # 20 training components. Labels are 121-way multilabel, so plain
+    # --model gnn is invalid.
     # T=2000: the measured learning curve plateaus by step ~1000 (0.4756 at 1k,
     # 0.4712 at 6k), so this is ample.
     MODEL=(--model multilabel_gnn --aggr mean)
     BLIND=(--model multilabel_gnn --aggr mean --r 0)
-    INDUCTIVE=()
     P1=0.01; T=2000
     CAP=(--K_in 5 --K_out 5)
     ;;
   relbench*)
-    # Temporal splits -> natively inductive, but --inductive still selects the
-    # loader's train-cutoff graph.  Binary and imbalanced, so AUROC.  A root is a
-    # prediction row: r=1 reaches only its entity, r=2 reaches its history.
+    # Temporal splits use the loader's train-cutoff graph. Binary and
+    # imbalanced, so AUROC. A root is a prediction row: r=1 reaches only its
+    # entity, r=2 reaches its history.
     # p1=0.05 (68 of 1353 train rows per step) with T=900 keeps total epochs
     # comparable to the earlier p1=0.2/T=300 while keeping epsilon affordable.
     MODEL=(--model binary_gnn --aggr mean)
     BLIND=(--model binary_gnn --aggr mean --r 0)
-    INDUCTIVE=(--inductive)
     P1=0.05; T=900
     CAP=(--K_in 20 --K_out 3)
     ;;
   facebook)
-    # FB100 UIllinois20, the GAP/ProGAP comparison graph.  Transductive: it is a
-    # single social graph with no natural inductive split, so --inductive is left
-    # off and eval_graph=auto scores on the training graph.  p1 and lr come from
-    # the tuning sweep in sbatch/facebook_tune_ice.sbatch, not the shared
-    # defaults.
+    # FB100 UIllinois20 has no native inductive split. The loader's masks define
+    # a train-induced graph, matching the SparseGNN training contract. p1 and lr
+    # come from the tuning sweep in sbatch/facebook_tune_ice.sbatch.
     MODEL=(--aggr mean); BLIND=(--model mlp --r 0)
-    INDUCTIVE=()
     P1=0.013; T=500
     CAP=(--K_in 5 --K_out 5)
     LR_DP=0.3
     ;;
   reddit)
     MODEL=(--aggr mean); BLIND=(--model mlp --r 0)
-    INDUCTIVE=(--inductive)
     P1=0.002; T=500
     CAP=(--K_in 5 --K_out 5)
     LR_DP=0.3
     ;;
   *)
-    # ogbn-arxiv, flickr, and any other single-label transductive graph converted
-    # to inductive via the train-induced subgraph.
+    # Single-graph datasets use the train-induced graph defined by their masks.
     MODEL=(--aggr mean); BLIND=(--model mlp --r 0)
-    INDUCTIVE=(--inductive)
     P1=0.005; T=500
     CAP=(--K_in 5 --K_out 5)
     ;;

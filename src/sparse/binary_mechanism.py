@@ -102,8 +102,8 @@ class BinaryGNNMechanism(BaseMechanism):
     def evaluate(self, data=None) -> Dict[str, float]:
         data = data or self.data
         self.eval_mode()
-        # Default (eval_edge_index unset): data.edge_index, which for RelBench
-        # is the test-cutoff graph, so held-out rows keep real neighbourhoods.
+        # The caller supplies the test graph; for RelBench this is the graph at
+        # the test cutoff, so held-out rows keep their real neighbourhoods.
         scores = self.module(data.x, self.eval_edges(data)).cpu().numpy()
         y = data.y.cpu().numpy()
         metrics = {}

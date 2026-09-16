@@ -41,7 +41,7 @@ from src.datasets import load_dataset                              # noqa: E402
 from src.sparse.binary_mechanism import BinaryGNNMechanism         # noqa: E402
 from src.sparse.gnn_mechanism import GNNMechanism                  # noqa: E402
 from src.sparse.multilabel_mechanism import MultiLabelGNNMechanism  # noqa: E402
-from src.sparse.run import trivial_baseline                        # noqa: E402
+from src.sparse.run import make_training_graph, trivial_baseline             # noqa: E402
 
 MECHANISMS = {
     'gnn': GNNMechanism,
@@ -72,7 +72,6 @@ def main():
     ap.add_argument('--lr', type=float, default=0.01)
     ap.add_argument('--epochs', type=int, default=300)
     ap.add_argument('--seeds', type=int, default=3)
-    ap.add_argument('--inductive', action='store_true')
     ap.add_argument('--out_dir', required=True)
     args = ap.parse_args()
 
@@ -81,30 +80,24 @@ def main():
     ds_slug = args.dataset.replace(':', '_').replace('/', '_')
     csv_path = os.path.join(args.out_dir, f'sparse_gnn_{ds_slug}_results.csv')
 
-    dataset, data = load_dataset(args.dataset, device=str(device))
-    data = data.to(device)
-
-    # Training edges: the same graph the per-root ceiling would have expanded on.
-    train_ei = data.edge_index
-    if args.inductive:
-        if hasattr(data, 'train_edge_index'):
-            train_ei = data.train_edge_index
-        else:
-            m = data.train_mask
-            train_ei = data.edge_index[:, m[data.edge_index[0]] & m[data.edge_index[1]]]
+    dataset, test_data = load_dataset(args.dataset, device=str(device))
+    test_data = test_data.to(device)
+    train_data = make_training_graph(test_data)
+    train_ei = train_data.edge_index
     print(f"full-batch ceiling  dataset={args.dataset}  device={device}  "
           f"aggr={args.aggr}  L={args.num_layers}  epochs={args.epochs}")
-    print(f"  training edges {train_ei.size(1)} of {data.edge_index.size(1)}")
+    print(f"  training edges {train_ei.size(1)} of "
+          f"{test_data.edge_index.size(1)}")
 
     Mech = MECHANISMS[args.model]
     metric = Mech.metric_name
-    trivial = trivial_baseline(data, metric)
+    trivial = trivial_baseline(test_data, metric)
     print(f"  trivial baseline ({metric}) on test: {trivial:.4f}")
 
     rows, tests = [], []
     for seed in range(args.seeds):
         torch.manual_seed(seed)
-        mech = Mech(data, dataset.num_features, dataset.num_classes,
+        mech = Mech(train_data, dataset.num_features, dataset.num_classes,
                     hidden=args.hidden, num_layers=args.num_layers,
                     dropout=args.dropout, aggr=args.aggr, device=device)
         opt = mech.build_optimizer(lr=args.lr, weight_decay=args.weight_decay,
@@ -112,18 +105,18 @@ def main():
         for _ in range(args.epochs):
             mech.train_mode()
             opt.zero_grad()
-            out = mech.module(data.x, train_ei)
-            node_loss(metric, out, data.y, data.train_mask).backward()
+            out = mech.module(train_data.x, train_ei)
+            node_loss(
+                metric, out, train_data.y, train_data.train_mask).backward()
             opt.step()
-        accs = mech.evaluate(data)
+        accs = mech.evaluate(test_data)
         tests.append(accs['test'])
         extra = (f"  test_auroc={accs['test_auroc']:.4f}"
                  if 'test_auroc' in accs else "")
         print(f"  seed={seed}  train={accs['train']:.4f}  val={accs['val']:.4f}  "
               f"test={accs['test']:.4f}{extra}")
-        rows.append([args.dataset, args.model, args.aggr, metric, args.inductive,
-                     'in', '', 1.0, args.num_layers, '', '', '', '',
-                     '', 'full', args.lr, 0.0,
+        rows.append([args.dataset, args.model, args.aggr, metric, 'in', '',
+                     1.0, args.num_layers, '', '', '', '', '', args.lr, 0.0,
                      args.epochs, args.num_layers, False, seed, args.epochs,
                      f"{accs['train']:.5f}", f"{accs['val']:.5f}",
                      f"{accs['test']:.5f}", f"{trivial:.5f}",
@@ -132,11 +125,10 @@ def main():
 
     with open(csv_path, 'w', newline='') as fh:
         w = csv.writer(fh)
-        # Same schema as src.sparse.run so downstream analysis is unchanged.
-        w.writerow(['dataset', 'model', 'aggr', 'metric', 'inductive',
-                    'direction', 'p1', 'p2', 'r', 'sigma', 'clip', 'K_in',
-                    'K_out', 'cap_mode', 'eval_graph', 'lr', 'momentum',
-                    'T', 'L', 'dp', 'seed', 'step',
+        # Compact non-private subset of the main SparseGNN result schema.
+        w.writerow(['dataset', 'model', 'aggr', 'metric', 'direction', 'p1',
+                    'p2', 'r', 'sigma', 'clip', 'K_in', 'K_out', 'cap_mode',
+                    'lr', 'momentum', 'T', 'L', 'dp', 'seed', 'step',
                     'train_acc', 'val_acc', 'test_acc', 'trivial_baseline',
                     'train_auroc', 'val_auroc', 'test_auroc'])
         w.writerows(rows)

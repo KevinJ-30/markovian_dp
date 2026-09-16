@@ -28,11 +28,9 @@
 # until Stage 1 raised width to 256 for +10 to +14 points at zero epsilon cost.
 # Stage A tests whether that transfers; Stage B then runs the real comparison.
 #
-# INDUCTIVE here is a genuine graph cut, unlike PPI.  PPI's splits are already
-# disconnected components, so --inductive is a no-op.  arxiv is one connected
-# graph, so run.py keeps only arcs with BOTH endpoints in train (run.py:331-337)
-# -- SparseExpand provably cannot reach a val/test node during training -- and
-# evaluates on the full edge_index so held-out nodes keep real neighbourhoods.
+# Arxiv is one connected graph, so run.py keeps only arcs with both endpoints
+# in train. SparseExpand cannot reach validation or test nodes during training;
+# evaluation receives the separate full graph.
 #
 # delta = n^-1.01 with n = 169,343 (full |V|) = 5.24e-6.
 # p1 = 512/90,941 train nodes = 0.0056, the same batch-512 rule as PPI.
@@ -55,9 +53,9 @@ P2_LIST="1.0 0.5 0.25 0.1"
 
 mkdir -p "$OUT_ROOT" results/logs
 
-BASE=(--dataset ogbn-arxiv --direction in --aggr mean --inductive
+BASE=(--dataset ogbn-arxiv --direction in --aggr mean 
       --p1 $P1 --num_layers 2 --clip 1.0 --dropout 0.0 --weight_decay 0.0
-      --roots_from train --seeds $SEEDS --T $T --track_every 25)
+      --seeds $SEEDS --T $T --track_every 25)
 
 run_cell() {   # out_dir, then extra flags
   local out=$1; shift

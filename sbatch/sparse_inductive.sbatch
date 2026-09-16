@@ -32,59 +32,58 @@ DELTA=1e-6
 # ── Reddit: single-label, convert to inductive via the train-induced subgraph ──
 echo "=== Reddit Stage 0: MLP baseline ==="
 srun python -u -m src.sparse.run \
-    --dataset reddit --inductive --direction in --model mlp \
+    --dataset reddit --direction in --model mlp \
     --r 0 --p2 1.0 --p1 0.002 --T 500 --lr 0.01 --seeds 3 \
-    --roots_from train --out_dir results/ppi/mlp_reddit
+    --out_dir results/ppi/mlp_reddit
 
 echo "=== Reddit Stage 0: GCN ceiling ==="
 srun python -u -m src.sparse.run \
-    --dataset reddit --inductive --direction in \
+    --dataset reddit --direction in \
     --p2 1.0 --r 2 --p1 0.002 --T 500 --lr 0.01 --seeds 3 \
-    --roots_from train --out_dir results/ppi/ceiling_reddit
+    --out_dir results/ppi/ceiling_reddit
 
 echo "=== Reddit Stage 1: sparsification sweep ==="
 srun python -u -m src.sparse.run \
-    --dataset reddit --inductive --direction in --K_in 5 \
+    --dataset reddit --direction in --K_in 5 \
     --p2 1.0 0.5 0.25 0.1 --r 1 --p1 0.002 --T 500 --lr 0.01 --seeds 3 \
-    --roots_from train --out_dir results/arxiv/reddit_stage1
+    --out_dir results/arxiv/reddit_stage1
 
 echo "=== Reddit Stage 2: DP sigma sweep ==="
 srun python -u -m src.sparse.run \
-    --dataset reddit --inductive --direction in --dp --K_in 5 \
+    --dataset reddit --direction in --dp --K_in 5 \
     --p2 1.0 0.5 0.25 0.1 --r 1 --sigma 2.0 5.0 10.0 20.0 \
     --clip 1.0 --lr 1.0 --p1 0.002 --T 500 --seeds 3 \
-    --roots_from train --out_dir results/arxiv/reddit_stage2
+    --out_dir results/arxiv/reddit_stage2
 
 echo "=== Reddit Stage 3: post-hoc epsilon ==="
 srun python -u -m src.sparse.compute_epsilon \
     --csv results/arxiv/reddit_stage2/sparse_gnn_reddit_dp_results.csv \
     --delta $DELTA
 
-# ── PPI: natively inductive (24 disjoint graphs), 121-way multilabel -> micro-F1 ──
-# --inductive is deliberately absent: the splits are already separate components,
-# so a training root's expansion cannot reach a val/test node at any r.
+# ── PPI: 24 disjoint graphs, 20/2/2 inductive split, 121-way multilabel ───────
+# The training graph automatically retains only the training components.
 echo "=== PPI Stage 0-1 ==="
 srun python -u -m src.sparse.run \
     --dataset ppi --direction in --model mlp \
     --r 0 --p2 1.0 --p1 0.01 --T 1000 --lr 0.01 --seeds 3 \
-    --roots_from train --out_dir results/ppi/mlp_ppi
+    --out_dir results/ppi/mlp_ppi
 
 srun python -u -m src.sparse.run \
     --dataset ppi --direction in --model multilabel_gnn \
     --p2 1.0 --r 2 --p1 0.01 --T 1000 --lr 0.01 --seeds 3 \
-    --roots_from train --out_dir results/ppi/ceiling_ppi
+    --out_dir results/ppi/ceiling_ppi
 
 srun python -u -m src.sparse.run \
     --dataset ppi --direction in --model multilabel_gnn --K_in 5 \
     --p2 1.0 0.5 0.25 0.1 --r 2 --p1 0.01 --T 1000 --lr 0.01 --seeds 3 \
-    --roots_from train --out_dir results/ppi/stage1_ppi
+    --out_dir results/ppi/stage1_ppi
 
 echo "=== PPI Stage 2-3: DP + epsilon ==="
 srun python -u -m src.sparse.run \
     --dataset ppi --direction in --model multilabel_gnn --dp --K_in 5 \
     --p2 1.0 0.5 0.25 0.1 --r 2 --sigma 2.0 5.0 10.0 20.0 \
     --clip 1.0 --lr 1.0 --p1 0.01 --T 1000 --seeds 3 \
-    --roots_from train --out_dir results/ppi/stage2_ppi
+    --out_dir results/ppi/stage2_ppi
 
 srun python -u -m src.sparse.compute_epsilon \
     --csv results/ppi/stage2_ppi/sparse_gnn_ppi_dp_results.csv \

@@ -1,10 +1,10 @@
 """
 Privacy-utility curves for any dataset: best utility at each budget, per p2.
 
-    python scripts/plot_frontier.py --glob 'results/reddit/transductive_p*/*_with_eps.csv' \
+    python scripts/plot_frontier.py --glob 'results/reddit/inductive/p*/*_with_eps.csv' \
         --metric test_acc --floor 0.1483 --ceiling 0.9382 \
         --floor-label 'majority class' --ceiling-label 'without privacy' \
-        --ylabel 'test accuracy' --title 'Reddit (transductive)' \
+        --ylabel 'test accuracy' --title 'Reddit (inductive)' \
         --out results/figures/reddit_frontier.png
 
 One line per edge-keep probability p2; each is the best utility reached at a

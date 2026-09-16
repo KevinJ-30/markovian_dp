@@ -10,9 +10,9 @@
 # ladder scripts source, so nothing here is hardcoded and every run passes
 # --num_layers equal to its --r.
 #
-# RelBench splits are temporal, so the setting is natively inductive: --inductive
-# expands training over the graph as of the train cutoff, while evaluation uses
-# the full graph so held-out rows keep their real neighbourhoods.  Metric is
+# RelBench splits are temporal: training uses the graph at the train cutoff,
+# while evaluation uses the full graph so held-out rows keep their real
+# neighbourhoods. Metric is
 # AUROC (driver-top3 is ~17-20% positive, so accuracy is uninformative).
 #
 # Depth: a root is a prediction row, reaching its entity at r=1 and the entity's
@@ -53,8 +53,8 @@ done_already() {
 }
 
 
-COMMON=(--dataset $DS $INDUCTIVE --direction in --p1 $P1 --T $T \
-        --lr $LR_NONDP $REG --seeds $SEEDS --roots_from train)
+COMMON=(--dataset $DS --direction in --p1 $P1 --T $T \
+        --lr $LR_NONDP $REG --seeds $SEEDS )
 
 echo "=== [S0a] graph-blind baseline (r=0) ==="
 done_already $OUT/blind/sparse_gnn_${TAG}_results.csv || \
@@ -82,10 +82,10 @@ done
 for R in $R_VALUES; do
   echo "=== [S2] DP sigma sweep, r=$R (L=$R) ==="
   done_already $OUT/dp_r$R/sparse_gnn_${TAG}_dp_results.csv || \
-  $PY -m src.sparse.run --dataset $DS $INDUCTIVE --direction in --dp \
+  $PY -m src.sparse.run --dataset $DS --direction in --dp \
       $MODEL $CAP $REG --p1 $P1 --p2 $P2_GRID --r $R --num_layers $R \
       --sigma $SIGMA_GRID --clip $CLIP --lr $LR_DP \
-      --T $T --seeds $SEEDS --roots_from train --out_dir $OUT/dp_r$R
+      --T $T --seeds $SEEDS --out_dir $OUT/dp_r$R
 
   echo "=== [S3] post-hoc epsilon (Theorem 6.4), r=$R ==="
   $PY -m src.sparse.compute_epsilon \

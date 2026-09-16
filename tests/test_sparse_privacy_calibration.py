@@ -32,20 +32,20 @@ def test_train_sparse_gnn_with_budget_calibrates_once_and_forwards(monkeypatch):
         calibration_calls.append(kwargs)
         return calibration
 
-    def train(mechanism, data, **kwargs):
-        train_calls.append((mechanism, data, kwargs))
+    def train(mechanism, train_data, test_data, **kwargs):
+        train_calls.append((mechanism, train_data, test_data, kwargs))
         return {"test": 0.8}
 
     monkeypatch.setattr(sparse_gnn, "calibrate_sparsegnn_noise", calibrate)
     monkeypatch.setattr(sparse_gnn, "train_sparse_gnn", train)
     checkpoint_callback = object()
     metrics, result = sparse_gnn.train_sparse_gnn_with_budget(
-        "mechanism", "data", target_epsilon=1.0, target_delta=1e-5,
+        "mechanism", "train_data", "test_data",
+        target_epsilon=1.0, target_delta=1e-5,
         K_in=3, K_out=4, p1=0.2, p2=0.3, r=2, T=10, clip=1.5,
         direction="out", accounting_grid=2e-4, union_safe=True,
         calibration_rtol=2e-3, calibration_atol=3e-6, max_sigma=99.0,
-        adj="adj", candidate_nodes="roots", seed=8, eval_every=9,
-        track_every=10, eval_alt_edge_index="alt", verbose=True,
+        adj="adj", seed=8, eval_every=9, track_every=10, verbose=True,
         checkpoint_callback=checkpoint_callback,
     )
 
@@ -58,12 +58,12 @@ def test_train_sparse_gnn_with_budget_calibrates_once_and_forwards(monkeypatch):
         "sigma_rtol": 2e-3, "sigma_atol": 3e-6,
         "max_sigma": 99.0, "union_safe": True,
     }]
-    assert train_calls == [("mechanism", "data", {
+    assert train_calls == [("mechanism", "train_data", "test_data", {
         "p1": 0.2, "p2": 0.3, "r": 2, "T": 10, "adj": "adj",
-        "direction": "out", "candidate_nodes": "roots", "dp": True,
-        "clip": 1.5, "sigma": calibration.noise_multiplier, "seed": 8,
-        "eval_every": 9, "track_every": 10, "eval_alt_edge_index": "alt",
-        "verbose": True, "checkpoint_callback": checkpoint_callback,
+        "direction": "out", "dp": True, "clip": 1.5,
+        "sigma": calibration.noise_multiplier, "seed": 8,
+        "eval_every": 9, "track_every": 10, "verbose": True,
+        "checkpoint_callback": checkpoint_callback,
     })]
 
 
@@ -106,7 +106,7 @@ def test_target_cli_calibrates_each_cell_once_and_records_metadata(
         )
 
     def train(*args, **kwargs):
-        training.append(kwargs)
+        training.append((args, kwargs))
         return {"train": 0.8, "val": 0.7, "test": 0.6}
 
     monkeypatch.setattr(sparse_run, "load_dataset", lambda *args, **kwargs: (dataset, data))
@@ -125,7 +125,11 @@ def test_target_cli_calibrates_each_cell_once_and_records_metadata(
 
     assert len(calibrations) == 2
     assert [call["p2"] for call in calibrations] == [0.2, 0.4]
-    assert [call["sigma"] for call in training] == [2.2, 2.2, 2.4, 2.4]
+    assert [call[1]["sigma"] for call in training] == [2.2, 2.2, 2.4, 2.4]
+    for call_args, _ in training:
+        _, train_graph, test_graph = call_args
+        assert train_graph is not test_graph
+        assert train_graph.edge_index.size(1) < test_graph.edge_index.size(1)
     with (tmp_path / "sparse_gnn_tiny_dp_results.csv").open(newline="") as fh:
         rows = list(csv.DictReader(fh))
     assert len(rows) == 4

@@ -21,8 +21,8 @@ Features per table: z-scored numerics, datetimes as z-scored epoch-years,
          high-cardinality identifiers dropped.  Blocks are laid out
          block-diagonally with a node-type one-hot appended.
 Time     `data.edge_index` is the graph at the TEST cutoff (used by evaluate);
-         `data.train_edge_index` is the TRAIN cutoff, picked up by
-         `src.sparse.run --inductive`.
+         `data.train_edge_index` is the TRAIN cutoff, selected automatically by
+         `src.sparse.run`.
 
 Two caveats.  The cutoff is per split, not per row, so inside the training
 window an early row may reach a later one — leakage between training examples

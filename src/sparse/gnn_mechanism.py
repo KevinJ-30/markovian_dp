@@ -7,8 +7,8 @@ GCN forward pass on H and returns the negative log-likelihood at the ROOT node
 choice: each sampled root contributes a single supervised loss term computed on
 its own sparsified neighborhood, exactly matching G(y) = sum_v g0(y_v).
 
-Evaluation is standard full-graph transductive inference on the (unsparsified)
-graph, reporting train/val/test accuracy on the Planetoid masks.
+Evaluation is standard full-graph inference on the separately supplied test
+graph, reporting train/val/test accuracy on its masks.
 """
 
 from typing import Dict, Iterable, List, Sequence

@@ -113,7 +113,6 @@ def get_raw_dataset(dataset_name):
         'WikiCS',
         'facebook',
         'twitch_DE',
-        'dgl_famazon',
         ]:
         raise ValueError(f'Invalid dataset name, got {dataset_name}')
 
@@ -206,9 +205,6 @@ def get_raw_dataset(dataset_name):
     elif dataset_name == 'twitch_EN':
         from torch_geometric.datasets import Twitch
         dataset = Twitch(root=data_file_root, name='EN')
-    elif dataset_name == 'dgl_famazon':
-        from dgl.data import FraudAmazonDataset
-        dataset = FraudAmazonDataset(raw_dir=data_file_root, train_size = 0.8, val_size = 0.01)
     else:
         raise ValueError('Invalid dataset name')
 

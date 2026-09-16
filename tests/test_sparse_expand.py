@@ -209,9 +209,9 @@ def test_sparse_gnn_smoke_reduces_loss():
     loss0 = mech.subgraph_loss(sg)
     assert torch.isfinite(loss0)
 
-    accs = train_sparse_gnn(mech, data, adj=adj, direction='in',
-                            p1=1.0, p2=1.0, r=2, T=30,
-                            candidate_nodes=cand, seed=0)
+    accs = train_sparse_gnn(
+        mech, data, data, adj=adj, direction='in', p1=1.0, p2=1.0,
+        r=2, T=30, seed=0)
     # After 30 full-batch steps on CiteSeer, train accuracy should clear chance.
     assert accs['train'] > 1.0 / dataset.num_classes
 

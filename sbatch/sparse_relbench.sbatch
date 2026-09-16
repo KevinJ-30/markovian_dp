@@ -9,9 +9,9 @@
 
 # ── SparseGNN on RelBench entity tasks ──
 #
-# RelBench splits are temporal, so the setting is natively inductive: --inductive
-# expands training over the graph as it stood at the train cutoff, while
-# evaluation uses the full graph so held-out rows keep their real neighbourhoods.
+# RelBench splits are temporal: training uses the graph at the train cutoff,
+# while evaluation uses the full graph so held-out rows keep their real
+# neighbourhoods.
 # Metric is AUROC.
 #
 # rel-f1 (1353 training rows) is the pipeline check and runs on a laptop via
@@ -44,39 +44,39 @@ for DS in "${TASKS[@]}"; do
 
   echo "=== [S0a] graph-blind MLP baseline ==="
   srun python -u -m src.sparse.run \
-      --dataset "$DS" --model mlp --inductive --direction in \
+      --dataset "$DS" --model mlp --direction in \
       --r 0 --p2 1.0 --p1 0.01 --T 1000 --lr 0.01 --seeds 3 \
-      --roots_from train --out_dir $OUT/mlp
+      --out_dir $OUT/mlp
 
   echo "=== [S0b] GCN ceiling ==="
   srun python -u -m src.sparse.run \
-      --dataset "$DS" --model binary_gnn --inductive --direction in \
+      --dataset "$DS" --model binary_gnn --direction in \
       --p2 1.0 --r 2 --p1 0.01 --T 1000 --lr 0.01 --seeds 3 --num_layers 2 \
-      --roots_from train --out_dir $OUT/ceiling
+      --out_dir $OUT/ceiling
 
   echo "=== [S1] sparsification-only sweep ==="
   srun python -u -m src.sparse.run \
-      --dataset "$DS" --model binary_gnn --inductive --direction in \
+      --dataset "$DS" --model binary_gnn --direction in \
       --K_in 20 --K_out 3 --p2 1.0 0.5 0.25 0.1 --r 2 \
       --p1 0.01 --T 1000 --lr 0.01 --seeds 3 --num_layers 2 \
-      --roots_from train --out_dir $OUT/stage1
+      --out_dir $OUT/stage1
 
   echo "=== [S1b] the K_out utility/privacy knob ==="
   for KO in 2 3 5 10; do
     srun python -u -m src.sparse.run \
-        --dataset "$DS" --model binary_gnn --inductive --direction in \
+        --dataset "$DS" --model binary_gnn --direction in \
         --K_in 20 --K_out $KO --p2 1.0 --r 2 \
         --p1 0.01 --T 1000 --lr 0.01 --seeds 3 --num_layers 2 \
-        --roots_from train --out_dir $OUT/kout_$KO
+        --out_dir $OUT/kout_$KO
   done
 
   echo "=== [S2] DP sigma sweep ==="
   srun python -u -m src.sparse.run \
-      --dataset "$DS" --model binary_gnn --inductive --direction in --dp \
+      --dataset "$DS" --model binary_gnn --direction in --dp \
       --K_in 20 --K_out 3 --p2 1.0 0.5 0.25 0.1 --r 2 \
       --sigma 2.0 5.0 10.0 20.0 --clip 1.0 --lr 1.0 \
       --p1 0.01 --T 1000 --seeds 3 --num_layers 2 \
-      --roots_from train --out_dir $OUT/dp
+      --out_dir $OUT/dp
 
   echo "=== [S3] post-hoc epsilon (Theorem 6.4) ==="
   srun python -u -m src.sparse.compute_epsilon \

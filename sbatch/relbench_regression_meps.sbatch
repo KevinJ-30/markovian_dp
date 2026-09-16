@@ -101,8 +101,8 @@ eval "$(cat "$OUT_ROOT/scope.env")"
 echo "  -> p1=$SCOPE_P1  K_in=$SCOPE_K_IN  K_out=$SCOPE_K_OUT  n=$SCOPE_N_NODES"
 
 COMMON=(--dataset "$DS" --direction in --model "$MODEL" --aggr mean
-        --inductive --p1 "$SCOPE_P1" --num_layers 2 --hidden 256 --clip 1.0
-        --dropout $DROPOUT --weight_decay $WEIGHT_DECAY --roots_from train
+        --p1 "$SCOPE_P1" --num_layers 2 --hidden 256 --clip 1.0
+        --dropout $DROPOUT --weight_decay $WEIGHT_DECAY 
         --seeds $SEEDS --T $T --track_every 25
         --K_in "$SCOPE_K_IN" --K_out "$SCOPE_K_OUT")
 

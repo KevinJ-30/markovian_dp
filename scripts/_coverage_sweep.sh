@@ -37,8 +37,8 @@
 set -u
 
 DS=${DS:?set DS=<dataset>, e.g. DS=facebook}
-# The project's deps live in the PytorchEnv conda env (torch 2.8, PyG 2.7,
-# xgboost, sklearn); the base python does not have the full stack.
+# The project's torch and PyG dependencies live in the PytorchEnv conda env;
+# the base python does not have the full stack.
 # --no-capture-output so progress streams instead of appearing at the end.
 PY=${PY:-"conda run --no-capture-output -n PytorchEnv python"}
 
@@ -56,16 +56,12 @@ SIGMAS=${SIGMAS:-"2 5 10 20 40 80 160"}
 P2=${P2:-"1.0 0.1"}
 OUT_ROOT=${OUT_ROOT:-results/coverage_$TAG}
 
-# ${arr[@]+"${arr[@]}"} — macOS ships bash 3.2, where expanding an empty array
-# under `set -u` is an "unbound variable" error.  INDUCTIVE is empty for the
-# natively-inductive and the transductive datasets alike.
 COMMON=(--dataset "$DS" --direction in "${MODEL[@]}"
-        ${INDUCTIVE[@]+"${INDUCTIVE[@]}"}
         --p1 "$P1" "${CAP[@]}" --clip "$CLIP" --hidden 16 "${REG[@]}"
-        --roots_from train --seeds "$SEEDS" --T "$T" --track_every 25)
+        --seeds "$SEEDS" --T "$T" --track_every 25)
 
 echo "=== coverage sweep: $DS ==="
-echo "  p1=$P1  T=$T  seeds=$SEEDS  cap=${CAP[*]}  inductive=${INDUCTIVE[*]:-no}  lr_dp=$LR_DP"
+echo "  p1=$P1  T=$T  seeds=$SEEDS  cap=${CAP[*]}  lr_dp=$LR_DP"
 echo "  sigma: $SIGMAS"
 echo "  p2:    $P2"
 echo "  out:   $OUT_ROOT"

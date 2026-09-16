@@ -2,11 +2,9 @@
 BaseMechanism: the model-agnostic base mechanism g0 for SparseGNN.
 
 Assumption 3.2 of the paper factors every learning update through a per-subgraph
-gradient function g0:  G(y) = sum_v g0(y_v), with ||g0(H)||_2 <= C.  A GNN node
-classifier is one instantiation of g0; a non-GNN graph-anomaly detector is
-another.  Everything specific to the choice of g0 lives behind this interface,
-so the SparseGNN engine (sparse_gnn.py) and the DP clip/noise machinery are
-shared across models.
+gradient function g0: G(y) = sum_v g0(y_v), with ||g0(H)||_2 <= C. Concrete
+node-classification mechanisms implement this interface, while SparseGNN and
+the DP clip/noise machinery remain shared.
 
 A concrete mechanism must supply:
     * an nn.Module (or parameter list) via `parameters()`
@@ -35,12 +33,6 @@ class BaseMechanism(ABC):
         self.device = device or torch.device("cpu")
         self.module = module.to(self.device)
         self.optimizer = None
-        #: Optional edge_index override for `evaluate`.  None means evaluate on
-        #: data.edge_index (the full graph).  run.py sets this to the actual
-        #: training graph (inductive-filtered, deduplicated, degree-capped)
-        #: when --eval_graph train is passed, so utility can be measured on the
-        #: same graph the model was trained on.
-        self.eval_edge_index = None
         # Physical padding budget for the private root-first path.  It bounds
         # B * N_max per forward chunk; logical DP batches may span chunks.
         self.max_private_batch_nodes = 8192
@@ -52,33 +44,9 @@ class BaseMechanism(ABC):
     #: gather and scatter, and PyG returns identical values either way.
     _DENSE_MESSAGE_BUDGET = 250_000_000
 
-    def evaluate_on(self, data, edge_index) -> Dict[str, float]:
-        """`evaluate` against a specific adjacency, leaving state untouched.
-
-        `edge_index=None` means the full graph carried on `data`.  Used to
-        report utility on both the training graph and the full one, since they
-        differ by the degree cap (and, for inductive runs, the split filter).
-        """
-        saved_ei = self.eval_edge_index
-        saved_cache = getattr(self, '_eval_adj_cache', None)
-        self.eval_edge_index = edge_index
-        self._eval_adj_cache = None
-        try:
-            return self.evaluate(data)
-        finally:
-            self.eval_edge_index = saved_ei
-            self._eval_adj_cache = saved_cache
-
     def eval_edges(self, data):
-        """The adjacency `evaluate` should use (see `eval_edge_index`).
-
-        Returns an edge_index normally, or a CSR adjacency when the dense
-        message tensor would be too large to allocate.
-        """
-        ei = (self.eval_edge_index if self.eval_edge_index is not None
-              else data.edge_index)
-        if not hasattr(data, 'x') or data.x is None:
-            return ei
+        """Return evaluation edges, using CSR when dense messages are too large."""
+        ei = data.edge_index
         if ei.size(1) * data.x.size(1) <= self._DENSE_MESSAGE_BUDGET:
             return ei
 

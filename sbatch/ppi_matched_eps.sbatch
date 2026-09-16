@@ -67,7 +67,7 @@ mkdir -p "$OUT_ROOT" results/logs
 
 COMMON=(--dataset ppi --direction in --model multilabel_gnn --aggr mean
         --p1 $P1 --num_layers 2 --hidden $HIDDEN --clip 1.0
-        --dropout 0.0 --weight_decay 0.0 --roots_from train
+        --dropout 0.0 --weight_decay 0.0 
         --seeds $SEEDS --T $T --optimizer sgd --track_every 100)
 
 run_cell() {   # out_dir, then extra flags

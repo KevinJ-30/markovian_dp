@@ -23,9 +23,6 @@ SUPPORTED_DATASETS = {
     # Inductive node classification benchmarks
     'flickr': 'Flickr',
     'ppi': 'PPI',
-    # Heterophilous graphs (GADBench: binary anomaly node classification)
-    'tolokers': 'Tolokers',
-    'questions': 'Questions',
     # OGB link property prediction
     'ogbl-collab': 'ogbl-collab',
     # GraphBench Bluesky (temporal-split node classification, inductive)
@@ -165,8 +162,8 @@ def _load_ppi():
     SparseGNN engine consumes unchanged, while keeping the splits genuinely
     INDUCTIVE: the components are disconnected, so SparseExpand from a training
     root provably cannot reach a val/test node no matter how large r is.  That
-    makes PPI the cleanest node-DP story available — no train-induced-subgraph
-    surgery (`--inductive`) is needed or has any effect.
+    makes PPI the cleanest node-DP story available: selecting the training graph
+    simply retains its already-disconnected training components.
 
     Labels are 121-way MULTILABEL, so pair this with `--model multilabel_gnn`;
     `num_classes` is the number of label columns and metrics are micro-F1.
@@ -249,8 +246,8 @@ def _load_graphsaint(name, root=None):
         budget on an arc to itself.
 
     `data.edge_index` is the full graph and `data.train_edge_index` the
-    train-induced one, so `--inductive` picks up the authors' own training graph
-    (the same path RelBench uses) rather than re-deriving it by masking.
+    train-induced one. `src.sparse.run` uses the latter for training and passes
+    the former separately for evaluation.
     """
     import json
     import numpy as np
@@ -633,27 +630,7 @@ def _load_bluesky():
     dataset = _BlueskyDataset(data, num_features, num_classes)
     return dataset, data
 
-
-def _load_heterophilous(canonical, split_idx=0):
-    """Load a HeterophilousGraphDataset (GADBench GAD datasets) with 1-D masks.
-
-    These datasets ship 10 pre-defined splits: train/val/test_mask each have shape
-    [N, num_splits]. We select column `split_idx` and expose the usual 1-D bool
-    masks so the rest of the pipeline is unchanged. Labels are binary (anomaly=1).
-    """
-    from torch_geometric.datasets import HeterophilousGraphDataset
-    dataset = HeterophilousGraphDataset(root=f'/tmp/{canonical}', name=canonical)
-    data = dataset[0]
-    num_splits = data.train_mask.size(1)
-    if not (0 <= split_idx < num_splits):
-        raise ValueError(f"split_idx {split_idx} out of range [0, {num_splits}) "
-                         f"for {canonical}")
-    for split in ('train', 'val', 'test'):
-        setattr(data, f'{split}_mask', getattr(data, f'{split}_mask')[:, split_idx])
-    return dataset, data
-
-
-def load_dataset(name, device='cpu', split_idx=0, **relbench_kwargs):
+def load_dataset(name, device='cpu', **relbench_kwargs):
     """
     Load a dataset by name.
 
@@ -661,8 +638,6 @@ def load_dataset(name, device='cpu', split_idx=0, **relbench_kwargs):
         name: One of the keys in SUPPORTED_DATASETS (case-insensitive), or a
             RelBench pair written as 'relbench:<database>/<task>'.
         device: Device to move data to.
-        split_idx: For datasets with multiple predefined splits (Tolokers,
-            Questions), which split column to use. Ignored otherwise.
         **relbench_kwargs: forwarded to src.sparse.relbench_data.load_relbench
             (root, label_agg, reverse_edges, max_categories) for RelBench names.
 
@@ -691,12 +666,6 @@ def load_dataset(name, device='cpu', split_idx=0, **relbench_kwargs):
         raise ValueError(f"Unknown dataset '{name}'. Supported: "
                          f"{list(SUPPORTED_DATASETS.keys())} or "
                          f"relbench:<database>/<task>")
-
-    if key in ('tolokers', 'questions'):
-        dataset, data = _load_heterophilous(SUPPORTED_DATASETS[key], split_idx=split_idx)
-        data = data.to(device)
-        return dataset, data
-
     if key == 'cora-ml':
         dataset, data = _load_cora_ml()
         return dataset, data.to(device)
@@ -714,8 +683,8 @@ def load_dataset(name, device='cpu', split_idx=0, **relbench_kwargs):
         return dataset, data
 
     if key == 'flickr':
-        # Single graph with train/val/test masks (GraphSAINT's inductive
-        # benchmark); pass --inductive to train on the train-induced subgraph.
+        # Single graph with train/val/test masks; src.sparse.run automatically
+        # builds the train-induced graph.
         from torch_geometric.datasets import Flickr
         root = os.environ.get('FLICKR_DATA_ROOT', 'data/Flickr')
         dataset = Flickr(root=root)

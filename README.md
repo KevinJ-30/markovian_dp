@@ -39,7 +39,6 @@ src/
     privacy_loss.py        two-mixture Gaussian dp_accounting primitive
     compute_epsilon.py     post-hoc epsilon for a results CSV
     run.py                 experiment CLI
-    gad/                   graph anomaly detection (XGBoost, GADBench) — side pipeline
 
 scripts/                   drivers and figures (see scripts/README.md)
   setup_graphsaint.sh      unpack the manually-downloaded GraphSAINT graphs
@@ -55,14 +54,13 @@ paper/                     manuscript and figures
 pip install torch torch_geometric ogb opacus dp_accounting scipy pandas matplotlib pytest
 ```
 
-`relbench` is needed only for RelBench datasets, and `xgboost` + `scikit-learn`
-only for `src/sparse/gad/` (its test skips when absent).
+`relbench` is needed only for RelBench datasets.
 
 ## Datasets
 
-Most datasets download themselves on first use, into `data/` (gitignored):
-Planetoid, OGB, PyG's Reddit/Flickr/PPI, and the GADBench graphs need no setup,
-and RelBench pulls its databases through the `relbench` package.
+Most datasets download themselves on first use, into `data/` (gitignored).
+Planetoid, OGB, and PyG's Reddit/Flickr/PPI need no setup, while RelBench pulls
+its databases through the `relbench` package.
 
 **The four large GraphSAINT graphs are the exception and need a manual
 download.** Zeng et al. distribute them as a Google Drive folder with no
@@ -192,8 +190,8 @@ pytest tests/
   manuscript v36), by computing the
   hockey-stick divergence of the actual mechanism on a star graph and checking
   the dominating pair upper-bounds it.
-- `test_sparse_expand.py`, `test_mechanisms.py`, `test_gad.py` — expansion,
-  orientation, degree capping, and the base mechanisms.
+- `test_sparse_expand.py`, `test_mechanisms.py` — expansion, orientation,
+  degree capping, and the base mechanisms.
 
 ## Things worth knowing before reading results
 
@@ -203,13 +201,12 @@ pytest tests/
   full. `--aggr gcn` normalizes by the *source* degree, which a subgraph
   boundary truncates; measured rooted-vs-full relative error is ~0 for mean and
   ~1.1 for gcn, and GCN loses ~27 accuracy points on PPI as a result.
-- **Evaluation graph.** Training uses the deduplicated, degree-capped graph;
-  evaluation defaults to the full one. Every run therefore records both, the
-  second set under `<metric>_alt`, so the gap is measured rather than assumed.
+- **Separate graphs.** Training always uses the loader's training graph or the
+  graph induced by `train_mask`; evaluation always receives the separate,
+  uncapped test graph.
 - **Metrics.** On PPI the all-positive predictor scores 0.4608 micro-F1 while
   having no ranking ability at all (AUROC 0.4955), so a model below that floor
   may still be learning. AUROC is recorded alongside micro-F1 for this reason.
-- **Inductive settings differ.** PPI and RelBench are natively inductive (disjoint
-  graphs; temporal splits). ogbn-arxiv, Flickr, and Reddit are single graphs made
-  inductive by `--inductive`, which drops every arc crossing a split — 68–76% of
-  edges on those datasets.
+- **Inductive settings differ.** PPI and RelBench supply disjoint or temporal
+  training graphs. For ogbn-arxiv, Flickr, Reddit, and other single graphs,
+  `src.sparse.run` always drops arcs whose endpoints are not both training nodes.

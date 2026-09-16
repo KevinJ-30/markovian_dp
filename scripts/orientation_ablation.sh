@@ -42,8 +42,8 @@ for DS in $DATASETS; do
   source scripts/_dataset_settings.sh $DS
   OUT=results/orientation_$TAG
   echo "\n########## $DS ##########"
-  COMMON=(--dataset $DS $INDUCTIVE --T $T --lr $LR_NONDP $REG \
-          --seeds $SEEDS --roots_from train)
+  COMMON=(--dataset $DS --T $T --lr $LR_NONDP $REG \
+          --seeds $SEEDS )
 
   echo "=== [0] graph-blind reference (r=0) ==="
   $PY -m src.sparse.run $COMMON $BLIND --p2 1.0 --p1 $P1 \

@@ -39,8 +39,8 @@ done_already() {
 for DS in $DATASETS; do
   source scripts/_dataset_settings.sh $DS
   echo "\n########## $DS ##########"
-  COMMON=(--dataset $DS $INDUCTIVE --direction in --p1 $P1 --T $T \
-          --lr $LR_NONDP $REG --seeds $SEEDS --roots_from train)
+  COMMON=(--dataset $DS --direction in --p1 $P1 --T $T \
+          --lr $LR_NONDP $REG --seeds $SEEDS )
 
   echo "=== [S0a] graph-blind baseline (r=0) ==="
   done_already results/inductive_blind_$TAG/sparse_gnn_${TAG}_results.csv || \
@@ -58,7 +58,7 @@ for DS in $DATASETS; do
     $PY -m src.sparse.run $COMMON $MODEL --p2 1.0 --r $CEIL_R \
         --num_layers $CEIL_R --out_dir results/inductive_ceiling_$TAG
   else
-    $PY scripts/ceiling_fullbatch.py --dataset $DS $INDUCTIVE $MODEL $REG \
+    $PY scripts/ceiling_fullbatch.py --dataset $DS $MODEL $REG \
         --num_layers $CEIL_R --lr $LR_NONDP --epochs 300 --seeds $SEEDS \
         --out_dir results/inductive_ceiling_$TAG
   fi
