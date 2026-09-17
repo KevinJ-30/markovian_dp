@@ -7,6 +7,7 @@
   "parameters": {
     "steps": 1,
     "batch_size": 32,
-    "noise_multiplier": 2.0
+    "noise_multiplier": 2.0,
+    "clip": 1.0
   }
 }

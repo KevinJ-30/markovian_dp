@@ -12,16 +12,20 @@ def max_terms_per_node(max_degree: int) -> int:
     return max_degree + 1
 
 
-def base_sensitivity(max_degree: int) -> float:
-    return float(2 * max_terms_per_node(max_degree))
-
-
 def multiterm_dpsgd_epsilon(*, steps: int, noise_multiplier: float,
                              delta: float, num_samples: int,
                              batch_size: int, max_terms: int) -> float:
-    """Port of DP-GNN's hypergeometric multi-term RDP accountant."""
+    """Hypergeometric multi-term RDP for uniform batches without replacement.
+
+    ``noise_multiplier`` scales the sum sensitivity ``2 * max_terms * clip``,
+    not just the per-root clipping bound used by Opacus.
+    """
     if steps < 1 or num_samples < 1 or batch_size < 1:
         raise ValueError("steps, num_samples, and batch_size must be positive")
+    if batch_size > num_samples:
+        raise ValueError("batch_size must not exceed num_samples")
+    if max_terms < 1 or max_terms > num_samples:
+        raise ValueError("max_terms must be between 1 and num_samples")
     if not 0.0 < delta < 1.0:
         raise ValueError("delta must lie in (0, 1)")
     if noise_multiplier < 1e-20:
@@ -29,8 +33,6 @@ def multiterm_dpsgd_epsilon(*, steps: int, noise_multiplier: float,
     from dp_accounting import GaussianDpEvent
     from dp_accounting.rdp import RdpAccountant, compute_epsilon
 
-    batch_size = min(batch_size, num_samples)
-    max_terms = min(max_terms, num_samples)
     terms = np.arange(max_terms + 1)
     terms_logprobs = scipy.stats.hypergeom(
         num_samples, max_terms, batch_size).logpmf(terms)

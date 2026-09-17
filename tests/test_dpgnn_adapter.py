@@ -1,4 +1,5 @@
 import json
+import math
 
 import torch
 from torch_geometric.data import Data
@@ -16,9 +17,16 @@ def test_dpgnn_partition_adapter_smoke(tmp_path):
     split = load_or_create_inductive_split(data, "dpg nn-unit", root=tmp_path / "splits", seed=0)
     manifest = export_partitions(split, tmp_path / "partitions")
     result = run_partitioned(manifest, tmp_path / "result.json", steps=1, batch_size=4,
-                             noise_multiplier=2.0, seed=0)
+                             noise_multiplier=2.0, seed=0, clip=0.7,
+                             max_private_batch_nodes=1)
     assert result["method"] == "dp_gnn"
-    assert 0.0 <= result["validation_accuracy"] <= 1.0
-    assert json.loads((tmp_path / "result.json").read_text())["test_accuracy"] == result["test_accuracy"]
+    persisted = json.loads((tmp_path / "result.json").read_text())
+    for metric in ("validation_accuracy", "test_accuracy"):
+        assert 0.0 <= result[metric] <= 1.0
+        assert persisted[metric] == result[metric]
+    assert math.isfinite(result["privacy"]["epsilon"])
+    assert result["privacy"]["epsilon"] > 0
+    assert result["privacy"]["composition_count"] == 1
+    assert persisted["privacy"] == result["privacy"]
 
 

@@ -30,6 +30,7 @@ src/
     graphs.py             separate training-graph selection
     sparse_expand.py      SparseExpand, root sampling, degree capping
     padded.py             lossless root-first private batch representation
+    dpgnn.py              DP-GNN degree sampling and padded one-hop batches
   models/
     base_mechanism.py      g0 interface, optimizer, and evaluation helpers
     *_mechanism.py        task-specific networks and mechanisms
@@ -199,6 +200,43 @@ cap that prices the guarantee. Epsilon is charged for the worst-case bound
 heavy-tailed degree distribution a generous cap costs a great deal of epsilon
 for very little signal.
 
+## DP-GNN baseline
+
+DP-GNN is a separate learner, not SparseGNN with different sampling flags:
+
+```bash
+python -m src.experiments.run --config configs/cora_ml_dp_gnn_smoke.json \
+    --out /tmp/dpgnn-smoke.json
+```
+
+Its training partition is sampled once: incoming arcs are retained independently
+with probability `min(1, K/(2*d))`, selected neighbors are deduplicated, and an
+entire incoming list is discarded if it exceeds `K`. Each update draws a fresh
+fixed-size root batch **without replacement**, then gathers cached one-hop stars.
+This follows the subset sampling in the
+[DP-GNN paper's Algorithm 4](https://arxiv.org/html/2111.15521), rather than the
+replacement draws in Google's executable implementation.
+
+Method `parameters` accept:
+- `clip` (default `1.0`): global L2 bound `C` on each root's complete gradient.
+- `max_private_batch_nodes` (default `8192`): physical padded-slot budget.
+  Chunking preserves one noise addition and one Adam update per logical batch;
+  a single oversized star is processed alone.
+- `batch_size`: positive logical batch size `B`, no larger than training size `N`.
+- `noise_multiplier`: sensitivity-normalized multiplier `lambda`.
+
+For `M = min(K+1, N)`, Opacus adds isotropic Gaussian noise with standard deviation
+`2*M*C*lambda` to the clipped sum, then divides by `B`. Its internal multiplier
+is therefore `2*M*lambda`, **not** the value passed to the hypergeometric multi-term
+RDP accountant in `src/privacy/dpgnn.py`. No SparseGNN PLD or generic Opacus
+accountant is used. The former per-parameter percentile clipping and manual
+noise path have been removed.
+
+Graph-disjoint partitions, one-hop architecture, training-star truncation, and
+the existing sampled full-partition evaluation are unchanged. `evaluate_every`
+remains accepted but only final validation/test metrics are returned. Historical
+DP-GNN results predate this clipping/root-sampling change and are not rewritten.
+
 ## Tests
 
 ```bash
@@ -217,8 +255,11 @@ pytest tests/
   the dominating pair upper-bounds it.
 - `test_sparse_expand.py`, `test_mechanisms.py` — expansion, orientation,
   degree capping, and the base mechanisms.
+- `test_dpgnn_sampling.py`, `test_dpgnn_training.py`, `test_dpgnn_accounting.py` —
+  DP-GNN sampler semantics, padded per-root gradients, global clipping/noise,
+  physical-chunk equivalence, and hypergeometric accounting.
 
-## Things worth knowing before reading results
+## Things worth knowing before reading SparseGNN results
 
 - **Aggregator.** The default `--aggr mean` (GraphSAGE) makes the rooted-subgraph
   computation *exactly* equal full-graph inference, because its normalizer reads

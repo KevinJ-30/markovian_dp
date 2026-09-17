@@ -8,6 +8,7 @@
     "steps": 800,
     "batch_size": 256,
     "noise_multiplier": 2.0,
+    "clip": 1.0,
     "evaluate_every": 25
   }
 }

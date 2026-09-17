@@ -89,3 +89,21 @@ class _OneHopGCN(nn.Module):
             aggregated.index_add_(0, senders, x[receivers] * edge_weight[:, None])
         x = aggregated + torch.tanh(self.core(aggregated))
         return self.decoder(x)
+
+
+class _PaddedOneHopGCN(nn.Module):
+    """Root-only view of one-hop stars sharing the full-graph model's layers."""
+
+    def __init__(self, model: _OneHopGCN):
+        super().__init__()
+        self.encoder = model.encoder
+        self.core = model.core
+        self.decoder = model.decoder
+
+    def forward(
+        self, features: torch.Tensor, node_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        encoded = torch.tanh(self.encoder(features))
+        encoded = encoded.masked_fill(~node_mask.unsqueeze(-1), 0)
+        averaged = encoded.sum(dim=1) / node_mask.sum(dim=1, keepdim=True)
+        return self.decoder(averaged + torch.tanh(self.core(averaged)))
