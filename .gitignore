@@ -45,7 +45,14 @@ ENV/
 *.csv
 *.h5
 *.hdf5
-data/
+# ANCHORED to the repo root on purpose.  A bare `data/` matches a directory of
+# that name at ANY depth, which silently excluded
+# third_party/ProGAP/core/data/ -- the package holding NodeDataLoader and the
+# BoundOutDegree / filter_class / remove_isolated_nodes / remove_self_loops
+# transforms.  ProGAP could not be imported from a clone, and the source that
+# produced its published numbers was never in version control.  Keep the
+# leading slash: it still ignores the ~4.4 GB dataset cache at ./data.
+/data/
 /tmp/
 
 # OS
