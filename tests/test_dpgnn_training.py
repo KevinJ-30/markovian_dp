@@ -110,13 +110,14 @@ def private_star_graph(one_hop_stars):
 
 
 def _reference_adam_step(model, optimizer, stars, labels, *, clip, noise_std,
-                         generator):
+                         generator, multilabel=False):
     optimizer.zero_grad()
     parameters = tuple(model.parameters())
     flat_gradients = []
     for star, label in zip(stars, labels):
-        loss = F.cross_entropy(
-            _explicit_star_logits(model, star).unsqueeze(0), label.view(1))
+        logits = _explicit_star_logits(model, star).unsqueeze(0)
+        loss = (F.binary_cross_entropy_with_logits(logits, label.view(1, -1).float())
+                if multilabel else F.cross_entropy(logits, label.view(1)))
         gradients = torch.autograd.grad(loss, parameters)
         flat_gradients.append(torch.cat([gradient.reshape(-1) for gradient in gradients]))
     flat_gradients = torch.stack(flat_gradients)
@@ -179,14 +180,17 @@ def test_private_step_matches_global_clipping_and_real_noise(
         wrapped.to_standard_module()
 
 
+@pytest.mark.parametrize("multilabel", [False, True])
 @pytest.mark.parametrize("device", [
     "cpu",
     pytest.param("cuda", marks=pytest.mark.skipif(
         not torch.cuda.is_available(), reason="CUDA is unavailable")),
 ])
 def test_noisy_adam_updates_are_independent_of_unequal_physical_chunks(
-        private_star_graph, device):
+        private_star_graph, device, multilabel):
     initial, x, y, adjacency, star_nodes = private_star_graph
+    if multilabel:
+        y = torch.tensor([[1, 0], [1, 1], [0, 1], [0, 0], [1, 1], [0, 1], [1, 0]])
     device = torch.device(device)
     x, y = x.to(device), y.to(device)
     models = [deepcopy(initial).to(device) for _ in range(2)]
@@ -194,7 +198,7 @@ def test_noisy_adam_updates_are_independent_of_unequal_physical_chunks(
     clip, max_terms, noise_lambda, noise_seed = 0.2, 2, 0.4, 2718
     config = DPGNNConfig(
         num_classes=2, steps=2, batch_size=4, noise_multiplier=noise_lambda,
-        max_degree=1, clip=clip, latent_size=5)
+        max_degree=1, clip=clip, latent_size=5, multilabel=multilabel)
     trainer = PartitionedDPGNN(config, device=device)
     adams = [
         torch.optim.Adam(model.parameters(), lr=config.learning_rate) for model in models]
@@ -222,7 +226,7 @@ def test_noisy_adam_updates_are_independent_of_unequal_physical_chunks(
             _reference_adam_step(
                 reference, reference_adam, [x[star_nodes[root]] for root in root_ids],
                 y[roots.to(device)], clip=clip, noise_std=2 * max_terms * clip * noise_lambda,
-                generator=reference_generator)
+                generator=reference_generator, multilabel=multilabel)
             for model, adam, wrapped, optimizer, budget in zip(
                     models, adams, wrappers, optimizers, (100, 4)):
                 batches = list(iter_dpgnn_batches(

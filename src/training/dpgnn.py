@@ -19,6 +19,7 @@ from opacus.grad_sample import GradSampleModule
 from opacus.optimizers import DPOptimizer
 
 from src.models.baselines import _OneHopGCN, _PaddedOneHopGCN
+from src.models.objectives import _multilabel_micro_f1, _task_loss
 from src.processing.dpgnn import (
     iter_dpgnn_batches, sample_dpgnn_roots, sample_training_edges,
 )
@@ -41,6 +42,7 @@ class DPGNNConfig:
     clip: float = 1.0
     max_subgraph_nodes: int = 100
     max_private_batch_nodes: int = 8192
+    multilabel: bool = False
 
 
 def _inverse_degree_weights(edge_index: torch.Tensor, num_nodes: int,
@@ -74,7 +76,8 @@ class PartitionedDPGNN:
         edge_index = sample_training_edges(
             data, max_degree=self.config.max_degree, seed=seed).to(self.device)
         weights = _inverse_degree_weights(edge_index, int(data.num_nodes), self.device)
-        return data.x.to(self.device), data.y.to(self.device).long(), edge_index, weights
+        label_dtype = torch.float32 if self.config.multilabel else torch.long
+        return data.x.to(self.device), data.y.to(self.device, dtype=label_dtype), edge_index, weights
 
     def _private_step(
         self, model: GradSampleModule, optimizer: DPOptimizer,
@@ -87,8 +90,13 @@ class PartitionedDPGNN:
         while True:
             following = next(batches, None)
             logits = model(current.features, current.node_mask)
-            losses = F.cross_entropy(logits, current.labels, reduction="none")
-            losses.mean().backward()
+            if self.config.multilabel:
+                # BCE averages classes within each root, then roots. Opacus
+                # retains the leading root axis for globally clipped samples.
+                _task_loss(logits, current.labels, multilabel=True).backward()
+            else:
+                losses = F.cross_entropy(logits, current.labels, reduction="none")
+                losses.mean().backward()
             if following is not None:
                 optimizer.signal_skip_step(True)
             optimizer.step()
@@ -102,6 +110,8 @@ class PartitionedDPGNN:
     def evaluate(self, model: _OneHopGCN, data: Any, *, seed: int) -> float:
         model.eval()
         x, labels, edge_index, weights = self._prepared_graph(data, seed=seed)
+        if self.config.multilabel:
+            return _multilabel_micro_f1(model(x, edge_index, weights), labels)[0]
         return float((model(x, edge_index, weights).argmax(dim=-1) == labels).float().mean())
 
     def fit(self, train: Any, val: Any, test: Any) -> dict[str, Any]:
@@ -117,7 +127,8 @@ class PartitionedDPGNN:
             train, max_degree=self.config.max_degree, seed=self.config.seed + 1)
         adjacency = build_adjacency(
             edge_index[:, edge_index[0] != edge_index[1]], num_nodes, direction="out")
-        x, labels = train.x.to(self.device), train.y.to(self.device).long()
+        label_dtype = torch.float32 if self.config.multilabel else torch.long
+        x, labels = train.x.to(self.device), train.y.to(self.device, dtype=label_dtype)
         model = _OneHopGCN(x.size(1), self.config.latent_size,
                             self.config.num_classes).to(self.device)
         adam = torch.optim.Adam(model.parameters(), lr=self.config.learning_rate)
@@ -141,10 +152,11 @@ class PartitionedDPGNN:
             self._private_step(private_module, optimizer, batches)
         private_module.to_standard_module()
         delta = 1.0 / (10 * num_nodes)
+        metric = "micro_f1" if self.config.multilabel else "accuracy"
         return {
             "model": model,
-            "validation_accuracy": self.evaluate(model, val, seed=self.config.seed + 3),
-            "test_accuracy": self.evaluate(model, test, seed=self.config.seed + 4),
+            f"validation_{metric}": self.evaluate(model, val, seed=self.config.seed + 3),
+            f"test_{metric}": self.evaluate(model, test, seed=self.config.seed + 4),
             "epsilon": multiterm_dpsgd_epsilon(
                 steps=self.config.steps, noise_multiplier=self.config.noise_multiplier,
                 delta=delta, num_samples=num_nodes,

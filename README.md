@@ -237,6 +237,12 @@ the existing sampled full-partition evaluation are unchanged. `evaluate_every`
 remains accepted but only final validation/test metrics are returned. Historical
 DP-GNN results predate this clipping/root-sampling change and are not rewritten.
 
+The direct trainer also accepts `DPGNNConfig(multilabel=True)` for multi-hot
+targets. It averages binary cross-entropy over labels within each root, retains
+the same global per-root clipping and accounting, and returns
+`validation_micro_f1` / `test_micro_f1`. The default remains categorical
+cross-entropy with accuracy.
+
 ## Tests
 
 ```bash
