@@ -96,6 +96,14 @@ def _target_environment(method: str, config: dict[str, Any], configured_env: dic
             if parameter in parameters:
                 encoded[environment] = str(parameters[parameter])
         return encoded
+    if "degree_bound" in parameters:
+        raise ValueError(
+            "parameters.degree_bound is retired; the HeterPoisson bound is derived from the training population"
+        )
+    if "HETERPOISSON_DEGREE_BOUND" in configured_env or "HETERPOISSON_DEGREE_BOUND" in os.environ:
+        raise ValueError(
+            "HETERPOISSON_DEGREE_BOUND is retired; the bound is derived from the training population"
+        )
     required = {
         "epochs": "HETERPOISSON_EPOCHS",
         "expected_batchsize": "HETERPOISSON_EXPECTED_BATCHSIZE",
@@ -103,7 +111,6 @@ def _target_environment(method: str, config: dict[str, Any], configured_env: dic
         "num_neighbors": "HETERPOISSON_NUM_NEIGHBORS",
         "clip_norm": "HETERPOISSON_CLIP_NORM",
         "learning_rate": "HETERPOISSON_LEARNING_RATE",
-        "degree_bound": "HETERPOISSON_DEGREE_BOUND",
     }
     for parameter, environment in required.items():
         if parameter not in parameters:

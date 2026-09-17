@@ -56,9 +56,9 @@ def _sampler(data, *, name, mode, args, cache_dir):
     return sampling.subgraph_sampler(
         K=args.K,
         num_neighbors=args.num_neighbors,
-        neighbor_num_constrain_for_training_for_memory=args.num_neighbors,
-        out_degree_inverse=sampling.compute_out_degree_inverse(
-            data.edge_index, data.num_nodes, cache_dir / f"{name}-degree-inverse.pt",
+        neighbor_num_constrain_for_training_for_memory=500,
+        out_degree_inverse=sampling.compute_in_degree_inverse(
+            data.edge_index, data.num_nodes, cache_dir / f"{name}-in-degree-inverse.pt",
         ),
         graph_data=data,
         graph_data_name=name,
@@ -72,6 +72,10 @@ def _sampler(data, *, name, mode, args, cache_dir):
 
 
 def main():
+    if "HETERPOISSON_DEGREE_BOUND" in os.environ:
+        raise ValueError(
+            "HETERPOISSON_DEGREE_BOUND is retired; the bound is derived from the training population"
+        )
     manifest = Path(os.environ["PARTITION_MANIFEST"])
     result_path = Path(os.environ["RESULT_PATH"])
     epsilon, delta = _target_pair()
@@ -79,7 +83,6 @@ def main():
     expected_batchsize = _positive_int("HETERPOISSON_EXPECTED_BATCHSIZE")
     K = _positive_int("HETERPOISSON_K")
     num_neighbors = _positive_int("HETERPOISSON_NUM_NEIGHBORS")
-    degree_bound = _positive_int("HETERPOISSON_DEGREE_BOUND")
     clip_norm = _positive_float("HETERPOISSON_CLIP_NORM")
     learning_rate = _positive_float("HETERPOISSON_LEARNING_RATE")
     seed = int(os.environ.get("HETERPOISSON_SEED", "0"))
@@ -91,6 +94,7 @@ def main():
     train, val, test = _normalize(_load(manifest, "train"), _load(manifest, "val"), _load(manifest, "test"))
     if expected_batchsize > train.num_nodes:
         raise ValueError("expected_batchsize must not exceed train node count")
+    degree_bound = int(train.num_nodes)
     q = expected_batchsize / train.num_nodes
     if q * num_neighbors / degree_bound > 1:
         raise ValueError("expected_batchsize / train_nodes * num_neighbors / degree_bound must not exceed one")

@@ -34,7 +34,7 @@ def _config(source, method="progap", **overrides):
         parameters.update(epochs=1, batch_size=8, max_degree=5, depth=1)
     else:
         parameters.update(epochs=1, expected_batchsize=8, K=1, num_neighbors=1,
-                          clip_norm=1.0, learning_rate=0.001, degree_bound=8)
+                          clip_norm=1.0, learning_rate=0.001)
     config = {
         "source_dir": str(source),
         "command": [sys.executable, "adapter.py"],
@@ -69,7 +69,10 @@ def test_progap_target_pair_is_forwarded_without_runtime_loss(adapter_source, tm
         ("progap", lambda config: config["parameters"].pop("target_delta"), "target_delta"),
         ("progap", lambda config: config["parameters"].update(target_epsilon=0), "target_epsilon"),
         ("progap", lambda config: config["environment"].update(PROGAP_EPSILON="7"), "environment"),
-        ("heterpoisson", lambda config: config["parameters"].pop("degree_bound"), "degree_bound"),
+        ("heterpoisson", lambda config: config["parameters"].pop("expected_batchsize"), "expected_batchsize"),
+        ("heterpoisson", lambda config: config["parameters"].update(degree_bound=8), "degree_bound"),
+        ("heterpoisson", lambda config: config["environment"].update(HETERPOISSON_DEGREE_BOUND="8"),
+         "HETERPOISSON_DEGREE_BOUND"),
     ],
 )
 def test_target_contract_rejects_incomplete_invalid_or_legacy_values(adapter_source, tmp_path, method, mutate, message):
@@ -80,9 +83,8 @@ def test_target_contract_rejects_incomplete_invalid_or_legacy_values(adapter_sou
         UpstreamBaseline(method, config).run(split)
 
 
-def test_heterpoisson_target_pair_is_forwarded(adapter_source, tmp_path):
+def test_heterpoisson_rejects_ambient_degree_bound(adapter_source, tmp_path, monkeypatch):
     split = load_or_create_inductive_split(_graph(), "heter-bridge", root=tmp_path, seed=0)
-    result = UpstreamBaseline("heterpoisson", _config(adapter_source, "heterpoisson")).run(split)
-    assert result["captured"]["HETERPOISSON_TARGET_EPSILON"] == "8.0"
-    assert result["captured"]["HETERPOISSON_TARGET_DELTA"] == "0.0005"
-    assert result["captured"]["HETERPOISSON_DEGREE_BOUND"] == "8"
+    monkeypatch.setenv("HETERPOISSON_DEGREE_BOUND", "8")
+    with pytest.raises(ValueError, match="HETERPOISSON_DEGREE_BOUND"):
+        UpstreamBaseline("heterpoisson", _config(adapter_source, "heterpoisson")).run(split)

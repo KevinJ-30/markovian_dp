@@ -6,12 +6,17 @@ import os
 import torch_geometric
 from tqdm import tqdm
 
-def compute_out_degree_inverse(edge_index, num_nodes, cache_file_path):
-    """Cache inverse outgoing degree for exactly one induced partition."""
+def compute_in_degree_inverse(edge_index, num_nodes, cache_file_path):
+    """Cache inverse unique incoming-source counts for one induced partition."""
     cache_file_path = os.fspath(cache_file_path)
     if os.path.exists(cache_file_path):
         return torch.load(cache_file_path, map_location="cpu", weights_only=False)
-    degree = torch.bincount(edge_index[0].cpu(), minlength=num_nodes).to(torch.float)
+    if edge_index.numel():
+        source, target = edge_index.cpu()
+        pairs = torch.unique(target * num_nodes + source)
+        degree = torch.bincount(pairs // num_nodes, minlength=num_nodes)
+    else:
+        degree = torch.zeros(num_nodes, dtype=torch.long)
     inverse = torch.zeros(num_nodes, dtype=torch.float)
     nonzero = degree > 0
     inverse[nonzero] = degree[nonzero].reciprocal()
