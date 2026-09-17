@@ -14,6 +14,7 @@ import torch
 from torch_geometric.data import Data
 from torch_geometric.transforms import ToSparseTensor
 
+from core.data.transforms.bound_degree import BoundOutDegree
 from core.methods.progap.node import NodeLevelProGAP
 
 
@@ -35,7 +36,18 @@ def _metrics(method, data):
     # Do not call NodeLevelProGAP.setup here: it would recalibrate the private
     # training mechanism from a held-out graph. Prediction stages reuse the
     # trained classifier and upstream NAP/pipeline implementation only.
+    #
+    # BUT setup() is also the ONLY place BoundOutDegree is applied, so skipping
+    # it evaluated on an UNCAPPED graph while training was capped at
+    # max_degree.  NAP normalizes then mean-aggregates with no rescaling, so an
+    # uncapped neighbourhood arrives an order of magnitude larger in norm than
+    # anything the classifier saw, and batch-norm's training running stats
+    # propagate the shift rather than absorbing it.  Apply the transform
+    # directly: it is pure preprocessing and touches no part of the mechanism,
+    # so it cannot recalibrate anything.  Must come AFTER _prepare, which is
+    # what creates the adj_t that BoundOutDegree reads.
     data = _prepare(data)
+    data = BoundOutDegree(method.max_degree)(data)
     method.data = method.to_device(Data(**data.to_dict()))
     method.data.ready = False
     prediction = method.predict()[0].argmax(dim=-1).cpu()
