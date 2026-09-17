@@ -76,7 +76,7 @@ def p1_for_batch(batch_size, pool_size):
         raise ValueError(
             f"batch_size {batch_size} exceeds the eligible root pool "
             f"({pool_size}); p1 would exceed 1")
-    return batch_size / pool_size
+    return batch_size / pool_size #do we need to round this? 
 
 
 def steps_for_epochs(epochs, p1):
