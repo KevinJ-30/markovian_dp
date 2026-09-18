@@ -138,12 +138,29 @@ run_cell() {   # out_dir, then extra flags
 CELLS=${CELLS:-"5:0.1:2 5:0.5:2 5:1.0:2 10:0.1:2 10:0.5:2 15:0.1:2 15:0.5:2"}
 
 # ── non-DP ceilings (no privacy constraint) ──
-run_cell "$OUT_ROOT/nodp_gnn" --model multilabel_gnn --aggr mean --p2 1.0 --r 2 \
-    --num_layers 2 --K_in 25 --K_out 25
-run_cell "$OUT_ROOT/nodp_mlp" --model mlp --p2 1.0 --r 0 --num_layers 2 \
-    --K_in 5 --K_out 5
+# Selectable because nodp_gnn is the most expensive cell in the whole grid: it
+# is the only one at r=2 with p2=1.0, so on a high-degree graph its rooted
+# subgraphs reach 1 + 2K + (2K)^2 nodes (1,275 at K=25) over the full arc set.
+# On Amazon (262.8M arcs) that dominates the job, and it is worth skipping when
+# the question is DP-MLP vs SparseExpand rather than "what is the graph worth".
+#   NODP="mlp"       just the graph-blind ceiling
+#   NODP=""          neither
+NODP=${NODP:-"gnn mlp"}
+for _c in $NODP; do
+  case $_c in
+    gnn) run_cell "$OUT_ROOT/nodp_gnn" --model multilabel_gnn --aggr mean \
+             --p2 1.0 --r 2 --num_layers 2 --K_in 25 --K_out 25 ;;
+    mlp) run_cell "$OUT_ROOT/nodp_mlp" --model mlp --p2 1.0 --r 0 \
+             --num_layers 2 --K_in 5 --K_out 5 ;;
+    *)   echo "  [warn] unknown NODP entry '$_c' (expected gnn or mlp)" >&2 ;;
+  esac
+done
 
 # ── DP-MLP blind arm: r=0, so K is irrelevant to its accounting ──
+# EPS_LIST="" runs no DP arms at all, which is how a job asks for the non-DP
+# ceilings alone.  Guarded because `--eps` with no value is an argparse error,
+# and set -u would otherwise leave a stale empty sigma_r0.txt behind.
+if [ -n "${EPS_LIST// /}" ]; then
 echo "--- calibrating blind arm (r=0) ---"
 $PY scripts/calibrate_grid.py --eps $EPS_LIST --p2 1.0 --p1 $P1 --r 0 \
     --K 5 --T $T --grid $GRID --delta $DELTA > "$OUT_ROOT/sigma_r0.txt"
@@ -153,6 +170,9 @@ grep -v '^#' "$OUT_ROOT/sigma_r0.txt" | while read -r P2 EPS SG; do
   run_cell "$OUT_ROOT/dpmlp_eps${EPS}" --model mlp --p2 1.0 --r 0 \
       --num_layers 2 --K_in 5 --K_out 5 --dp --sigma "$SG"
 done
+else
+  echo "--- EPS_LIST empty: skipping all DP arms ---"
+fi
 
 # ── DP-GNN arms: one calibration call per (K, p2) cell ──
 for cell in $CELLS; do
