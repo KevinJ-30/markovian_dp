@@ -41,6 +41,12 @@ DELTA=${DELTA:-1e-6}
 GRID=${GRID:-1e-4}
 EPS_LIST=${EPS_LIST:-"2 8"}
 TRACK_EVERY=${TRACK_EVERY:-50}
+# Depth/sparsification for the non-DP GNN ceiling.  Defaults are the UNCAPPED
+# architecture ceiling (r=2, p2=1.0): what the model can do with no privacy
+# constraint at all.  Set NODP_R/NODP_P2 to match the DP cells instead when the
+# question is "what did the NOISE cost", as opposed to "what did privacy cost".
+NODP_R=${NODP_R:-2}
+NODP_P2=${NODP_P2:-1.0}
 
 P1=$($PY -c "print(f'{$BATCH/$NTRAIN:.8f}')")
 
@@ -97,10 +103,27 @@ run_cell() {   # out_dir, then extra flags
 CELLS=${CELLS:-"5:0.1:2 5:0.5:2 5:1.0:2 10:0.1:2 10:0.5:2 15:0.1:2 15:0.5:2"}
 
 # ── non-DP ceilings (no privacy constraint) ──
-run_cell "$OUT_ROOT/nodp_gnn" --model multilabel_gnn --aggr mean --p2 1.0 --r 2 \
-    --num_layers 2 --K_in 25 --K_out 25
-run_cell "$OUT_ROOT/nodp_mlp" --model mlp --p2 1.0 --r 0 --num_layers 2 \
-    --K_in 5 --K_out 5
+#
+# NODP selects which ceilings this invocation runs; set it to "none" to run
+# none.  Splitting the grid across separate sbatch jobs (one per cell, to stay
+# inside wallclock) otherwise makes every job recompute the SAME two ceilings:
+# run_cell's skip-if-CSV-exists only helps once a run has FINISHED, so jobs
+# starting together all miss the check and race on one output directory.
+# Run the ceilings once in their own job, then pass NODP=none to the cell jobs.
+#
+# NOTE ${VAR:-default} substitutes on empty as well as unset, so NODP="" gets
+# the default rather than nothing -- hence the explicit "none" sentinel.
+NODP=${NODP:-"gnn mlp"}
+for _arm in $NODP; do
+  case $_arm in
+    gnn)  run_cell "$OUT_ROOT/nodp_gnn" --model multilabel_gnn --aggr mean \
+              --p2 "$NODP_P2" --r "$NODP_R" --num_layers 2 --K_in 25 --K_out 25 ;;
+    mlp)  run_cell "$OUT_ROOT/nodp_mlp" --model mlp --p2 1.0 --r 0 \
+              --num_layers 2 --K_in 5 --K_out 5 ;;
+    none) echo "  [skip] non-DP ceilings (NODP=none)" ;;
+    *)    echo "  [warn] unknown NODP arm '$_arm' (expected gnn, mlp or none)" >&2 ;;
+  esac
+done
 
 # ── DP-MLP blind arm: r=0, so K is irrelevant to its accounting ──
 echo "--- calibrating blind arm (r=0) ---"
