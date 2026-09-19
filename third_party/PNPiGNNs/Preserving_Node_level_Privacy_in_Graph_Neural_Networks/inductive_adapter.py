@@ -3,6 +3,7 @@ import json
 import math
 import os
 from argparse import Namespace
+from copy import deepcopy
 from pathlib import Path
 import random
 
@@ -42,6 +43,91 @@ def _positive_float(name):
     if not math.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be finite and positive")
     return value
+
+
+def _flag(name):
+    return os.environ.get(name, "0").strip().lower() in {"1", "true", "yes"}
+
+
+class _MeanSquaredError(torch.nn.Module):
+    """MSE that flattens both sides before reducing.
+
+    train_scheduler calls the criterion two ways: ``criterion(pred, target)``
+    with pred [1, C] / target [1] in the per-example gradient path
+    (compute_loss), and pred [B, C] / target [B] in the batched path
+    (manual_forward).  With a single output C == 1, torch.nn.MSELoss would
+    BROADCAST [B, 1] against [B] into a [B, B] matrix and silently return the
+    mean of every cross-pair -- a wrong loss, not an error.  Flattening first
+    keeps both call sites correct.  This is injected as `criterion`, which
+    upstream already accepts as a constructor argument, so no upstream file is
+    modified to train on a continuous target.
+    """
+
+    def forward(self, prediction, target):
+        return torch.nn.functional.mse_loss(
+            prediction.reshape(-1), target.reshape(-1).to(prediction.dtype))
+
+
+@torch.no_grad()
+def _mean_absolute_error(scheduler, loader):
+    """MAE over a loader, matching upstream's center-node convention.
+
+    train_scheduler.one_epoch scores the ROOT only -- ``out[:, 0, :]`` against
+    ``targets[:, 0]`` -- so evaluation has to do the same, or the sampled
+    neighbours would be scored as if they were prediction targets.
+
+    G_net.forward standardizes over its whole input tensor, and upstream
+    applies it under vmap (one rooted subgraph at a time), so a single batched
+    forward would share statistics across the batch and change the model's
+    output.  Evaluate per sample to keep it numerically identical.
+    """
+    model = scheduler.model
+    model.eval()
+    absolute_error, count = 0.0, 0
+    for batch in loader:
+        if batch is None:
+            continue
+        x, targets = batch
+        x, targets = x.to(scheduler.device), targets.to(scheduler.device)
+        predictions = torch.stack([model(sample) for sample in x])[:, 0, 0]
+        truth = targets[:, 0].reshape(-1).to(predictions.dtype)
+        absolute_error += float((predictions - truth).abs().sum())
+        count += int(truth.numel())
+    return absolute_error / max(count, 1)
+
+
+def _train_regression(scheduler, epochs):
+    """Train for `epochs` and select the checkpoint on validation MAE.
+
+    Upstream's trainer.run() selects on ``hit_accuracy``, which a one-output
+    regressor cannot produce: argmax over a [B, 1] logit is identically 0, so
+    hit_accuracy is a constant and ``> best_validation_accuracy`` fires only on
+    the first epoch -- run() would silently return the EPOCH-ZERO weights.  So
+    drive one_epoch directly and keep the best state here instead.
+
+    The privacy accounting is untouched: trainer.__init__ fixes `std` and
+    `achieved_epsilon` from `steps` before any training happens, and this runs
+    the same args.epoch epochs over the same train_loader, so the composition
+    count is identical to the classification path.
+    """
+    best_state, best_validation = None, float("inf")
+    for epoch in range(epochs):
+        scheduler.epoch = epoch
+        scheduler.one_epoch(train_or_val=train_scheduler.Phase.TRAIN,
+                            loader=scheduler.train_loader)
+        validation = _mean_absolute_error(scheduler, scheduler.val_loader)
+        if validation < best_validation:
+            best_validation = validation
+            best_state = deepcopy(scheduler.model.state_dict())
+    if best_state is not None:
+        scheduler.model.load_state_dict(best_state)
+        # Mirror run()'s restore: the vmapped worker parameters are a separate
+        # copy and must be re-synced, or evaluation would use the last epoch's
+        # weights rather than the selected ones.
+        for p_model, p_worker in zip(scheduler.model.parameters(),
+                                     scheduler.worker_param_func):
+            p_worker.copy_(p_model.data)
+    return best_validation, _mean_absolute_error(scheduler, scheduler.test_loader)
 
 
 def _normalize(train, *held_out):
@@ -87,6 +173,7 @@ def main():
     learning_rate = _positive_float("HETERPOISSON_LEARNING_RATE")
     seed = int(os.environ.get("HETERPOISSON_SEED", "0"))
     device = os.environ.get("HETERPOISSON_DEVICE", "cpu")
+    regression = _flag("HETERPOISSON_REGRESSION")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -106,7 +193,11 @@ def main():
         epoch=epochs,
         K=K,
         num_neighbors=num_neighbors,
-        num_classes=int(train.y.max()) + 1,
+        # A continuous target is one unbounded output, not a class count.
+        # num_classes reaches only G_net's final Linear; the privacy
+        # calibration (get_std_node_dp) is driven by q, steps, degree bound and
+        # num_neighbors, so this does not move epsilon.
+        num_classes=1 if regression else int(train.y.max()) + 1,
         priv_epsilon=epsilon,
         C=clip_norm,
         lr=learning_rate,
@@ -135,21 +226,37 @@ def main():
         optimizer=torch.optim.Adam(model.parameters(), lr=learning_rate),
         loaders=[train_loader, val_loader, test_loader],
         device=device,
-        criterion=model_module.criterion,
+        criterion=_MeanSquaredError() if regression else model_module.criterion,
         args=args,
         target_delta=delta,
         degree_bound=degree_bound,
         steps=steps,
     )
-    validation_metrics, test_metrics = scheduler.run()
+    if regression:
+        # MAE in both slots, matching src.models.objectives._regression_mae:
+        # neither "accuracy" nor "macro-F1" means anything for a continuous
+        # target, and reporting one number twice is better than inventing a
+        # second one.
+        validation_score, test_score = _train_regression(scheduler, epochs)
+        validation_secondary, test_secondary = validation_score, test_score
+    else:
+        validation_metrics, test_metrics = scheduler.run()
+        validation_score = float(validation_metrics.hit_accuracy)
+        test_score = float(test_metrics.hit_accuracy)
+        validation_secondary = float(validation_metrics.mean_f1_s)
+        test_secondary = float(test_metrics.mean_f1_s)
     achieved_epsilon = float(scheduler.achieved_epsilon)
     if achieved_epsilon > epsilon:
         raise RuntimeError(f"HeterPoisson calibration exceeded target epsilon: {achieved_epsilon} > {epsilon}")
+    # The accuracy/macro_f1 slots carry whatever metric the task defines --
+    # MAE for regression, where LOWER is better.  `metric` names it; the slot
+    # reuse matches how the multilabel and RelBench paths already report.
     result = {
-        "validation_accuracy": float(validation_metrics.hit_accuracy),
-        "validation_macro_f1": float(validation_metrics.mean_f1_s),
-        "test_accuracy": float(test_metrics.hit_accuracy),
-        "test_macro_f1": float(test_metrics.mean_f1_s),
+        "metric": "mae" if regression else "accuracy",
+        "validation_accuracy": validation_score,
+        "validation_macro_f1": validation_secondary,
+        "test_accuracy": test_score,
+        "test_macro_f1": test_secondary,
         "privacy": {"total": {
             "epsilon": achieved_epsilon,
             "delta": delta,

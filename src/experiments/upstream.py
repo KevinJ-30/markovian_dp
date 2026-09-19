@@ -116,6 +116,10 @@ def _target_environment(method: str, config: dict[str, Any], configured_env: dic
         if parameter not in parameters:
             raise ValueError(f"heterpoisson requires parameters.{parameter}")
         encoded[environment] = str(parameters[parameter])
+    # Optional: a continuous target swaps the criterion and the head width in
+    # the adapter. It does not enter get_std_node_dp, so epsilon is unchanged.
+    if parameters.get("regression", False):
+        encoded["HETERPOISSON_REGRESSION"] = "1"
     return encoded
 
 

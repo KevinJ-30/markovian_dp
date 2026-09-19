@@ -55,6 +55,12 @@ class DPARConfig:
     inference_steps: int = 2
     seed: int = 0
     multilabel: bool = False
+    # Continuous target (e.g. RelBench's item-ltv).  This changes only the loss
+    # and the reported metric: DP-APPR never sees labels at all -- it is a
+    # function of the adjacency matrix alone -- and the DP-SGD guarantee rests
+    # on the per-node clip `sgd_clip` and the column-wise l1 bound, neither of
+    # which looks at the loss's type.  epsilon is therefore unchanged.
+    regression: bool = False
 
 
 def _coalesced_adjacency(edge_index: Tensor, num_nodes: int, device: torch.device) -> Tensor:
@@ -209,10 +215,11 @@ class DPARTrainer:
         model.eval()
         with torch.no_grad():
             logits = propagate_logits(model(data.x), data.edge_index, self.config.alpha, self.config.inference_steps)
-        return _task_metric(logits, data.y, self.config.multilabel)
+        return _task_metric(logits, data.y, self.config.multilabel,
+                            regression=self.config.regression)
 
     def fit(self, split: Any) -> dict[str, Any]:
-        """Train, choose by validation accuracy, and evaluate the held-out graph."""
+        """Train, choose on the validation metric, and evaluate the held-out graph."""
         torch.manual_seed(self.config.seed)
         full_train_data = split.train.data
         model = DPARMLP(full_train_data.x.size(1), split.num_classes,
@@ -249,7 +256,13 @@ class DPARTrainer:
         ppr = private_ista_ppr(train_data.edge_index, sampled_nodes, effective_config,
                                self.device, sampling_generator)
         preprocessing_seconds = time.perf_counter() - preprocessing_start
-        best_state, best_val = None, float("-inf")
+        # Regression reports MAE, where LOWER is better; classification reports
+        # accuracy/micro-F1, where higher is better.  Seeding with -inf and
+        # keeping `value > best_val` unconditionally would save the WORST
+        # checkpoint on every regression run.  Mirrors BaselineTrainer.fit.
+        lower_is_better = bool(effective_config.regression)
+        best_state = None
+        best_val = float("inf") if lower_is_better else float("-inf")
         training_start = time.perf_counter()
         for _ in range(effective_config.epochs):
             model.train()
@@ -261,11 +274,14 @@ class DPARTrainer:
                 else:
                     optimizer.zero_grad(set_to_none=True)
                     logits = torch.sparse.mm(_select_ppr_rows(ppr, root_indices), model(train_data.x))
-                    _task_loss(logits, train_data.y[root_indices], effective_config.multilabel).backward()
+                    _task_loss(logits, train_data.y[root_indices],
+                               effective_config.multilabel,
+                               regression=effective_config.regression).backward()
                     optimizer.step()
-            val_accuracy, _ = self._evaluate(model, split.val)
-            if val_accuracy > best_val:
-                best_val = val_accuracy
+            val_metric, _ = self._evaluate(model, split.val)
+            improved = (val_metric < best_val) if lower_is_better else (val_metric > best_val)
+            if improved:
+                best_val = val_metric
                 best_state = {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
         training_seconds = time.perf_counter() - training_start
         assert best_state is not None
@@ -292,7 +308,8 @@ class DPARTrainer:
         root_logits = torch.sparse.mm(_select_ppr_rows(ppr, roots), logits)
         for row, target in zip(root_logits, y[roots]):
             gradients = torch.autograd.grad(
-                _task_loss(row.unsqueeze(0), target.unsqueeze(0), config.multilabel),
+                _task_loss(row.unsqueeze(0), target.unsqueeze(0), config.multilabel,
+                           regression=config.regression),
                 parameters, retain_graph=True)
             norm = torch.sqrt(sum(gradient.square().sum() for gradient in gradients)).clamp_min(1e-12)
             scale = min(1.0, config.sgd_clip / float(norm))

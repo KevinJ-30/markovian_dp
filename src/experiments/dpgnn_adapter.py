@@ -33,7 +33,7 @@ def _load_partitions(manifest: Path) -> tuple[dict[str, Any], int]:
 def run_partitioned(manifest: str | Path, result_path: str | Path, *, steps: int = 1,
                     batch_size: int = 32, noise_multiplier: float = 2.0,
                     evaluate_every: int = 50, seed: int = 0,
-                    clip: float = 1.0,
+                    clip: float = 1.0, regression: bool = False,
                     max_private_batch_nodes: int = 8192) -> dict[str, Any]:
     """Train first-party DP-GNN on train.pt and evaluate val.pt/test.pt.
 
@@ -47,14 +47,24 @@ def run_partitioned(manifest: str | Path, result_path: str | Path, *, steps: int
         DPGNNConfig(
             num_classes=num_classes, steps=steps, batch_size=batch_size,
             noise_multiplier=noise_multiplier, evaluate_every=evaluate_every,
-            seed=seed, clip=clip, max_private_batch_nodes=max_private_batch_nodes,
+            seed=seed, clip=clip, regression=regression,
+            max_private_batch_nodes=max_private_batch_nodes,
         ),
     )
     trained = trainer.fit(data["train"], data["val"], data["test"])
+    # PartitionedDPGNN names its result keys after the metric it actually
+    # computed, so read them through that name. Reading "validation_accuracy"
+    # unconditionally worked only while accuracy was the sole reachable metric.
+    # The outer keys stay fixed because src/experiments/upstream.py and the
+    # result JSON schema require "validation_accuracy"/"test_accuracy" -- the
+    # slot is reused for whatever the task's metric is, exactly as the
+    # multilabel and RelBench paths already reuse test_acc in the sparse CSVs.
+    metric = trained["metric"]
     result = {
         "method": "dp_gnn",
-        "validation_accuracy": trained["validation_accuracy"],
-        "test_accuracy": trained["test_accuracy"],
+        "metric": metric,
+        "validation_accuracy": trained[f"validation_{metric}"],
+        "test_accuracy": trained[f"test_{metric}"],
         "privacy": {
             "epsilon": trained["epsilon"],
             "delta": trained["delta"],

@@ -19,7 +19,7 @@ from opacus.grad_sample import GradSampleModule
 from opacus.optimizers import DPOptimizer
 
 from src.models.baselines import _OneHopGCN, _PaddedOneHopGCN
-from src.models.objectives import _multilabel_micro_f1, _task_loss
+from src.models.objectives import _multilabel_micro_f1, _task_loss, _task_metric
 from src.processing.dpgnn import (
     iter_dpgnn_batches, sample_dpgnn_roots, sample_training_edges,
 )
@@ -43,6 +43,11 @@ class DPGNNConfig:
     max_subgraph_nodes: int = 100
     max_private_batch_nodes: int = 8192
     multilabel: bool = False
+    # Continuous target.  Daigavane et al.'s sensitivity analysis is over
+    # subgraph occurrence counts plus per-example gradient clipping, so it is
+    # loss-agnostic: epsilon is unchanged from the classification run at the
+    # same (steps, noise_multiplier, batch_size, max_degree).
+    regression: bool = False
 
 
 def _inverse_degree_weights(edge_index: torch.Tensor, num_nodes: int,
@@ -76,7 +81,9 @@ class PartitionedDPGNN:
         edge_index = sample_training_edges(
             data, max_degree=self.config.max_degree, seed=seed).to(self.device)
         weights = _inverse_degree_weights(edge_index, int(data.num_nodes), self.device)
-        label_dtype = torch.float32 if self.config.multilabel else torch.long
+        label_dtype = (torch.float32
+                       if (self.config.multilabel or self.config.regression)
+                       else torch.long)
         return data.x.to(self.device), data.y.to(self.device, dtype=label_dtype), edge_index, weights
 
     def _private_step(
@@ -90,7 +97,13 @@ class PartitionedDPGNN:
         while True:
             following = next(batches, None)
             logits = model(current.features, current.node_mask)
-            if self.config.multilabel:
+            if self.config.regression:
+                # MSE over the single output. Same reduction contract as the
+                # multilabel arm: one mean over roots, so Opacus still sees the
+                # leading root axis it needs for per-sample clipping.
+                _task_loss(logits, current.labels, multilabel=False,
+                           regression=True).backward()
+            elif self.config.multilabel:
                 # BCE averages classes within each root, then roots. Opacus
                 # retains the leading root axis for globally clipped samples.
                 _task_loss(logits, current.labels, multilabel=True).backward()
@@ -110,9 +123,15 @@ class PartitionedDPGNN:
     def evaluate(self, model: _OneHopGCN, data: Any, *, seed: int) -> float:
         model.eval()
         x, labels, edge_index, weights = self._prepared_graph(data, seed=seed)
+        predictions = model(x, edge_index, weights)
+        if self.config.regression:
+            # MAE, matching RegressionGNNMechanism.metric_name so a baseline and
+            # the SparseGNN mechanism are judged on the same number.  LOWER is
+            # better -- see the `metric` key in fit()'s result.
+            return _task_metric(predictions, labels, False, regression=True)[0]
         if self.config.multilabel:
-            return _multilabel_micro_f1(model(x, edge_index, weights), labels)[0]
-        return float((model(x, edge_index, weights).argmax(dim=-1) == labels).float().mean())
+            return _multilabel_micro_f1(predictions, labels)[0]
+        return float((predictions.argmax(dim=-1) == labels).float().mean())
 
     def fit(self, train: Any, val: Any, test: Any) -> dict[str, Any]:
         num_nodes = int(train.num_nodes)
@@ -127,7 +146,9 @@ class PartitionedDPGNN:
             train, max_degree=self.config.max_degree, seed=self.config.seed + 1)
         adjacency = build_adjacency(
             edge_index[:, edge_index[0] != edge_index[1]], num_nodes, direction="out")
-        label_dtype = torch.float32 if self.config.multilabel else torch.long
+        label_dtype = (torch.float32
+                       if (self.config.multilabel or self.config.regression)
+                       else torch.long)
         x, labels = train.x.to(self.device), train.y.to(self.device, dtype=label_dtype)
         model = _OneHopGCN(x.size(1), self.config.latent_size,
                             self.config.num_classes).to(self.device)
@@ -152,9 +173,17 @@ class PartitionedDPGNN:
             self._private_step(private_module, optimizer, batches)
         private_module.to_standard_module()
         delta = 1.0 / (10 * num_nodes)
-        metric = "micro_f1" if self.config.multilabel else "accuracy"
+        metric = ("mae" if self.config.regression
+                  else "micro_f1" if self.config.multilabel
+                  else "accuracy")
         return {
             "model": model,
+            # The result keys are metric-named, so callers cannot read
+            # "validation_accuracy" unconditionally -- that silently worked only
+            # while `accuracy` was the sole reachable metric, and would KeyError
+            # the moment multilabel or regression was enabled. Publish the name
+            # so dpgnn_adapter can resolve the key it should read.
+            "metric": metric,
             f"validation_{metric}": self.evaluate(model, val, seed=self.config.seed + 3),
             f"test_{metric}": self.evaluate(model, test, seed=self.config.seed + 4),
             "epsilon": multiterm_dpsgd_epsilon(

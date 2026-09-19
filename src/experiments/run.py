@@ -20,6 +20,20 @@ from src.training.dpar import DPARConfig, DPARTrainer
 from src.processing.splits import load_or_create_inductive_split
 
 
+# Methods that accept a continuous target.  Regression is a loss/head change,
+# not a mechanism change -- every one of these bounds sensitivity by clipping a
+# per-example gradient, and clipping is downstream of the loss, so epsilon is
+# identical to the classification run at the same hyperparameters.
+#
+# `progap` is the one exclusion, and it is a code-provenance decision rather
+# than a privacy one: upstream fuses its loss and its metric inside
+# ProgressiveModule.step (third_party/ProGAP/core/modules/prog.py:112-130), so a
+# regression head there means editing vendored code and giving up the
+# "unmodified upstream" property that is ProGAP's remaining faithfulness claim.
+_REGRESSION_METHODS = frozenset(
+    {"mlp", "dp_mlp", "graphsage", "dpar", "dp_gnn", "heterpoisson"})
+
+
 def _dataclass_config(cls: type, values: dict[str, Any]) -> Any:
     allowed = {field.name for field in fields(cls)}
     unexpected = set(values) - allowed
@@ -60,23 +74,21 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     # gets a consistent split AND a consistent loss, rather than needing the
     # same flag repeated in "parameters" and risking the two disagreeing.
     multilabel = bool(config.get("multilabel", False))
-    # regression (e.g. RelBench's item-ltv): only mlp/dp_mlp/graphsage support
-    # it (BaselineConfig has the field); DPARConfig does not, and DPAR's own
-    # ISTA/PPR/propagation is out of scope for this change, so it is
-    # deliberately excluded from the method set below that receives this flag.
+    # regression (e.g. RelBench's item-ltv): see _REGRESSION_METHODS above for
+    # which methods accept it and why ProGAP does not.
     regression = bool(config.get("regression", False))
     if multilabel and regression:
         raise ValueError("a target cannot be both multilabel and regression")
-    # The exclusion above is deliberate, but it was only a comment: a config
-    # with method="dpar" and regression=true used to reach _task_loss with
-    # regression defaulting to False and die inside cross_entropy on float
-    # targets -- exactly the opaque crash the sparse-side guard in
-    # src/experiments/sparse.py was added to prevent.  Fail loudly here instead.
-    if regression and config["method"] not in {"mlp", "dp_mlp", "graphsage"}:
+    # Fail loudly rather than deep inside the trainer: a config with
+    # method="progap" and regression=true would otherwise reach upstream's
+    # cross_entropy and die on float targets -- exactly the opaque crash the
+    # sparse-side guard in src/experiments/sparse.py was added to prevent.
+    if regression and config["method"] not in _REGRESSION_METHODS:
         raise ValueError(
             f"method {config['method']!r} does not support regression; only "
-            f"mlp, dp_mlp and graphsage accept it (DPARConfig has no "
-            f"`regression` field and DPAR's PPR propagation is out of scope)")
+            f"{sorted(_REGRESSION_METHODS)} accept it. ProGAP fuses its loss "
+            f"and metric inside upstream's ProgressiveModule.step, so a "
+            f"regression head there means editing vendored code")
     seed = int(config.get("seed", 0))
     device = _device(str(config.get("device", "auto")))
     # Dataset loading and split creation run on CPU. Private preprocessing and
@@ -96,7 +108,7 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     options.setdefault("seed", seed)
     if method in {"dpar", "mlp", "dp_mlp", "graphsage"}:
         options.setdefault("multilabel", multilabel)
-    if method in {"mlp", "dp_mlp", "graphsage"}:
+    if method in _REGRESSION_METHODS:
         options.setdefault("regression", regression)
     if method == "dpar":
         result = DPARTrainer(_dataclass_config(DPARConfig, options), device=device).fit(split)
@@ -113,7 +125,12 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
             result = run_partitioned(manifest, Path(temporary) / "result.json", **options)
     else:
         from .upstream import UpstreamBaseline
-        result = UpstreamBaseline(method, config).run(split)
+        # Hand the RESOLVED options down, not the raw config block: the
+        # top-level `regression` flag has to reach the subprocess adapter, and
+        # requiring it to be repeated inside "parameters" is exactly the
+        # two-places-to-set-one-thing bug the multilabel flag was consolidated
+        # to avoid.  `options` is a copy, so the caller's config is untouched.
+        result = UpstreamBaseline(method, {**config, "parameters": options}).run(split)
     result.update({
         "dataset": config["dataset"], "seed": seed, "device": device,
         "split_strategy": split_strategy,
