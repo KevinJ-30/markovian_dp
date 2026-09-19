@@ -22,7 +22,10 @@ convention agreed for this suite (negligible vs n, and stricter than the 1e-5 /
 """
 
 import argparse
+import hashlib
+import json
 import os
+from pathlib import Path
 import sys
 import time
 
@@ -51,11 +54,44 @@ def parse_args():
                         'accumulates over composition, so the numerical floor '
                         'is about T*grid -- keep it well under the smallest '
                         'target or the answer is discretization, not privacy.')
+    p.add_argument('--cache_dir', default=os.environ.get(
+                       'SIGMA_CACHE', 'results/_sigma_cache'),
+                   help='sigma cache; calibration is a deterministic function '
+                        'of the cell, so a hit is exact, not an approximation')
+    p.add_argument('--no_cache', action='store_true')
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument('--delta', type=float)
     g.add_argument('--delta_from_n', type=int,
                    help='delta = n^-1.01 for this (full) node count')
     return p.parse_args()
+
+
+def _cache_key(**cell) -> str:
+    """Stable digest of every argument sigma depends on.
+
+    Anything omitted here is a silent correctness bug: two different cells
+    would collide and the second would read the first's sigma.
+    """
+    blob = json.dumps(cell, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+def _cache_read(path):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _cache_write(path, payload):
+    """Atomic, so concurrent sbatch jobs cannot read a half-written file."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f'.{os.getpid()}.tmp')
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
+        tmp.replace(path)
+    except OSError as exc:                       # a cache miss must never fail a run
+        print(f"# cache write failed ({exc})", file=sys.stderr)
 
 
 def main():
@@ -70,8 +106,24 @@ def main():
               f"negligible vs the smallest target {min(a.eps):g}; "
               f"lower --grid", file=sys.stderr)
 
+    cache_dir = None if a.no_cache else Path(a.cache_dir)
+
     for p2 in a.p2:
         for eps in a.eps:
+            cell = dict(p1=a.p1, p2=p2, r=a.r, K=a.K, T=a.T, clip=a.clip,
+                        eps=eps, delta=delta, grid=a.grid,
+                        union_safe=not a.legacy_shells)
+            entry = cache_dir / f"sigma_{_cache_key(**cell)}.json" if cache_dir else None
+
+            if entry is not None:
+                hit = _cache_read(entry)
+                if hit is not None and hit.get('cell') == cell:
+                    sigma = hit['sigma']
+                    print(f"# p2={p2} eps={eps}: {sigma} (cached {entry.name})",
+                          file=sys.stderr)
+                    print(f"{p2} {eps} {sigma}", flush=True)
+                    continue
+
             t0 = time.time()
             try:
                 c = calibrate_sparsegnn_noise(
@@ -80,8 +132,17 @@ def main():
                     grid=a.grid, union_safe=not a.legacy_shells)
             except (RuntimeError, ValueError) as exc:
                 print(f"# SKIP p2={p2} eps={eps}: {exc}", file=sys.stderr)
+                # Cache the SKIP too: an unreachable cell costs the same search
+                # to rediscover as a reachable one.
+                if entry is not None:
+                    _cache_write(entry, dict(cell=cell, sigma='SKIP', reason=str(exc)))
                 print(f"{p2} {eps} SKIP", flush=True)
                 continue
+            if entry is not None:
+                _cache_write(entry, dict(cell=cell,
+                                         sigma=f"{c.noise_multiplier:.6f}",
+                                         achieved_epsilon=c.epsilon,
+                                         seconds=round(time.time() - t0, 1)))
             print(f"# p2={p2} eps={eps}: sigma={c.noise_multiplier:.4f} "
                   f"noise_std={c.noise_std:.4f} "
                   f"var={c.noise_variance:.4f} achieved={c.epsilon:.5f} "
