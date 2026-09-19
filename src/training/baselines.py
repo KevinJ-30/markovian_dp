@@ -9,6 +9,7 @@ from typing import Any
 
 import torch
 from torch import Tensor, nn
+from torch.func import functional_call, grad, vmap
 
 from src.models.objectives import _task_loss, _task_metric
 from src.privacy.accountants import DPMLPAccountant
@@ -79,10 +80,12 @@ class BaselineTrainer:
                 for _ in range(steps_per_epoch):
                     self._private_step(model, optimizer, train, generator)
             else:
-                optimizer.zero_grad(set_to_none=True)
-                _task_loss(self._forward(model, train), train.y, self.config.multilabel,
-                          regression=self.config.regression).backward()
-                optimizer.step()
+                # Minibatch, same step budget as dp_mlp.  One full-batch step
+                # per epoch made `epochs` mean 100 updates here against ~10^5
+                # for dp_mlp, so the non-private ceiling trained ~1000x less
+                # than the private arm it is supposed to bound.
+                for _ in range(steps_per_epoch):
+                    self._step(model, optimizer, train, generator)
             validation, _ = self._evaluate(model, split.val)
             improved = (validation < best_val) if lower_is_better else (validation > best_val)
             if improved:
@@ -108,28 +111,59 @@ class BaselineTrainer:
             "privacy": privacy, "train_graph": split.train.stats,
         }
 
+    def _step(self, model: nn.Module, optimizer: torch.optim.Optimizer, data: Any,
+              generator: torch.Generator) -> None:
+        """One non-private minibatch step.
+
+        GraphSAGE needs the graph, so it keeps the full-graph forward and reads
+        the loss off the sampled rows; the MLP forwards only those rows.
+        """
+        selected = torch.randint(int(data.num_nodes), (self.config.batch_size,),
+                                 device=self.device, generator=generator)
+        optimizer.zero_grad(set_to_none=True)
+        if self.config.method == "graphsage":
+            out = self._forward(model, data)[selected]
+        else:
+            out = model(data.x[selected])
+        _task_loss(out, data.y[selected], self.config.multilabel,
+                   regression=self.config.regression).backward()
+        optimizer.step()
+
+    def _per_sample_grads(self, model: nn.Module, x: Tensor, y: Tensor) -> dict[str, Tensor]:
+        """Per-example gradients in one vmapped pass (leading dim = sample)."""
+        params = {name: p.detach() for name, p in model.named_parameters()}
+        buffers = {name: b.detach() for name, b in model.named_buffers()}
+
+        def loss_of_one(p, b, xi, yi):
+            out = functional_call(model, (p, b), (xi.unsqueeze(0),))
+            return _task_loss(out, yi.unsqueeze(0), self.config.multilabel,
+                              regression=self.config.regression)
+
+        # randomness='different': dropout is a random op, and under per-sample
+        # gradients each example must draw its own mask (vmap refuses to guess).
+        return vmap(grad(loss_of_one), in_dims=(None, None, 0, 0),
+                    randomness='different')(params, buffers, x, y)
+
     def _private_step(self, model: nn.Module, optimizer: torch.optim.Optimizer, data: Any,
                       generator: torch.Generator) -> None:
-        """Poisson-sampled per-example DP-SGD for the feature-only MLP."""
+        """Poisson-sampled per-example DP-SGD for the feature-only MLP.
+
+        Forwards only the sampled rows, and takes all per-example gradients in
+        one vmapped pass instead of a Python loop of autograd.grad calls over a
+        full-graph forward.
+        """
         sample_rate = min(self.config.batch_size / data.num_nodes, 1.0)
         selected = torch.where(torch.rand(data.num_nodes, device=self.device, generator=generator) < sample_rate)[0]
         if not selected.numel():
             return
-        parameters = tuple(parameter for parameter in model.parameters() if parameter.requires_grad)
-        clipped = [torch.zeros_like(parameter) for parameter in parameters]
-        logits = model(data.x)
-        for row, target in zip(logits[selected], data.y[selected]):
-            gradients = torch.autograd.grad(
-                _task_loss(row[None], target[None], self.config.multilabel,
-                          regression=self.config.regression),
-                parameters, retain_graph=True)
-            norm = torch.sqrt(sum(gradient.square().sum() for gradient in gradients)).clamp_min(1e-12)
-            scale = min(1.0, self.config.clip / float(norm))
-            for accumulator, gradient in zip(clipped, gradients):
-                accumulator.add_(gradient, alpha=scale)
+        grads = self._per_sample_grads(model, data.x[selected], data.y[selected])
+        flat = torch.cat([g.reshape(g.shape[0], -1) for g in grads.values()], dim=1)
+        scale = (self.config.clip / flat.norm(dim=1).clamp_min(1e-12)).clamp(max=1.0)
+        named = dict(model.named_parameters())
         optimizer.zero_grad(set_to_none=True)
-        for parameter, accumulator in zip(parameters, clipped):
+        for name, per_sample in grads.items():
+            accumulator = torch.einsum('i,i...->...', scale, per_sample)
             noise = torch.randn(accumulator.shape, dtype=accumulator.dtype, device=accumulator.device,
                                 generator=generator) * (self.config.noise_multiplier * self.config.clip)
-            parameter.grad = (accumulator + noise) / selected.numel()
+            named[name].grad = (accumulator + noise) / selected.numel()
         optimizer.step()
