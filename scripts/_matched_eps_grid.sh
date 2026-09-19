@@ -47,6 +47,11 @@ TRACK_EVERY=${TRACK_EVERY:-50}
 # question is "what did the NOISE cost", as opposed to "what did privacy cost".
 NODP_R=${NODP_R:-2}
 NODP_P2=${NODP_P2:-1.0}
+# Single-label graphs (saint-flickr, saint-reddit) need --model gnn; PPI, Yelp
+# and Amazon are multi-hot and need multilabel_gnn -- a different loss and a
+# different metric.  Wrong value is a shape error at best, a silently
+# meaningless micro-F1 at worst.
+GNN_MODEL=${GNN_MODEL:-multilabel_gnn}
 # Degree cap for the non-DP ceiling.  NODP_K=none removes it entirely, which is
 # what you want to know the real headroom: Amazon's mean degree is ~167, so the
 # old hardcoded K=25 kept ~15% of each neighbourhood and the "ceiling" came in
@@ -139,7 +144,7 @@ CELLS=${CELLS:-"5:0.1:2 5:0.5:2 5:1.0:2 10:0.1:2 10:0.5:2 15:0.1:2 15:0.5:2"}
 NODP=${NODP:-"gnn mlp"}
 for _arm in $NODP; do
   case $_arm in
-    gnn)  run_cell "$OUT_ROOT/nodp_gnn" --model multilabel_gnn --aggr mean \
+    gnn)  run_cell "$OUT_ROOT/nodp_gnn" --model "$GNN_MODEL" --aggr mean \
               --p2 "$NODP_P2" --r "$NODP_R" --num_layers 2 $NODP_CAP ;;
     mlp)  run_cell "$OUT_ROOT/nodp_mlp" --model mlp --p2 1.0 --r 0 \
               --num_layers 2 --K_in 5 --K_out 5 ;;
@@ -171,7 +176,7 @@ for cell in $CELLS; do
   cat "$OUT_ROOT/sigma_K${K}_p2${P2}_r${R}.txt"
   grep -v '^#' "$OUT_ROOT/sigma_K${K}_p2${P2}_r${R}.txt" | while read -r PP EPS SG; do
     [ "$SG" = "SKIP" ] && { echo "  [skip] K=$K p2=$PP r=$R eps=$EPS unreachable"; continue; }
-    run_cell "$OUT_ROOT/gnn_K${K}_p2${PP}_r${R}_eps${EPS}" --model multilabel_gnn \
+    run_cell "$OUT_ROOT/gnn_K${K}_p2${PP}_r${R}_eps${EPS}" --model "$GNN_MODEL" \
         --aggr mean --p2 "$PP" --r "$R" --num_layers 2 \
         --K_in "$K" --K_out "$K" --dp --sigma "$SG"
   done
