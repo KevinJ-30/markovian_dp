@@ -38,7 +38,7 @@ def _metrics(method, data):
     data = _prepare(data)
     method.data = method.to_device(Data(**data.to_dict()))
     method.data.ready = False
-    prediction = method.predict()[0].argmax(dim=-1).cpu()
+    prediction = method.predict()[1].argmax(dim=-1).cpu() #had 0 before was using the embeddings
     target = data.y.cpu()
     accuracy = float((prediction == target).float().mean())
     f1_scores = []
