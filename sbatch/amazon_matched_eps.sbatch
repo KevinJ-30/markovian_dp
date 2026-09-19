@@ -53,9 +53,12 @@ export GRAPHSAINT_DATA_ROOT=${GRAPHSAINT_DATA_ROOT:-/storage/ice1/8/1/kjacob7/gr
 
 DS=amazon
 NTRAIN=1255968
-HIDDEN=512          # GraphSAINT Appendix C.3 uses 512 for Amazon
-DROPOUT=0.1         # ditto
+HIDDEN=${HIDDEN:-512}      # GraphSAINT Appendix C.3 uses 512 for Amazon
+DROPOUT=${DROPOUT:-0.1}    # ditto
 OUT_ROOT=${OUT_ROOT:-results/amazon_matched_eps}
-TRACK_EVERY=100     # fewer full-graph evals than the default 50
+# Overridable: full-graph evaluation over 262.8M arcs is the expensive part of
+# an Amazon run, so the right number of evaluations depends on T.  A hardcoded
+# 100 is 5 evals at T=500 but 49 at T=4906, which is a different job entirely.
+TRACK_EVERY=${TRACK_EVERY:-100}
 
 source scripts/_matched_eps_grid.sh
