@@ -48,6 +48,10 @@ def parse_args():
                    help='a root is a prediction row: r=1 reaches its entity, '
                         'r=2 its history')
     p.add_argument('--grid', type=float, default=1e-5)
+    p.add_argument('--root', choices=['row', 'entity'], default='row',
+                   help='must match the value the runs use: it changes the '
+                        'graph, so p1/K_in/K_out scoped here would otherwise '
+                        'describe a different graph than the one trained on')
     return p.parse_args()
 
 
@@ -56,7 +60,7 @@ def main():
     name = f'relbench:{a.dataset}/{a.task}'
     print(f"loading {name} (RelBench databases are multi-GB; first run "
           f"downloads)", file=sys.stderr)
-    _, data = load_dataset(name)
+    _, data = load_dataset(name, root=a.root)
 
     n = int(data.num_nodes)
     ei = data.edge_index

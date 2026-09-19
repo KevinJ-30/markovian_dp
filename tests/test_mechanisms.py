@@ -166,12 +166,11 @@ def test_parse_relbench_name():
         parse_relbench_name('relbench:rel-f1')
 
 
-def test_encode_table_skips_unhashable_columns():
+def test_encode_table_hashes_unhashable_columns():
     """rel-amazon's product table stores list/array values per cell (e.g.
-    categories), which pandas' hash-based nunique()/unique() cannot handle
-    and raises TypeError -- reproduces the crash hit scoping rel-amazon on
-    ICE 2026-09-09. Such a column should be dropped like any other
-    unencodable column, not crash the whole table."""
+    categories), which pandas' nunique() cannot hash and which used to be
+    dropped. They are hash-encoded now, so the column contributes signal
+    instead of vanishing."""
     import numpy as np
     import pandas as pd
     from src.data.relbench import _encode_table
@@ -182,9 +181,28 @@ def test_encode_table_skips_unhashable_columns():
         'category': [np.array(['a', 'b']), np.array(['c']), np.array(['a']),
                      np.array(['d', 'e']), np.array(['a'])],
     })
-    out = _encode_table(df, skip_cols={'id'}, max_categories=50)
-    assert out.shape == (5, 1)              # only `price` survives
+    out = _encode_table(df, skip_cols={'id'}, max_categories=50, n_hash=16)
+    assert out.shape == (5, 1 + 16)         # price + one hash block
     assert np.isfinite(out).all()
+    # equal cells must land in the same bucket, different cells generally not
+    assert (out[0, 1:] != out[1, 1:]).any()
+    assert (out[2, 1:] == out[4, 1:]).all()
+
+
+def test_encode_table_scales_from_stat_mask_only():
+    """The scale must come from pre-cutoff rows, not from held-out ones."""
+    import numpy as np
+    import pandas as pd
+    from src.data.relbench import _encode_table
+
+    df = pd.DataFrame({'v': [1.0, 1.0, 1.0, 1000.0]})
+    mask = np.array([True, True, True, False])          # last row is "future"
+    masked = _encode_table(df, skip_cols=set(), max_categories=8, stat_mask=mask)
+    unmasked = _encode_table(df, skip_cols=set(), max_categories=8)
+    # train rows are constant, so the masked encoding leaves them at zero and
+    # pushes the held-out row far out; the unmasked one dilutes it.
+    assert abs(masked[0, 0]) < 1e-9
+    assert masked[3, 0] > unmasked[3, 0]
 
 
 # ── large-graph evaluation ────────────────────────────────────────────────────

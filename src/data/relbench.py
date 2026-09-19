@@ -44,6 +44,8 @@ means deciding what SparseExpand roots on for a pair task, which changes the
 accounting's shell structure, not just adding a new mechanism class.
 """
 
+import zlib
+
 import numpy as np
 import pandas as pd
 import torch
@@ -55,9 +57,36 @@ from torch_geometric.data import Data
 _MAX_CATEGORIES = 32
 
 
-def _encode_table(df: pd.DataFrame, skip_cols: set, max_categories: int
+def _hash_block(s: pd.Series, n_buckets: int) -> np.ndarray:
+    """One-hot over a stable hash of the cell, for text / high-cardinality
+    columns that would otherwise be dropped.  Mirrors torch_frame's
+    HashTextEmbedder; crc32 rather than hash() because str hashing is salted
+    per process, so hash() would give a different encoding every run.
+    """
+    if n_buckets <= 0:
+        return np.zeros((len(s), 0), dtype=np.float64)   # disabled
+    out = np.zeros((len(s), n_buckets), dtype=np.float64)
+    for i, value in enumerate(s):
+        if value is None or (np.isscalar(value) and pd.isna(value)):
+            continue
+        out[i, zlib.crc32(str(value).encode('utf-8')) % n_buckets] = 1.0
+    return out
+
+
+# >= 0.5 distinct values per row means an identifier, not a category. Hashing
+# those hands the model a per-row code to memorize -- measured on rel-f1, doing
+# so cost 20 AUROC points -- so they stay dropped.
+_MAX_UNIQUE_RATIO = 0.5
+
+
+def _encode_table(df: pd.DataFrame, skip_cols: set, max_categories: int,
+                  n_hash: int = 16, stat_mask: np.ndarray | None = None
                   ) -> np.ndarray:
-    """Dense float matrix for one table: numerics, datetimes, small categoricals."""
+    """Dense float matrix for one table.
+
+    stat_mask selects the rows whose statistics may set the scale (the
+    pre-cutoff rows); None uses every row.
+    """
     blocks = []
     for col in df.columns:
         if col in skip_cols:
@@ -74,13 +103,15 @@ def _encode_table(df: pd.DataFrame, skip_cols: set, max_categories: int
             try:
                 n_unique = s.nunique(dropna=True)
             except (TypeError, ValueError):
-                # Some RelBench tables (e.g. rel-amazon's product categories)
-                # store a list/array per cell, which pandas' hash-based
-                # unique() cannot handle. Same treatment as free text /
-                # identifiers below: drop the column rather than crash.
+                # List/array cells (e.g. rel-amazon's product categories) are
+                # unhashable for nunique(); hash their string form instead.
+                blocks.append(_hash_block(s, n_hash))
                 continue
             if n_unique > max_categories:
-                continue                       # identifier / free text
+                if n_unique > _MAX_UNIQUE_RATIO * len(s):
+                    continue                            # identifier
+                blocks.append(_hash_block(s, n_hash))   # wide categorical
+                continue
             codes = pd.Categorical(s).codes    # -1 for NaN
             n_cat = int(codes.max()) + 1
             if n_cat <= 1:
@@ -94,8 +125,11 @@ def _encode_table(df: pd.DataFrame, skip_cols: set, max_categories: int
         finite = np.isfinite(v)
         if not finite.any():
             continue
-        mu = v[finite].mean()
-        sd = v[finite].std()
+        ref = finite.ravel()
+        if stat_mask is not None and (ref & stat_mask).any():
+            ref = ref & stat_mask
+        mu = v[ref, 0].mean()
+        sd = v[ref, 0].std()
         v = (v - mu) / (sd if sd > 0 else 1.0)
         v[~finite] = 0.0
         blocks.append(v)
@@ -108,7 +142,8 @@ def load_relbench(dataset_name: str, task_name: str, *,
                   root: str = 'row',
                   label_agg: str = 'last',
                   reverse_edges: bool = False,
-                  max_categories: int = _MAX_CATEGORIES):
+                  max_categories: int = _MAX_CATEGORIES,
+                  n_hash: int = 0):
     """Build the homogeneous graph for a RelBench entity task.
 
     Args:
@@ -165,18 +200,31 @@ def load_relbench(dataset_name: str, task_name: str, *,
     n_row_nodes = 0 if root == 'entity' else len(rows)
     n_nodes += n_row_nodes
 
+    # Feature scaling must not see past the training cutoff, so hoist it here.
+    train_end = float(rows.loc[rows['_split'] == 0, time_col]
+                      .astype('int64').max())
+
     # ── features: block-diagonal per table, plus a node-type one-hot ──────────
     n_types = len(tables) + (1 if root == 'row' else 0)
     feat_blocks, widths = [], []
     for name, tbl in tables:
         skip = {tbl.pkey_col, *tbl.fkey_col_to_pkey_table}
         skip.discard(None)
-        feat_blocks.append(_encode_table(tbl.df, skip, max_categories))
+        if tbl.time_col is None:
+            stat_mask = None                   # static table: no cutoff to apply
+        else:
+            ts = tbl.df[tbl.time_col]
+            stat_mask = (ts.astype('int64').to_numpy() <= train_end)
+            stat_mask |= ts.isna().to_numpy()  # undated rows are not "future"
+        feat_blocks.append(_encode_table(
+            tbl.df, skip, max_categories, n_hash=n_hash, stat_mask=stat_mask))
         widths.append(feat_blocks[-1].shape[1])
     if root == 'row':
         # A row node's own features: its timestamp only.  Anything else about
         # the row IS the label.
-        feat_blocks.append(_encode_table(rows[[time_col]], set(), max_categories))
+        feat_blocks.append(_encode_table(
+            rows[[time_col]], set(), max_categories, n_hash=n_hash,
+            stat_mask=(rows['_split'].to_numpy() == 0)))
         widths.append(feat_blocks[-1].shape[1])
 
     total_width = sum(widths) + n_types
@@ -273,8 +321,6 @@ def load_relbench(dataset_name: str, task_name: str, *,
             target_std = 1.0
         y = y / target_std
 
-    train_end = float(rows.loc[rows['_split'] == 0, time_col]
-                      .astype('int64').max())
     edge_ok_train = (node_time[src] <= train_end) & (node_time[dst] <= train_end)
 
     data = Data(

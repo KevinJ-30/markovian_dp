@@ -69,6 +69,14 @@ METRIC=${METRIC:-test_acc}
 DS="relbench:${DS_NAME}/${TASK}"
 OUT_ROOT=${OUT_ROOT:-results/relbench/${DS_NAME//-/}_${TASK//-/}_meps}
 R=${R:-2}
+ROOT=${ROOT:-row}          # 'row' = one root per prediction row (a leaf hanging
+                           # off its entity, so r=1 reaches only the entity);
+                           # 'entity' = root at the entity, labels aggregated.
+# One optimizer for BOTH arms. The DP cells used to run sgd/0.3 while the non-DP
+# cells ran adam/0.01, which confounds the privacy comparison with an optimizer
+# change; _dataset_settings.sh specifies adam/0.01 everywhere for that reason.
+OPT=${OPT:-adam}
+LR=${LR:-0.01}
 T=${T:-500}
 SEEDS=${SEEDS:-3}
 GRID=1e-5
@@ -87,7 +95,7 @@ $PY -c 'import relbench' 2>/dev/null || {
 
 echo "=== STAGE 0: scope $DS $(date) ==="
 if ! $PY scripts/relbench_scope.py --dataset "$DS_NAME" --task "$TASK" \
-        --batch $BATCH --T $T --eps $EPS_LIST --r $R --grid $GRID \
+        --batch $BATCH --T $T --eps $EPS_LIST --r $R --grid $GRID --root "$ROOT" \
         > "$OUT_ROOT/scope.env" 2> "$OUT_ROOT/scope.txt"; then
   cat "$OUT_ROOT/scope.txt" >&2
   echo "FATAL: scoping failed; nothing downstream can run without its p1/K" >&2
@@ -104,7 +112,8 @@ COMMON=(--dataset "$DS" --direction in --model "$MODEL" --aggr mean
         --p1 "$SCOPE_P1" --num_layers 2 --hidden 256 --clip 1.0
         --dropout $DROPOUT --weight_decay $WEIGHT_DECAY 
         --seeds $SEEDS --T $T --track_every 25
-        --K_in "$SCOPE_K_IN" --K_out "$SCOPE_K_OUT")
+        --K_in "$SCOPE_K_IN" --K_out "$SCOPE_K_OUT"
+        --relbench_root "$ROOT")
 
 run_cell() {   # out_dir, then extra flags
   local out=$1; shift
@@ -117,8 +126,8 @@ run_cell() {   # out_dir, then extra flags
 }
 
 echo "=== STAGE 1: references $(date) ==="
-run_cell "$OUT_ROOT/nodp_r${R}"  --p2 1.0 --r $R --optimizer adam --lr 0.01
-run_cell "$OUT_ROOT/nodp_blind"  --p2 1.0 --r 0  --optimizer adam --lr 0.01
+run_cell "$OUT_ROOT/nodp_r${R}"  --p2 1.0 --r $R --optimizer $OPT --lr $LR
+run_cell "$OUT_ROOT/nodp_blind"  --p2 1.0 --r 0  --optimizer $OPT --lr $LR
 
 echo "=== STAGE 2a: blind arm (r=0), matched epsilon $(date) ==="
 $PY scripts/calibrate_grid.py --eps $EPS_LIST --p2 1.0 --p1 "$SCOPE_P1" --r 0 \
@@ -129,7 +138,7 @@ cat "$OUT_ROOT/sigma_blind.txt"
 grep -v '^#' "$OUT_ROOT/sigma_blind.txt" | while read -r P2 EPS SIGMA; do
   [ "$SIGMA" = "SKIP" ] && { echo "  [skip] blind eps=$EPS unreachable"; continue; }
   run_cell "$OUT_ROOT/blind_eps${EPS}" \
-      --p2 1.0 --r 0 --dp --sigma "$SIGMA" --optimizer sgd --lr 0.3
+      --p2 1.0 --r 0 --dp --sigma "$SIGMA" --optimizer $OPT --lr $LR
 done
 
 echo "=== STAGE 2b: GNN arm (r=$R), matched epsilon $(date) ==="
@@ -141,7 +150,7 @@ cat "$OUT_ROOT/sigma_gnn.txt"
 grep -v '^#' "$OUT_ROOT/sigma_gnn.txt" | while read -r P2 EPS SIGMA; do
   [ "$SIGMA" = "SKIP" ] && { echo "  [skip] p2=$P2 eps=$EPS unreachable"; continue; }
   run_cell "$OUT_ROOT/gnn_p2${P2}_eps${EPS}" \
-      --p2 "$P2" --r $R --dp --sigma "$SIGMA" --optimizer sgd --lr 0.3
+      --p2 "$P2" --r $R --dp --sigma "$SIGMA" --optimizer $OPT --lr $LR
 done
 
 echo
