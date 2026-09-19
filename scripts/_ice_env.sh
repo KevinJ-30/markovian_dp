@@ -57,6 +57,10 @@ export PYTHONNOUSERSITE=1
 mkdir -p "$DATA_ROOT" "$CACHE_ROOT"
 
 export PPI_DATA_ROOT=${PPI_DATA_ROOT:-$DATA_ROOT/PPI}
+# The sbatch drivers export this themselves, but an interactive shell did not,
+# so loading a GraphSAINT graph by hand fell back to the relative default and
+# reported the data missing when it was there all along.
+export GRAPHSAINT_DATA_ROOT=${GRAPHSAINT_DATA_ROOT:-/storage/ice1/8/1/kjacob7/graphsaint}
 export TORCH_HOME=$CACHE_ROOT/torch
 export MPLCONFIGDIR=$CACHE_ROOT/mpl
 export XDG_CACHE_HOME=$CACHE_ROOT/xdg
