@@ -47,6 +47,13 @@ TRACK_EVERY=${TRACK_EVERY:-50}
 # question is "what did the NOISE cost", as opposed to "what did privacy cost".
 NODP_R=${NODP_R:-2}
 NODP_P2=${NODP_P2:-1.0}
+# Degree cap for the non-DP ceiling.  NODP_K=none removes it entirely, which is
+# what you want to know the real headroom: Amazon's mean degree is ~167, so the
+# old hardcoded K=25 kept ~15% of each neighbourhood and the "ceiling" came in
+# 16 points under GraphSAINT's published SAGE number for the same graph.
+NODP_K=${NODP_K:-25}
+if [ "$NODP_K" = "none" ]; then NODP_CAP=""
+else NODP_CAP="--K_in $NODP_K --K_out $NODP_K"; fi
 
 P1=$($PY -c "print(f'{$BATCH/$NTRAIN:.8f}')")
 
@@ -133,7 +140,7 @@ NODP=${NODP:-"gnn mlp"}
 for _arm in $NODP; do
   case $_arm in
     gnn)  run_cell "$OUT_ROOT/nodp_gnn" --model multilabel_gnn --aggr mean \
-              --p2 "$NODP_P2" --r "$NODP_R" --num_layers 2 --K_in 25 --K_out 25 ;;
+              --p2 "$NODP_P2" --r "$NODP_R" --num_layers 2 $NODP_CAP ;;
     mlp)  run_cell "$OUT_ROOT/nodp_mlp" --model mlp --p2 1.0 --r 0 \
               --num_layers 2 --K_in 5 --K_out 5 ;;
     none) echo "  [skip] non-DP ceilings (NODP=none)" ;;
