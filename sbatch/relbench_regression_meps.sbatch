@@ -79,7 +79,11 @@ OPT=${OPT:-adam}
 LR=${LR:-0.01}
 T=${T:-500}
 SEEDS=${SEEDS:-3}
-GRID=1e-5
+# The discretization floor is ~T*grid, so the right value depends on T, and on
+# r: at r=2 the composed PLD support is several times wider than at r=1, and a
+# 1e-5 lattice over it OOM'd a 128G job in 90s.  At T=500 a 1e-4 floor is 0.05,
+# 0.6% of eps=8 -- free.  Go finer only when T is large enough to need it.
+GRID=${GRID:-1e-4}
 EPS_LIST=${EPS_LIST:-"1 2 4 8"}
 P2_LIST=${P2_LIST:-"1.0 0.1"}
 DROPOUT=${DROPOUT:-0.0}
@@ -107,6 +111,15 @@ cat "$OUT_ROOT/scope.txt"
 eval "$(cat "$OUT_ROOT/scope.env")"
 : "${SCOPE_P1:?scope.env did not define SCOPE_P1}"
 echo "  -> p1=$SCOPE_P1  K_in=$SCOPE_K_IN  K_out=$SCOPE_K_OUT  n=$SCOPE_N_NODES"
+
+# EPOCHS beats a raw T: p1 varies by three orders of magnitude across RelBench
+# tasks, so one T is 25 epochs on rel-avito and 0.07 on rel-hm.  p1 is only
+# known after scoping, hence the recompute here; STAGE 0's sigma preview used
+# the provisional T and is informational either way.
+if [ -n "${EPOCHS:-}" ]; then
+  T=$($PY -c "print(max(1, round($EPOCHS / $SCOPE_P1)))")
+  echo "  -> EPOCHS=$EPOCHS at p1=$SCOPE_P1 -> T=$T"
+fi
 
 COMMON=(--dataset "$DS" --direction in --model "$MODEL" --aggr mean
         --p1 "$SCOPE_P1" --num_layers 2 --hidden 256 --clip 1.0

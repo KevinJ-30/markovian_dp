@@ -50,6 +50,22 @@ NODP_P2=${NODP_P2:-1.0}
 
 P1=$($PY -c "print(f'{$BATCH/$NTRAIN:.8f}')")
 
+# Prefer EPOCHS to a raw T: a fixed T is a different amount of training on every
+# graph (T=500 at B=512 is 0.2 epochs on Amazon and 25 on rel-avito), so cells
+# are not comparable across datasets.  T = epochs / p1.  Raw T still works if
+# EPOCHS is unset.
+if [ -n "${EPOCHS:-}" ]; then
+  T=$($PY -c "print(max(1, round($EPOCHS / $P1)))")
+  echo "    EPOCHS=$EPOCHS at p1=$P1 -> T=$T"
+fi
+# The PLD floor is ~T*grid, so the usable grid depends on T. 1e-4 (the
+# dp_accounting default) keeps the floor under ~4% of eps=8 up to T~3000; going
+# finer at large T is what OOMs, so raise BATCH to cut T instead.
+if [ "$T" -gt 3000 ] && [ "${GRID:-1e-4}" != "1e-4" ]; then
+  echo "    [warn] T=$T with grid=$GRID: fine grids at large T OOM the" >&2
+  echo "           accountant.  Consider raising BATCH to cut T." >&2
+fi
+
 mkdir -p "$OUT_ROOT"
 echo "=== $DS grid  $(date) ==="
 echo "    N_train=$NTRAIN batch=$BATCH -> p1=$P1"
