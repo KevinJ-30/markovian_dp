@@ -302,6 +302,17 @@ def load_relbench(dataset_name: str, task_name: str, *,
         y[nodes] = labels[sel].astype(y.dtype)
         masks[split][nodes] = True
 
+    # One node, one label: an entity in two splits keeps the LAST split's label
+    # while the earlier split's mask stays set, i.e. trains on test labels.
+    # rel-hm/item-sales hit this on 105,542 of 105,542 entities.
+    overlap = (masks['train'] & (masks['val'] | masks['test'])).sum()
+    if overlap:
+        raise ValueError(
+            f"root='entity' is unusable for {dataset_name}/{task_name}: "
+            f"{int(overlap)} entities appear in more than one split, so their "
+            f"label would be the later split's while train_mask stays set. "
+            f"Use root='row'.")
+
     # Regression targets are SCALED by TRAIN-split statistics only (val/test
     # rows never inform the scale a model trains against).  The scale alone --
     # not the mean -- is adjusted: MAE/RMSE are translation-invariant as
@@ -323,6 +334,10 @@ def load_relbench(dataset_name: str, task_name: str, *,
 
     edge_ok_train = (node_time[src] <= train_end) & (node_time[dst] <= train_end)
 
+    # edge_index is unfiltered on purpose: get_db() defaults to
+    # upto_test_timestamp=True, so no post-cutoff row exists to reach.
+    # Filtering again would drop legitimate edges.  Checked by
+    # scripts/relbench_leakage_check.py.
     data = Data(
         x=torch.from_numpy(x),
         y=torch.from_numpy(y).float() if is_regression else torch.from_numpy(y),
