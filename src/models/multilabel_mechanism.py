@@ -83,8 +83,8 @@ def _micro_auroc(scores: torch.Tensor, target: torch.Tensor) -> float:
 class MultiLabelGNNMechanism(BaseMechanism):
     """Per-root GCN multilabel base mechanism.
 
-    Same constructor signature as GNNMechanism and MLPMechanism so run.py can
-    swap them freely.  `num_classes` is the number of label columns.
+    Same constructor signature as GNNMechanism so run.py can swap them freely.
+    `num_classes` is the number of label columns.
     """
 
     metric_name = "micro_f1"

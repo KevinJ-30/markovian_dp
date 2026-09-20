@@ -22,7 +22,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from src.data.datasets import load_dataset                       # noqa: E402
 from src.models.gnn_mechanism import GNNMechanism           # noqa: E402
-from src.models.mlp_mechanism import MLPMechanism           # noqa: E402
 from src.models.multilabel_mechanism import MultiLabelGNNMechanism  # noqa: E402
 from src.models.binary_mechanism import BinaryGNNMechanism  # noqa: E402
 from src.models.regression_mechanism import RegressionGNNMechanism  # noqa: E402
@@ -40,7 +39,6 @@ from src.models.objectives import trivial_baseline
 
 _MECHANISMS = {
     'gnn': GNNMechanism,
-    'mlp': MLPMechanism,
     'multilabel_gnn': MultiLabelGNNMechanism,
     'binary_gnn': BinaryGNNMechanism,
     'regression_gnn': RegressionGNNMechanism,
@@ -139,11 +137,10 @@ def parse_args():
     p.add_argument('--dataset', default='citeseer',
                    help='cora | citeseer | pubmed | ...')
     p.add_argument('--model',
-                   choices=['gnn', 'mlp', 'multilabel_gnn', 'binary_gnn',
-                           'regression_gnn'],
+                   choices=['gnn', 'multilabel_gnn', 'binary_gnn',
+                            'regression_gnn'],
                    default='gnn',
-                   help="base mechanism g0: 'gnn' (GCN, single-label), 'mlp' "
-                        "(graph-blind Stage-0 baseline; use with --r 0), "
+                   help="base mechanism g0: 'gnn' (GCN, single-label), "
                         "'multilabel_gnn' (BCE + micro-F1, for PPI), "
                         "'binary_gnn' (BCE + AUROC, for RelBench binary entity "
                         "tasks), or 'regression_gnn' (MSE + MAE/RMSE, for "
@@ -333,15 +330,11 @@ def main():
     # Model/task guard: fail fast on pairings that would crash deep in a shape
     # error (single-label GNN on multilabel PPI) or silently report a
     # misleading metric (accuracy on an imbalanced binary RelBench task).
-    # `mlp` is allowed: it handles multilabel too, and it is the ONLY genuinely
-    # graph-blind arm.  Excluding it here is what forced the drivers to use
-    # `--model multilabel_gnn --r 0` for the blind arm on PPI/Yelp/Amazon, which
-    # is not blind (its untrained neighbour weight is still used at evaluation).
     if (getattr(dataset, 'multilabel', False)
-            and args.model not in ('multilabel_gnn', 'mlp')):
+            and args.model != 'multilabel_gnn'):
         raise SystemExit(
-            f"{args.dataset} is multilabel — use --model multilabel_gnn, or "
-            f"--model mlp for the graph-blind arm (got --model {args.model})")
+            f"{args.dataset} is multilabel — use --model multilabel_gnn "
+            f"(got --model {args.model})")
     task_type = str(getattr(dataset, 'task_type', ''))
     if 'REGRESSION' in task_type.upper() and args.model != 'regression_gnn':
         raise SystemExit(
@@ -349,13 +342,9 @@ def main():
             f"--model regression_gnn (got --model {args.model}); every "
             f"other mechanism expects integer class labels and will crash "
             f"on this task's float targets")
-    # The graph-blind arm must be `--model mlp`, not a GNN mechanism at --r 0.
-    # At r=0 a rooted subgraph has no edges, so SAGEConv.lin_l receives exactly
-    # zero gradient and never trains -- but evaluate() still runs a full forward
-    # over a REAL graph, multiplying real neighbour means by those weights.
-    # Under --dp lin_l becomes a pure Gaussian random walk.  Measured on
-    # rel-hm/user-churn the arm scores 0.509 AUROC on one eval graph and 0.602
-    # on the other; a genuinely blind model would be identical on both.
+    # At r=0 a GNN's neighbour weights receive no training signal, but
+    # full-graph evaluation still uses them. Keep the warning for archived
+    # ablations, but do not describe that configuration as graph-blind.
     # r and L are INDEPENDENT knobs and both are legitimate to vary.  r is the
     # expansion depth and is priced as K_out^r; L is the model depth and does
     # not enter the accounting at all, so depth is free in epsilon.  Only the
@@ -368,10 +357,11 @@ def main():
                   f"{args.num_layers} hops but expansion materializes {_r}, so "
                   f"boundary nodes are aggregated differently at train and "
                   f"eval time. Not a privacy issue -- L is free in epsilon.")
-    if 0 in args.r and args.model != 'mlp':
-        print(f"  WARNING: --r 0 with --model {args.model} is NOT graph-blind: "
-              f"its neighbour weights never train but are still used at "
-              f"evaluation. Use --model mlp for the blind arm.")
+    if 0 in args.r:
+        print(f"  WARNING: --r 0 with --model {args.model} is not graph-blind: "
+              "its neighbour weights never train but are still used at "
+              "evaluation. Use the portable MLP/DP-MLP baseline for a "
+              "feature-only comparison.")
     if 'BINARY' in task_type.upper() and args.model != 'binary_gnn':
         print(f"  WARNING: {args.dataset} is a binary task "
               f"({task_type}) — --model binary_gnn (AUROC) is recommended, "
@@ -491,12 +481,6 @@ def main():
 
     _probe = _MECHANISMS[args.model]
     _metric = getattr(_probe, 'metric_name', 'accuracy')
-    # MLPMechanism picks its metric from the target shape at CONSTRUCTION
-    # (micro_f1 on a multilabel dataset), which this class-level probe cannot
-    # see — without this, trivial_baseline would take the accuracy branch and
-    # call bincount on a float multi-hot target.
-    if args.model == 'mlp' and getattr(dataset, 'multilabel', False):
-        _metric = 'micro_f1'
     trivial = trivial_baseline(test_data, _metric)
     _better_high = _HIGHER_IS_BETTER.get(_metric, True)
     print(f"  trivial baseline ({_metric}) on test: {trivial:.4f} "
@@ -512,7 +496,7 @@ def main():
     with open(partial_path, 'w', newline='') as fh:
         w = csv.writer(fh)
         # train_acc/val_acc/test_acc hold whatever `metric` names — accuracy for
-        # single-label GNN/MLP, micro-F1 for multilabel, AUROC for binary.
+        # single-label GNN, micro-F1 for multilabel, AUROC for binary.
         w.writerow(['dataset', 'model', 'aggr', 'metric',
                     'direction', 'p1', 'p2', 'r', 'sigma', 'clip', 'K_in',
                     'K_out', 'cap_mode', 'optimizer', 'lr', 'momentum', 'T',
@@ -577,7 +561,7 @@ def main():
                 _set_seed(seed)
                 gph = graphs[seed]
                 Mechanism = _MECHANISMS[args.model]
-                extra = {} if args.model == 'mlp' else {'aggr': args.aggr}
+                extra = {'aggr': args.aggr}
                 mech = Mechanism(
                     train_data, num_features, num_classes,
                     hidden=args.hidden, num_layers=args.num_layers,
@@ -621,7 +605,7 @@ def main():
 
                 def _write_row(step, m):
                     w.writerow([args.dataset, args.model,
-                                '' if args.model == 'mlp' else args.aggr,
+                                args.aggr,
                                 mech.metric_name, args.direction, p1, p2, r,
                                 sigma, args.clip,
                                 gph['K_in'] if gph['K_in'] is not None else '',

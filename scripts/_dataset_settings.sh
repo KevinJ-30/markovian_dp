@@ -7,8 +7,6 @@
 #
 # Variables set:
 #   MODEL        mechanism flags for the main runs
-#   BLIND        flags for the graph-blind baseline (same mechanism at --r 0, so
-#                the baseline is measured on the SAME metric as everything else)
 #   P1           root-sampling probability, the SAME for DP and non-DP so the DP
 #                frontier is readable against its own non-DP ceiling
 #   T            training steps
@@ -28,11 +26,9 @@
 # away: at r=1 it would force a one-layer model, which measures capacity rather
 # than sparsification.
 #
-# r=2 IS REQUIRED for the graph to be worth anything.  Measured non-privately on
-# PPI-large at K=25 over 34 epochs, against a graph-blind MLP at 0.5330 micro-F1:
-#     r=1 L=1   0.4542   -- 8 points BELOW blind, and flat in T
-#     r=2 L=2   0.8227   -- 29 points above, crossing over by ~3 epochs
-# One hop carries less than the node's own features on these graphs.
+# r=2 is required for the graph to carry useful signal in the measured
+# large-graph runs. At K=25 over 34 non-private epochs, r=1/L=1 reached 0.4542
+# micro-F1 and stayed flat in T, while r=2/L=2 reached 0.8227.
 #
 # r=2 is also what makes sparsification worth something: sigma for eps=8 at
 # T=3000 on PPI-large K=5 is 102.25 at p2=1.0 against 8.20 at p2=0.1, a 12.5x
@@ -51,7 +47,7 @@
 _ds=$1
 
 REG=(--dropout 0.0 --weight_decay 0.0)
-R_VALUES=(2)   # r=1 does not beat the graph-blind arm; see DEPTH above
+R_VALUES=(2)
 L=2            # GNN depth, fixed and INDEPENDENT of r (free in epsilon)
 CEIL_R=2
 
@@ -72,27 +68,24 @@ case $_ds in
   # sigma < 1 on Amazon at eps=8 means noise below the clipping norm.
   ppi-large)
     MODEL=(--model multilabel_gnn --aggr mean)
-    BLIND=(--model mlp --r 0)
     P1=0.011402; T=300
     CAP=(--K_in 5 --K_out 5)
     HIDDEN=512; DROPOUT=0.0
     ;;
   saint-reddit)
-    MODEL=(--aggr mean); BLIND=(--model mlp --r 0)
+    MODEL=(--aggr mean)
     P1=0.003326; T=300
     CAP=(--K_in 5 --K_out 5)
     HIDDEN=128; DROPOUT=0.1
     ;;
   yelp)
     MODEL=(--model multilabel_gnn --aggr mean)
-    BLIND=(--model mlp --r 0)
     P1=0.000952; T=300
     CAP=(--K_in 5 --K_out 5)
     HIDDEN=512; DROPOUT=0.1
     ;;
   amazon)
     MODEL=(--model multilabel_gnn --aggr mean)
-    BLIND=(--model mlp --r 0)
     P1=0.000408; T=300
     CAP=(--K_in 5 --K_out 5)
     HIDDEN=512; DROPOUT=0.1
@@ -104,7 +97,6 @@ case $_ds in
     # T=2000: the measured learning curve plateaus by step ~1000 (0.4756 at 1k,
     # 0.4712 at 6k), so this is ample.
     MODEL=(--model multilabel_gnn --aggr mean)
-    BLIND=(--model multilabel_gnn --aggr mean --r 0)
     P1=0.01; T=2000
     CAP=(--K_in 5 --K_out 5)
     ;;
@@ -115,7 +107,6 @@ case $_ds in
     # p1=0.05 (68 of 1353 train rows per step) with T=900 keeps total epochs
     # comparable to the earlier p1=0.2/T=300 while keeping epsilon affordable.
     MODEL=(--model binary_gnn --aggr mean)
-    BLIND=(--model binary_gnn --aggr mean --r 0)
     P1=0.05; T=900
     CAP=(--K_in 20 --K_out 3)
     ;;
@@ -123,20 +114,20 @@ case $_ds in
     # FB100 UIllinois20 has no native inductive split. The loader's masks define
     # a train-induced graph, matching the SparseGNN training contract. p1 and lr
     # come from the tuning sweep in sbatch/facebook_tune_ice.sbatch.
-    MODEL=(--aggr mean); BLIND=(--model mlp --r 0)
+    MODEL=(--aggr mean)
     P1=0.013; T=500
     CAP=(--K_in 5 --K_out 5)
     LR_DP=0.3
     ;;
   reddit)
-    MODEL=(--aggr mean); BLIND=(--model mlp --r 0)
+    MODEL=(--aggr mean)
     P1=0.002; T=500
     CAP=(--K_in 5 --K_out 5)
     LR_DP=0.3
     ;;
   *)
     # Single-graph datasets use the train-induced graph defined by their masks.
-    MODEL=(--aggr mean); BLIND=(--model mlp --r 0)
+    MODEL=(--aggr mean)
     P1=0.005; T=500
     CAP=(--K_in 5 --K_out 5)
     ;;

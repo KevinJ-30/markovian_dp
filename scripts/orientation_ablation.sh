@@ -25,8 +25,8 @@
 # So the ablation runs on arxiv and RelBench only; adding Flickr/PPI/Reddit would
 # just reproduce each run twice.
 #
-# Read the mean rooted-subgraph size and each orientation's utility above the
-# graph-blind MLP baseline. The augmented CSV contains the sole `epsilon` column.
+# Read the mean rooted-subgraph size and compare the two orientations directly.
+# The augmented CSV contains the sole `epsilon` column.
 #
 # On arxiv, note that capping to K_in=K_out=5 removes most of the 3015-vs-221
 # degree asymmetry, so the uncapped ceiling block is the one that discriminates.
@@ -45,27 +45,24 @@ for DS in $DATASETS; do
   COMMON=(--dataset $DS --T $T --lr $LR_NONDP $REG \
           --seeds $SEEDS )
 
-  echo "=== [0] graph-blind reference (r=0) ==="
-  $PY -m src.experiments.sparse $COMMON $BLIND --p2 1.0 --p1 $P1 \
-      --out_dir $OUT/mlp
 
   for DIR in in out; do
-    echo "\n=== [1] uncapped ceiling, direction=$DIR ==="
+    echo "\n=== [0] uncapped ceiling, direction=$DIR ==="
     $PY -m src.experiments.sparse $COMMON $MODEL --direction $DIR --p1 $P1 \
         --p2 1.0 --r $CEIL_R --num_layers $CEIL_R --out_dir $OUT/ceiling_$DIR
 
-    echo "=== [2] capped sparsification sweep, direction=$DIR ==="
+    echo "=== [1] capped sparsification sweep, direction=$DIR ==="
     $PY -m src.experiments.sparse $COMMON $MODEL --direction $DIR --p1 $P1 $CAP \
         --p2 $P2_GRID --r $CEIL_R --num_layers $CEIL_R \
         --out_dir $OUT/stage1_$DIR
 
-    echo "=== [3] DP sweep, direction=$DIR ==="
+    echo "=== [2] DP sweep, direction=$DIR ==="
     $PY -m src.experiments.sparse $COMMON $MODEL --direction $DIR --dp --p1 $P1 $CAP \
         --p2 $P2_GRID --r $CEIL_R --num_layers $CEIL_R \
         --sigma $SIGMA_GRID --clip $CLIP --lr $LR_DP \
         --out_dir $OUT/dp_$DIR
 
-    echo "=== [4] post-hoc epsilon, direction=$DIR ==="
+    echo "=== [3] post-hoc epsilon, direction=$DIR ==="
     $PY -m src.experiments.compute_epsilon \
         --csv $OUT/dp_$DIR/sparse_gnn_${TAG}_dp_results.csv --delta $DELTA
   done

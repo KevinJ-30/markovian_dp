@@ -9,8 +9,8 @@
 
 # ── SparseGNN inductive ladder on the big homogeneous graphs ──
 #
-# Stage 0 baselines -> Stage 1 sparsification-only -> Stage 2 clip+noise ->
-# Stage 3 post-hoc epsilon (Theorem 6.4, since these runs use --direction in).
+# Non-private ceiling -> sparsification-only -> clip+noise -> post-hoc epsilon.
+# All private runs use --direction in.
 #
 # Reddit (232k nodes) and PPI (57k nodes, 1.6M edges, 121-way multilabel) are the
 # reason this lives on the cluster; ogbn-arxiv and Flickr run fine on a laptop
@@ -30,11 +30,6 @@ export PPI_DATA_ROOT=${SCRATCH:-$HOME/scratch}/data/PPI
 DELTA=1e-6
 
 # ── Reddit: single-label, convert to inductive via the train-induced subgraph ──
-echo "=== Reddit Stage 0: MLP baseline ==="
-srun python -u -m src.experiments.sparse \
-    --dataset reddit --direction in --model mlp \
-    --r 0 --p2 1.0 --p1 0.002 --T 500 --lr 0.01 --seeds 3 \
-    --out_dir results/ppi/mlp_reddit
 
 echo "=== Reddit Stage 0: GCN ceiling ==="
 srun python -u -m src.experiments.sparse \
@@ -63,10 +58,6 @@ srun python -u -m src.experiments.compute_epsilon \
 # ── PPI: 24 disjoint graphs, 20/2/2 inductive split, 121-way multilabel ───────
 # The training graph automatically retains only the training components.
 echo "=== PPI Stage 0-1 ==="
-srun python -u -m src.experiments.sparse \
-    --dataset ppi --direction in --model mlp \
-    --r 0 --p2 1.0 --p1 0.01 --T 1000 --lr 0.01 --seeds 3 \
-    --out_dir results/ppi/mlp_ppi
 
 srun python -u -m src.experiments.sparse \
     --dataset ppi --direction in --model multilabel_gnn \

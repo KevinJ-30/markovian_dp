@@ -58,16 +58,12 @@ def fig_frontier(out):
     ceiling = st.mean([float(r['test_acc'])
                        for r in load(f'{B}/stage1_r2/sparse_gnn_relbench-f1-top3_results.csv')
                        if float(r['p2']) == 1.0])
-    blind = st.mean([float(r['test_acc'])
-                     for r in load(f'{B}/blind/sparse_gnn_relbench-f1-top3_results.csv')])
 
     fig, ax = plt.subplots(figsize=(7.2, 4.6))
     style(ax)
     ax.axhline(ceiling, color=INK2, lw=1.2, ls='--')
     ax.text(1.6, ceiling + .006, f'non-DP ceiling  {ceiling:.3f}',
             color=INK2, fontsize=8.5)
-    ax.axhline(blind, color=MUTED, lw=1.2, ls=':')
-    ax.text(1.6, blind + .006, f'graph-blind  {blind:.3f}', color=INK2, fontsize=8.5)
     ax.axhline(0.5, color=MUTED, lw=1.2)
     ax.text(1.6, 0.505, 'chance  0.500', color=INK2, fontsize=8.5)
 
@@ -101,8 +97,6 @@ def fig_ladder(out):
     """Non-DP ladder: utility vs p2 at each depth, against the reference lines."""
     fig, ax = plt.subplots(figsize=(7.2, 4.4))
     style(ax)
-    blind = st.mean([float(r['test_acc'])
-                     for r in load(f'{B}/blind/sparse_gnn_relbench-f1-top3_results.csv')])
     ceil = st.mean([float(r['test_acc'])
                     for r in load(f'{B}/ceiling/sparse_gnn_relbench-f1-top3_results.csv')])
 
@@ -110,9 +104,6 @@ def fig_ladder(out):
     # and keep them clear of the series' own direct labels on the right.
     ax.axhline(ceil, color=INK2, lw=1.2, ls='--')
     ax.text(0.99, ceil + .009, f'uncapped ceiling  {ceil:.3f}', color=INK2,
-            fontsize=8.5, ha='left')
-    ax.axhline(blind, color=MUTED, lw=1.2, ls=':')
-    ax.text(0.99, blind + .009, f'graph-blind  {blind:.3f}', color=INK2,
             fontsize=8.5, ha='left')
     ax.axhline(0.5, color=MUTED, lw=1.2)
     ax.text(0.99, 0.505, 'chance  0.500', color=INK2, fontsize=8.5, ha='left')

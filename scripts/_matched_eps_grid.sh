@@ -15,9 +15,6 @@
 #   (on PPI-large K=25 needed sigma=76, which is the scaling argument in one
 #   line: big graphs buy a neighbourhood cheaply.)
 #
-#     DP-MLP blind (r=0)      the genuinely graph-blind baseline (--model mlp,
-#                             NOT --model gnn --r 0, which still message-passes
-#                             at evaluation with untrained neighbour weights)
 #     GNN r=1 K=5   p2=1.0    the old PPI-style config, for continuity
 #     GNN r=1 K=25  p2=1.0    a neighbourhood that actually exists
 #     GNN r=1 K=25  p2=0.5    does sparsification buy back the larger K?
@@ -102,11 +99,8 @@ run_cell() {   # out_dir, then extra flags
   $PY -u -m src.experiments.sparse $COMMON "$@" --out_dir "$out"
 }
 
-# GNN cells as K:p2:r.  r IS PER-CELL -- the previous grid hardcoded --r 1 for
-# every cell, which is why its GNN arms all lost: measured non-privately on
-# PPI-large at K=25, 34 epochs, r=1 sits 8 points BELOW the graph-blind MLP
-# (0.4542 vs 0.5330) and does not improve with more steps, while r=2 beats it
-# by 29 points (0.8227).  One hop is not enough on these graphs.
+# GNN cells as K:p2:r. r is per-cell; one hop did not converge to useful
+# utility on the measured large graphs, while r=2 did.
 #
 # r=2 is what costs K_out^2 in the shells, and p2 is what buys it back --
 # measured sigma for eps=8 at r=2, T=3000:
@@ -135,36 +129,22 @@ CELLS=${CELLS:-"5:0.1:2 5:0.5:2 5:1.0:2 10:0.1:2 10:0.5:2 15:0.1:2 15:0.5:2"}
 
 # ── non-DP ceilings (no privacy constraint) ──
 #
-# NODP selects which ceilings this invocation runs; set it to "none" to run
-# none.  Splitting the grid across separate sbatch jobs (one per cell, to stay
-# inside wallclock) otherwise makes every job recompute the SAME two ceilings:
-# run_cell's skip-if-CSV-exists only helps once a run has FINISHED, so jobs
-# starting together all miss the check and race on one output directory.
-# Run the ceilings once in their own job, then pass NODP=none to the cell jobs.
+# NODP selects whether this invocation runs the non-private GNN ceiling; set it
+# to "none" to skip it. Splitting the grid across separate sbatch jobs otherwise
+# makes every job recompute the same ceiling: run_cell's skip-if-CSV-exists only
+# helps once a run has finished, so concurrent jobs can race on one output.
+# Run the ceiling once in its own job, then pass NODP=none to the cell jobs.
 #
 # NOTE ${VAR:-default} substitutes on empty as well as unset, so NODP="" gets
 # the default rather than nothing -- hence the explicit "none" sentinel.
-NODP=${NODP:-"gnn mlp"}
+NODP=${NODP:-"gnn"}
 for _arm in $NODP; do
   case $_arm in
     gnn)  run_cell "$OUT_ROOT/nodp_gnn" --model "$GNN_MODEL" --aggr mean \
               --p2 "$NODP_P2" --r "$NODP_R" --num_layers 2 $NODP_CAP ;;
-    mlp)  run_cell "$OUT_ROOT/nodp_mlp" --model mlp --p2 1.0 --r 0 \
-              --num_layers 2 --K_in 5 --K_out 5 ;;
-    none) echo "  [skip] non-DP ceilings (NODP=none)" ;;
-    *)    echo "  [warn] unknown NODP arm '$_arm' (expected gnn, mlp or none)" >&2 ;;
+    none) echo "  [skip] non-DP ceiling (NODP=none)" ;;
+    *)    echo "  [warn] unknown NODP arm '$_arm' (expected gnn or none)" >&2 ;;
   esac
-done
-
-# ── DP-MLP blind arm: r=0, so K is irrelevant to its accounting ──
-echo "--- calibrating blind arm (r=0) ---"
-$PY scripts/calibrate_grid.py --eps $EPS_LIST --p2 1.0 --p1 $P1 --r 0 \
-    --K 5 --T $T --grid $GRID --delta $DELTA > "$OUT_ROOT/sigma_r0.txt"
-cat "$OUT_ROOT/sigma_r0.txt"
-grep -v '^#' "$OUT_ROOT/sigma_r0.txt" | while read -r P2 EPS SG; do
-  [ "$SG" = "SKIP" ] && continue
-  run_cell "$OUT_ROOT/dpmlp_eps${EPS}" --model mlp --p2 1.0 --r 0 \
-      --num_layers 2 --K_in 5 --K_out 5 --dp --sigma "$SG"
 done
 
 # ── DP-GNN arms: one calibration call per (K, p2) cell ──

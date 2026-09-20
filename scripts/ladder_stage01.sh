@@ -1,6 +1,6 @@
 #!/bin/zsh
-# Stage 0 (baselines) + Stage 1 (sparsification-only).  No DP yet — this
-# establishes the utility ladder the Stage 2 runs degrade from.
+# Non-private ceiling and sparsification-only runs. These establish the utility
+# ladder that the private runs degrade from.
 #
 #   ./scripts/ladder_stage01.sh                       # arxiv + flickr
 #   DATASETS="ppi" ./scripts/ladder_stage01.sh        # PPI only
@@ -42,16 +42,12 @@ for DS in $DATASETS; do
   COMMON=(--dataset $DS --direction in --p1 $P1 --T $T \
           --lr $LR_NONDP $REG --seeds $SEEDS )
 
-  echo "=== [S0a] graph-blind baseline (r=0) ==="
-  done_already results/inductive_blind_$TAG/sparse_gnn_${TAG}_results.csv || \
-  $PY -m src.experiments.sparse $COMMON $BLIND --p2 1.0 \
-      --out_dir results/inductive_blind_$TAG
 
-  # S0b ceiling.  At p2=1, no cap, and r=L the per-root computation IS
+  # S0 ceiling. At p2=1, no cap, and r=L the per-root computation is
   # full-graph inference (mean aggregation), so full-batch reaches the same
   # number in ~1 min instead of ~4 h on PPI.  SLOW_CEILING=1 forces the per-root
   # path if you want it measured through the sampling loop.
-  echo "=== [S0b] ceiling: all edges, no cap, r=$CEIL_R (L=$CEIL_R) ==="
+  echo "=== [S0] ceiling: all edges, no cap, r=$CEIL_R (L=$CEIL_R) ==="
   if done_already results/inductive_ceiling_$TAG/sparse_gnn_${TAG}_results.csv; then
     :
   elif [[ -n "$SLOW_CEILING" ]]; then
@@ -71,4 +67,4 @@ for DS in $DATASETS; do
   done
 done
 
-echo "\n=== Stage 0-1 complete ==="
+echo "\n=== Non-private ladder complete ==="

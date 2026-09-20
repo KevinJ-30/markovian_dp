@@ -1,9 +1,9 @@
 """
 Stage 0-1 inductive utility ladder for ogbn-arxiv.
 
-Reads the four non-DP CSVs produced by scripts/inductive_stage01.sh and draws
-test accuracy vs edge-sampling probability p2, with the MLP baseline and the
-full-edge GCN ceiling as horizontal references, one curve per expansion depth r.
+Reads the non-DP CSVs produced by the inductive ladder and draws test accuracy
+against edge-sampling probability p2, with the full-edge GCN ceiling as a
+horizontal reference and one curve per expansion depth r.
 
   python scripts/plot_inductive_ladder.py
 """
@@ -39,8 +39,6 @@ def _by_p2(rows):
 
 
 def main():
-    mlp = _mean_std([float(r['test_acc'])
-                     for r in _read(f'{RES}/inductive_mlp/sparse_gnn_ogbn-arxiv_results.csv')])
     ceil = _mean_std([float(r['test_acc'])
                       for r in _read(f'{RES}/inductive_ceiling/sparse_gnn_ogbn-arxiv_results.csv')])
     r1 = _by_p2(_read(f'{RES}/inductive_stage1/sparse_gnn_ogbn-arxiv_results.csv'))
@@ -54,8 +52,6 @@ def main():
 
     ax.axhline(ceil[0], color='green', ls=':', lw=1.5,
                label=f'GCN ceiling, full edges ({ceil[0]:.3f})')
-    ax.axhline(mlp[0], color='gray', ls=':', lw=1.5,
-               label=f'MLP, graph-blind ({mlp[0]:.3f})')
 
     ax.set_xlabel(r'edge-sampling probability $p_2$  (1.0 = keep all edges)')
     ax.set_ylabel('test accuracy')

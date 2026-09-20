@@ -15,7 +15,6 @@ from torch_geometric.data import Data
 
 from src.models.binary_mechanism import BinaryGNNMechanism, _auroc
 from src.models.gnn_mechanism import GNNMechanism
-from src.models.mlp_mechanism import MLPMechanism
 from src.models.multilabel_mechanism import MultiLabelGNNMechanism, _micro_f1
 from src.models.regression_mechanism import RegressionGNNMechanism
 from src.data.relbench import parse_relbench_name
@@ -124,7 +123,7 @@ def test_mechanism_trains_through_the_engine():
 
 
 @pytest.mark.parametrize(
-    "kind", ["multiclass", "mlp", "binary", "multilabel", "regression"])
+    "kind", ["multiclass", "binary", "multilabel", "regression"])
 def test_every_mechanism_trains_one_private_padded_step(kind):
     from src.training.sparse_gnn import train_sparse_gnn
 
@@ -141,10 +140,6 @@ def test_every_mechanism_trains_one_private_padded_step(kind):
         data.y = data.y.float()
         mechanism = RegressionGNNMechanism(
             data, 4, 1, hidden=8, num_layers=2, dropout=0.0)
-    elif kind == "mlp":
-        data = _toy_data()
-        mechanism = MLPMechanism(
-            data, 4, 2, hidden=8, num_layers=2, dropout=0.0)
     else:
         data = _toy_data()
         mechanism = GNNMechanism(

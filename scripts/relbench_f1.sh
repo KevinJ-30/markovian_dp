@@ -56,11 +56,8 @@ done_already() {
 COMMON=(--dataset $DS --direction in --p1 $P1 --T $T \
         --lr $LR_NONDP $REG --seeds $SEEDS )
 
-echo "=== [S0a] graph-blind baseline (r=0) ==="
-done_already $OUT/blind/sparse_gnn_${TAG}_results.csv || \
-$PY -m src.experiments.sparse $COMMON $BLIND --p2 1.0 --out_dir $OUT/blind
 
-echo "=== [S0b] ceiling: all edges, no cap, r=$CEIL_R (L=$CEIL_R) ==="
+echo "=== [S0] ceiling: all edges, no cap, r=$CEIL_R (L=$CEIL_R) ==="
 done_already $OUT/ceiling/sparse_gnn_${TAG}_results.csv || \
 $PY -m src.experiments.sparse $COMMON $MODEL --p2 1.0 --r $CEIL_R \
     --num_layers $CEIL_R --out_dir $OUT/ceiling

@@ -42,13 +42,8 @@ for DS in "${TASKS[@]}"; do
   OUT=results/relbench_$TAG
   echo "########## $DS ##########"
 
-  echo "=== [S0a] graph-blind MLP baseline ==="
-  srun python -u -m src.experiments.sparse \
-      --dataset "$DS" --model mlp --direction in \
-      --r 0 --p2 1.0 --p1 0.01 --T 1000 --lr 0.01 --seeds 3 \
-      --out_dir $OUT/mlp
 
-  echo "=== [S0b] GCN ceiling ==="
+  echo "=== [S0] GCN ceiling ==="
   srun python -u -m src.experiments.sparse \
       --dataset "$DS" --model binary_gnn --direction in \
       --p2 1.0 --r 2 --p1 0.01 --T 1000 --lr 0.01 --seeds 3 --num_layers 2 \
