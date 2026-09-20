@@ -84,7 +84,10 @@ echo "    N_train=$NTRAIN batch=$BATCH -> p1=$P1"
 echo "    T=$T K=$K hidden=$HIDDEN dropout=$DROPOUT seeds=$SEEDS delta=$DELTA"
 echo "    multilabel -> micro-F1 primary, micro-AUROC alongside"
 
-COMMON="--dataset $DS --p1 $P1 --hidden $HIDDEN --clip 1.0
+# C does not scale the SNR (noise is sigma*C, signal is clipped at C) but it
+# does set the clipping bias.  Never swept.
+CLIP=${CLIP:-1.0}
+COMMON="--dataset $DS --p1 $P1 --hidden $HIDDEN --clip $CLIP
         --dropout $DROPOUT --weight_decay 0.0 
         --optimizer adam --lr 0.01 --T $T --seeds $SEEDS
         --track_every $TRACK_EVERY"
