@@ -43,10 +43,7 @@ class DPGNNConfig:
     max_subgraph_nodes: int = 100
     max_private_batch_nodes: int = 8192
     multilabel: bool = False
-    # Continuous target.  Daigavane et al.'s sensitivity analysis is over
-    # subgraph occurrence counts plus per-example gradient clipping, so it is
-    # loss-agnostic: epsilon is unchanged from the classification run at the
-    # same (steps, noise_multiplier, batch_size, max_degree).
+    # Loss/metric only; epsilon is unchanged.
     regression: bool = False
 
 
@@ -98,9 +95,7 @@ class PartitionedDPGNN:
             following = next(batches, None)
             logits = model(current.features, current.node_mask)
             if self.config.regression:
-                # MSE over the single output. Same reduction contract as the
-                # multilabel arm: one mean over roots, so Opacus still sees the
-                # leading root axis it needs for per-sample clipping.
+                # One mean over roots, so Opacus keeps the per-sample axis.
                 _task_loss(logits, current.labels, multilabel=False,
                            regression=True).backward()
             elif self.config.multilabel:
@@ -125,9 +120,7 @@ class PartitionedDPGNN:
         x, labels, edge_index, weights = self._prepared_graph(data, seed=seed)
         predictions = model(x, edge_index, weights)
         if self.config.regression:
-            # MAE, matching RegressionGNNMechanism.metric_name so a baseline and
-            # the SparseGNN mechanism are judged on the same number.  LOWER is
-            # better -- see the `metric` key in fit()'s result.
+            # MAE, matching RegressionGNNMechanism.  Lower is better.
             return _task_metric(predictions, labels, False, regression=True)[0]
         if self.config.multilabel:
             return _multilabel_micro_f1(predictions, labels)[0]
@@ -178,11 +171,7 @@ class PartitionedDPGNN:
                   else "accuracy")
         return {
             "model": model,
-            # The result keys are metric-named, so callers cannot read
-            # "validation_accuracy" unconditionally -- that silently worked only
-            # while `accuracy` was the sole reachable metric, and would KeyError
-            # the moment multilabel or regression was enabled. Publish the name
-            # so dpgnn_adapter can resolve the key it should read.
+            # Keys are metric-named; publish the name so callers can resolve.
             "metric": metric,
             f"validation_{metric}": self.evaluate(model, val, seed=self.config.seed + 3),
             f"test_{metric}": self.evaluate(model, test, seed=self.config.seed + 4),

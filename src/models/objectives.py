@@ -80,13 +80,15 @@ def trivial_baseline(data, metric):
       micro_f1  -> predict every label positive: 2p/(1+p) at positive rate p
       auroc     -> 0.5 by definition
       mae       -> MAE of "always predict the train mean" on test, i.e.
-                   mean(|y_test - mean(y_train)|) * target_std.
+                   mean(|y_test - mean(y_train)|), in the SCALED space the
+                   targets are stored in -- train-std units, matching
+                   _regression_mae and RegressionGNNMechanism.evaluate.
+                   Multiply by data.target_std for the label's own units.
 
-                   NOTE: targets are scaled by target_std but NOT centred
+                   NOTE: targets are scaled but NOT centred
                    (data.relbench.load_relbench divides by the train std and
-                   leaves the mean alone), so the train mean is NOT 0 in the
-                   scaled space.  An earlier version computed
-                   mean(|y_test|) * target_std, which is the MAE of the
+                   leaves the mean alone), so the train mean is NOT 0 here.
+                   An earlier version computed mean(|y_test|), the MAE of the
                    ALL-ZERO predictor -- a much weaker bar on the non-negative
                    heavy-tailed targets RelBench regression uses (LTV, sales),
                    so "beats trivial" was too easy to clear.
@@ -104,9 +106,8 @@ def trivial_baseline(data, metric):
         p = float(y[te].float().mean())
         return 2 * p / (1 + p) if p > 0 else float("nan")
     if metric == "mae":
-        target_std = float(getattr(data, 'target_std', 1.0))
         train_mean = float(y[data.train_mask].view(-1).float().mean())
-        return float((y[te].view(-1).float() - train_mean).abs().mean()) * target_std
+        return float((y[te].view(-1).float() - train_mean).abs().mean())
     tr_counts = _t.bincount(y[data.train_mask].view(-1))
     majority = int(tr_counts.argmax())
     return float((y[te].view(-1) == majority).float().mean())

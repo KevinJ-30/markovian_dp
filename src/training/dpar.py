@@ -55,11 +55,7 @@ class DPARConfig:
     inference_steps: int = 2
     seed: int = 0
     multilabel: bool = False
-    # Continuous target (e.g. RelBench's item-ltv).  This changes only the loss
-    # and the reported metric: DP-APPR never sees labels at all -- it is a
-    # function of the adjacency matrix alone -- and the DP-SGD guarantee rests
-    # on the per-node clip `sgd_clip` and the column-wise l1 bound, neither of
-    # which looks at the loss's type.  epsilon is therefore unchanged.
+    # Loss/metric only; epsilon is unchanged.
     regression: bool = False
 
 
@@ -256,10 +252,7 @@ class DPARTrainer:
         ppr = private_ista_ppr(train_data.edge_index, sampled_nodes, effective_config,
                                self.device, sampling_generator)
         preprocessing_seconds = time.perf_counter() - preprocessing_start
-        # Regression reports MAE, where LOWER is better; classification reports
-        # accuracy/micro-F1, where higher is better.  Seeding with -inf and
-        # keeping `value > best_val` unconditionally would save the WORST
-        # checkpoint on every regression run.  Mirrors BaselineTrainer.fit.
+        # MAE is lower-is-better; a bare `>` would keep the worst checkpoint.
         lower_is_better = bool(effective_config.regression)
         best_state = None
         best_val = float("inf") if lower_is_better else float("-inf")

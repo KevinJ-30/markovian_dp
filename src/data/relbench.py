@@ -34,9 +34,9 @@ Task types.  RelBench ships REGRESSION, BINARY_CLASSIFICATION,
 MULTICLASS_CLASSIFICATION, MULTILABEL_CLASSIFICATION, and LINK_PREDICTION
 (`relbench.base.TaskType`).  The first three map onto this module's existing
 `y` handling (BinaryGNNMechanism / GNNMechanism) with no change here.
-REGRESSION targets are z-scored on TRAIN-split statistics and the scale
-recorded as `data.target_std` / `dataset.target_std`, for RegressionGNNMechanism
-to un-standardize MAE/RMSE back to the label's original units.
+REGRESSION targets are scaled by TRAIN-split statistics and the scale recorded
+as `data.target_std` / `dataset.target_std`.  Metrics are reported in that
+scaled space; multiply by target_std for the label's original units.
 LINK_PREDICTION is not wired: it predicts a (src, dst) pair rather than a
 single node's label, which does not fit the one-root-one-scalar-loss shape
 every mechanism here assumes (see BaseMechanism.subgraph_loss) — supporting it
@@ -314,10 +314,9 @@ def load_relbench(dataset_name: str, task_name: str, *,
             f"Use root='row'.")
 
     # Regression targets are SCALED by TRAIN-split statistics only (val/test
-    # rows never inform the scale a model trains against).  The scale alone --
-    # not the mean -- is adjusted: MAE/RMSE are translation-invariant as
-    # functions of the residual, so un-standardizing only needs a multiply by
-    # target_std.
+    # rows never inform the scale a model trains against).  Metrics stay in
+    # this scaled space; target_std is recorded so the original units are a
+    # single multiply away.
     #
     # Consequence, because it has bitten once: the target is NOT centred, so
     # the train mean is NOT 0 here.  "Predict the train mean" is therefore not

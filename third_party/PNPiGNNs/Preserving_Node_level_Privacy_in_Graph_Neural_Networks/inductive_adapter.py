@@ -121,9 +121,8 @@ def _train_regression(scheduler, epochs):
             best_state = deepcopy(scheduler.model.state_dict())
     if best_state is not None:
         scheduler.model.load_state_dict(best_state)
-        # Mirror run()'s restore: the vmapped worker parameters are a separate
-        # copy and must be re-synced, or evaluation would use the last epoch's
-        # weights rather than the selected ones.
+        # The vmapped worker params are a separate copy; re-sync or eval uses
+        # the last epoch's weights.
         for p_model, p_worker in zip(scheduler.model.parameters(),
                                      scheduler.worker_param_func):
             p_worker.copy_(p_model.data)
@@ -193,10 +192,8 @@ def main():
         epoch=epochs,
         K=K,
         num_neighbors=num_neighbors,
-        # A continuous target is one unbounded output, not a class count.
-        # num_classes reaches only G_net's final Linear; the privacy
-        # calibration (get_std_node_dp) is driven by q, steps, degree bound and
-        # num_neighbors, so this does not move epsilon.
+        # One unbounded output, not a class count.  Reaches only G_net's
+        # final Linear; get_std_node_dp never sees it, so epsilon is unchanged.
         num_classes=1 if regression else int(train.y.max()) + 1,
         priv_epsilon=epsilon,
         C=clip_norm,
@@ -233,10 +230,8 @@ def main():
         steps=steps,
     )
     if regression:
-        # MAE in both slots, matching src.models.objectives._regression_mae:
-        # neither "accuracy" nor "macro-F1" means anything for a continuous
-        # target, and reporting one number twice is better than inventing a
-        # second one.
+        # MAE in both slots, matching _regression_mae; there is no second
+        # metric for a continuous target.
         validation_score, test_score = _train_regression(scheduler, epochs)
         validation_secondary, test_secondary = validation_score, test_score
     else:
@@ -248,9 +243,8 @@ def main():
     achieved_epsilon = float(scheduler.achieved_epsilon)
     if achieved_epsilon > epsilon:
         raise RuntimeError(f"HeterPoisson calibration exceeded target epsilon: {achieved_epsilon} > {epsilon}")
-    # The accuracy/macro_f1 slots carry whatever metric the task defines --
-    # MAE for regression, where LOWER is better.  `metric` names it; the slot
-    # reuse matches how the multilabel and RelBench paths already report.
+    # The accuracy/macro_f1 slots carry whatever metric the task defines;
+    # `metric` names it.  MAE is lower-is-better.
     result = {
         "metric": "mae" if regression else "accuracy",
         "validation_accuracy": validation_score,

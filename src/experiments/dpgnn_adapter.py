@@ -52,13 +52,9 @@ def run_partitioned(manifest: str | Path, result_path: str | Path, *, steps: int
         ),
     )
     trained = trainer.fit(data["train"], data["val"], data["test"])
-    # PartitionedDPGNN names its result keys after the metric it actually
-    # computed, so read them through that name. Reading "validation_accuracy"
-    # unconditionally worked only while accuracy was the sole reachable metric.
-    # The outer keys stay fixed because src/experiments/upstream.py and the
-    # result JSON schema require "validation_accuracy"/"test_accuracy" -- the
-    # slot is reused for whatever the task's metric is, exactly as the
-    # multilabel and RelBench paths already reuse test_acc in the sparse CSVs.
+    # Result keys are metric-named.  Outer keys stay fixed: upstream.py
+    # requires validation_accuracy/test_accuracy, reused for whatever the
+    # metric is.
     metric = trained["metric"]
     result = {
         "method": "dp_gnn",

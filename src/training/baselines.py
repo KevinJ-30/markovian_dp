@@ -66,10 +66,7 @@ class BaselineTrainer:
                                      weight_decay=self.config.weight_decay)
         generator = torch.Generator(device=self.device).manual_seed(self.config.seed + 1)
         steps_per_epoch = math.ceil(train.num_nodes / self.config.batch_size)
-        # Regression reports MAE, where LOWER is better; classification reports
-        # accuracy/micro-F1, where higher is better.  Seeding best_val with
-        # -inf and keeping `validation > best_val` unconditionally would save
-        # the WORST checkpoint on every regression run.
+        # MAE is lower-is-better; a bare `>` would keep the worst checkpoint.
         lower_is_better = bool(self.config.regression)
         best_state = None
         best_val = float("inf") if lower_is_better else float("-inf")
@@ -80,10 +77,8 @@ class BaselineTrainer:
                 for _ in range(steps_per_epoch):
                     self._private_step(model, optimizer, train, generator)
             else:
-                # Minibatch, same step budget as dp_mlp.  One full-batch step
-                # per epoch made `epochs` mean 100 updates here against ~10^5
-                # for dp_mlp, so the non-private ceiling trained ~1000x less
-                # than the private arm it is supposed to bound.
+                # Same step budget as dp_mlp.  One full-batch step per epoch
+                # meant the non-private ceiling trained ~1000x less than it.
                 for _ in range(steps_per_epoch):
                     self._step(model, optimizer, train, generator)
             validation, _ = self._evaluate(model, split.val)
@@ -139,8 +134,7 @@ class BaselineTrainer:
             return _task_loss(out, yi.unsqueeze(0), self.config.multilabel,
                               regression=self.config.regression)
 
-        # randomness='different': dropout is a random op, and under per-sample
-        # gradients each example must draw its own mask (vmap refuses to guess).
+        # Each example needs its own dropout mask.
         return vmap(grad(loss_of_one), in_dims=(None, None, 0, 0),
                     randomness='different')(params, buffers, x, y)
 

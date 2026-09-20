@@ -5,11 +5,10 @@ subgraph, read off at the root — but with a single unbounded output, MSE loss,
 and MAE as the reported metric.
 
 Targets are expected SCALED but NOT centred: `load_relbench` divides by the
-train-split std and records it as `data.target_std`, and leaves the mean alone.
-Only the scale is needed to report metrics in the label's original units, since
-MAE and RMSE are translation-invariant as functions of the residual.
-`data.target_std` defaults to 1.0 (a no-op) for a caller that already scaled the
-target itself.
+train-split std and leaves the mean alone.  MAE and RMSE are reported in that
+scaled space -- i.e. in train-std units -- matching `objectives._regression_mae`,
+which the DPAR/DP-GNN/MLP baselines use.  Multiply by `data.target_std` to
+recover the label's original units.  (R^2 is scale-invariant either way.)
 
 Because the target is not centred, "predict the train mean" is NOT "predict 0"
 — `objectives.py`'s trivial_baseline subtracts mean(y_train) explicitly — and this
@@ -63,7 +62,6 @@ class RegressionGNNMechanism(BaseMechanism):
         super().__init__(module, device=device)
         self.data = data
         self._train_mask = data.train_mask
-        self._target_std = float(getattr(data, 'target_std', 1.0))
 
     def subgraph_loss(self, subgraph) -> torch.Tensor:
         root = subgraph.root
@@ -105,10 +103,10 @@ class RegressionGNNMechanism(BaseMechanism):
                 metrics[f"{split}_rmse"] = float("nan")
                 metrics[f"{split}_r2"] = float("nan")
                 continue
-            residual = (pred[mask] - target[mask]) * self._target_std
+            residual = pred[mask] - target[mask]
             metrics[split] = float(residual.abs().mean())
             metrics[f"{split}_rmse"] = float(residual.pow(2).mean().sqrt())
-            y_true = target[mask] * self._target_std
+            y_true = target[mask]
             ss_tot = (y_true - y_true.mean()).pow(2).sum()
             metrics[f"{split}_r2"] = (
                 float(1.0 - residual.pow(2).sum() / ss_tot)
