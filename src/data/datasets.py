@@ -246,7 +246,7 @@ def _load_graphsaint(name, root=None):
         budget on an arc to itself.
 
     `data.edge_index` is the full graph and `data.train_edge_index` the
-    train-induced one. `src.sparse.run` uses the latter for training and passes
+    train-induced one. `src.experiments.sparse` uses the latter for training and passes
     the former separately for evaluation.
     """
     import json
@@ -513,7 +513,7 @@ def _read_bluesky_raw(root):
     """
     raise NotImplementedError(
         "Bluesky raw reader is stubbed. Set BLUESKY_DATA_ROOT and implement "
-        "_read_bluesky_raw() in src/datasets.py — see its docstring for the "
+        "_read_bluesky_raw() in src/data/datasets.py — see its docstring for the "
         "expected return shape. Source: https://zenodo.org/records/11082879 "
         "and https://graphbench.github.io/website/"
     )
@@ -638,7 +638,7 @@ def load_dataset(name, device='cpu', **relbench_kwargs):
         name: One of the keys in SUPPORTED_DATASETS (case-insensitive), or a
             RelBench pair written as 'relbench:<database>/<task>'.
         device: Device to move data to.
-        **relbench_kwargs: forwarded to src.sparse.relbench_data.load_relbench
+        **relbench_kwargs: forwarded to src.data.relbench.load_relbench
             (root, label_agg, reverse_edges, max_categories) for RelBench names.
 
     Returns:
@@ -683,7 +683,7 @@ def load_dataset(name, device='cpu', **relbench_kwargs):
         return dataset, data
 
     if key == 'flickr':
-        # Single graph with train/val/test masks; src.sparse.run automatically
+        # Single graph with train/val/test masks; src.experiments.sparse automatically
         # builds the train-induced graph.
         from torch_geometric.datasets import Flickr
         root = os.environ.get('FLICKR_DATA_ROOT', 'data/Flickr')

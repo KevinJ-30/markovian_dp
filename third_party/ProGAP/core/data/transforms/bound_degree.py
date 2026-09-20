@@ -10,9 +10,8 @@ class BoundOutDegree(BaseTransform):
     def __init__(self, max_out_degree: int):
         self.num_neighbors = max_out_degree
 
-    def __call__(self, data: Data) -> Data:
-        data = self.sample(data)
-        return data
+    def forward(self, data: Data) -> Data:
+        return self.sample(data)
 
     def sample(self, data: Data) -> Data:
         device = data.adj_t.device

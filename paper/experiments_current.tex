@@ -1,0 +1,178 @@
+% Standalone experiments write-up, current mechanism (SparseExpand/incoming
+% edges, p1/p2/r/K parameterization). Supersedes experiments_plan.tex and
+% experiments_section.tex, both written against an older bin/K-partition
+% mechanism -- do not pull numbers from those.
+\documentclass{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{float} % [H] below: force floats to stay under their own
+                    % header instead of drifting to wherever LaTeX finds
+                    % room, which happens easily with this many tables
+                    % packed close together with little text between them.
+\setlength{\parskip}{3pt}
+\setlength{\parindent}{0pt}
+\setlist{nosep, leftmargin=1.4em}
+
+\title{Experiments: Privacy Amplification by Composite Subsampling}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Setup}
+\label{sec:setup}
+
+One SparseGNN step: each node is a root independently with probability
+$p_1$; each root's neighborhood grows along \emph{incoming} edges for $r$
+hops, keeping each edge independently with probability $p_2$
+(\textsc{SparseExpand}$_{\mathrm{in}}$); each rooted subgraph contributes one
+gradient $g_0$ (two-layer SAGE-mean or GCN), clipped to $\|g_0\|_2 \le C$;
+clipped gradients are summed and $\mathcal N(0, (\sigma C)^2 I)$ is added.
+$\sigma$ is the noise multiplier.
+
+$K_{\mathrm{in}}, K_{\mathrm{out}}$ capped on both the training graph and the
+union graph. $\delta = n^{-1.01}$, full node count. Training uses the
+degree-capped graph; evaluation defaults to the full graph.
+
+Blind arm = same mechanism at $r{=}0$, not a separate MLP.
+
+PPI and RelBench are natively inductive. ogbn-arxiv/Flickr/Reddit are made
+inductive by dropping cross-split edges.
+
+\section{Results so far}
+\label{sec:results-have}
+
+\subsection{PPI}
+GNN beats DP-MLP-blind at every matched $\varepsilon$, margin growing
+$+1.5$ ($\varepsilon{=}1$) to $+4.1$ pts ($\varepsilon{=}8$).
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.5\linewidth]{figures/2026-09-03/ppi_matched_eps_frontier.png}
+  \caption{PPI, matched-$\varepsilon$ frontier.}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.35\linewidth]{figures/2026-09-03/facebook_sparsification_frontier.png}
+  \includegraphics[width=0.35\linewidth]{figures/2026-09-03/arxiv_matched_eps_frontier.png}
+  \caption{Facebook (left) and ogbn-arxiv (right), matched-$\varepsilon$.
+  arxiv: dense beats sparse, unresolved.}
+\end{figure}
+
+\subsection{item-ltv}
+GNN beats trivial (77.13) and blind at every $\varepsilon$. Best regression
+result so far.
+
+\begin{table}[H]
+  \centering\footnotesize
+  \caption{rel-amazon/item-ltv, MAE, 1 seed.}
+  \begin{tabular}{lcccc}
+    \toprule
+    Arm & $\varepsilon{=}1$ & $\varepsilon{=}2$ & $\varepsilon{=}4$ & $\varepsilon{=}8$ \\
+    \midrule
+    baselines & 92.46 & 92.98 & 93.70 & 94.43 \\
+    GNN, $p_2{=}0.1$ & 70.36 & 70.04 & 69.76 & 69.19 \\
+    GNN, $p_2{=}1.0$ & 73.18 & 66.29 & 66.62 & 65.21 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{user-churn}
+GNN AUROC 0.55--0.56 vs.\ blind 0.49--0.51 (chance) at every $\varepsilon$.
+$\varepsilon$ trend runs backwards (0.563$\to$0.551 as $\varepsilon$
+$1\to8$) -- rerun with dropout/weight-decay on in progress, suspect the
+zero-regularization setup is letting DP noise double as an accidental
+regularizer.
+
+\subsection{Not clearing trivial}
+item-sales, user-ltv: no arm beats trivial MAE (0.0761, 16.78), DP or
+non-DP. Heavy-tailed target, log-transform not yet tried. ad-ctr: non-DP
+beats trivial (0.0426 vs 0.0522) but only 5{,}100 train rows forces
+$\sigma$ up to 570 -- same row-starvation as rel-trial.
+
+\subsection{Inconclusive}
+author-category (11-way, rel-arxiv): everything lands at 0.09--0.10 vs.\
+trivial 0.0909, 1 seed. Noise, not signal, until reseeded.
+
+\section{The grid}
+\label{sec:grid}
+
+\subsection{Classification}
+\begin{table}[H]
+  \centering\footnotesize
+  \begin{tabular}{lcccccccc}
+    \toprule
+    & \multicolumn{2}{c}{PPI} & \multicolumn{2}{c}{arxiv} & \multicolumn{2}{c}{Facebook} & \multicolumn{2}{c}{Reddit} \\
+    Arm & $\varepsilon{=}2$ & $\varepsilon{=}8$ & $\varepsilon{=}2$ & $\varepsilon{=}8$ & $\varepsilon{=}2$ & $\varepsilon{=}8$ & $\varepsilon{=}2$ & $\varepsilon{=}8$ \\
+    \midrule
+    baselines & & & & & & & & \\
+    sparse & & & & & & & & \\
+    dense & & & & & & & & \\
+    \midrule
+    non-DP ceiling & \multicolumn{2}{c}{} & \multicolumn{2}{c}{} & \multicolumn{2}{c}{} & \multicolumn{2}{c}{} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Classification (RelBench)}
+\begin{table}[H]
+  \centering\footnotesize
+  \begin{tabular}{lcccccccc}
+    \toprule
+    & \multicolumn{2}{c}{user-churn} & \multicolumn{2}{c}{author-category} & \multicolumn{2}{c}{driver-top3} & \multicolumn{2}{c}{driver-dnf} \\
+    Arm & $\varepsilon{=}2$ & $\varepsilon{=}8$ & $\varepsilon{=}2$ & $\varepsilon{=}8$ & $\varepsilon{=}2$ & $\varepsilon{=}8$ & $\varepsilon{=}2$ & $\varepsilon{=}8$ \\
+    \midrule
+    baselines & & & & & & & & \\
+    sparse & & & & & & & & \\
+    dense & & & & & & & & \\
+    \midrule
+    non-DP ceiling & \multicolumn{2}{c}{} & \multicolumn{2}{c}{} & \multicolumn{2}{c}{} & \multicolumn{2}{c}{} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Regression (RelBench)}
+\begin{table}[H]
+  \centering\footnotesize
+  \begin{tabular}{lcccccccc}
+    \toprule
+    & \multicolumn{2}{c}{item-ltv} & \multicolumn{2}{c}{user-ltv} & \multicolumn{2}{c}{item-sales} & \multicolumn{2}{c}{driver-position} \\
+    Arm & $\varepsilon{=}2$ & $\varepsilon{=}8$ & $\varepsilon{=}2$ & $\varepsilon{=}8$ & $\varepsilon{=}2$ & $\varepsilon{=}8$ & $\varepsilon{=}2$ & $\varepsilon{=}8$ \\
+    \midrule
+    baselines & & 94.43 & & 18.37 & & 0.114 & & \\
+    sparse & & 69.19 & & 17.80 & & 0.104 & & \\
+    dense & & 65.21 & & 17.80 & & 0.091 & & \\
+    \midrule
+    non-DP ceiling & \multicolumn{2}{c}{} & \multicolumn{2}{c}{} & \multicolumn{2}{c}{} & \multicolumn{2}{c}{} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Baselines (RelBench)}
+Blocked: baseline harness's split builder requires every node labeled,
+RelBench graphs have unlabeled entity nodes. dp\_mlp/mlp/graphsage affected,
+PPI/arxiv/Facebook baselines unaffected.
+
+\begin{table}[H]
+  \centering\footnotesize
+  \caption{Same shape as the non-relational baseline table, once unblocked.}
+  \begin{tabular}{lcccccccc}
+    \toprule
+    & \multicolumn{2}{c}{item-ltv} & \multicolumn{2}{c}{user-churn} & \multicolumn{2}{c}{author-category} & \multicolumn{2}{c}{} \\
+    Method & $\varepsilon{=}2$ & $\varepsilon{=}8$ & $\varepsilon{=}2$ & $\varepsilon{=}8$ & $\varepsilon{=}2$ & $\varepsilon{=}8$ & & \\
+    \midrule
+    Ours (sparse) & & & & & & & & \\
+    DPAR & & & & & & & & \\
+    DP-MLP & & & & & & & & \\
+    ProGAP & & & & & & & & \\
+    \midrule
+    non-DP ceiling & \multicolumn{2}{c}{} & \multicolumn{2}{c}{} & \multicolumn{2}{c}{} & & \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\end{document}
