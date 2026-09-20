@@ -1,0 +1,18 @@
+{
+  "dataset": "saint-flickr",
+  "method": "mlp",
+  "seed": 0,
+  "device": "auto",
+  "split_strategy": "native",
+  "split_root": "data/inductive_splits",
+  "multilabel": false,
+  "parameters": {
+    "epochs": 10,
+    "batch_size": 512,
+    "hidden_size": 128,
+    "layers": 2,
+    "dropout": 0.0,
+    "weight_decay": 0.0,
+    "learning_rate": 0.01
+  }
+}
