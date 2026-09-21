@@ -128,6 +128,7 @@ class DPARNoiseCalibration:
     target_delta: float
     amplification_rate: float
     ppr_releases: int
+    sampled_train_nodes: int
     sgd_evaluations: int
 
     def as_dict(self) -> dict[str, Any]:
@@ -223,7 +224,9 @@ class DPARAccountant(PrivacyAccountant):
     def calibrate(self, target_epsilon: float, delta: float, **kwargs: Any) -> Mapping[str, Any]:
         return calibrate_dpar_noise(
             target_epsilon=target_epsilon, target_delta=delta,
-            train_nodes=kwargs["train_nodes"], ppr_releases=kwargs["ppr_releases"],
+            train_nodes=kwargs["train_nodes"],
+            sampled_train_nodes=kwargs["sampled_train_nodes"],
+            ppr_releases=kwargs["ppr_releases"],
             ppr_clip=kwargs["ppr_clip"], sgd_clip=kwargs["sgd_clip"],
             batch_size=kwargs["batch_size"], steps=kwargs["steps"],
             sigma_rtol=kwargs.get("sigma_rtol", 1e-3),
@@ -246,8 +249,9 @@ def _dpar_positive_int(name: str, value: int) -> int:
 
 
 def calibrate_dpar_noise(
-    *, target_epsilon: float, target_delta: float, train_nodes: int, ppr_releases: int,
-    ppr_clip: float, sgd_clip: float, batch_size: int, steps: int,
+    *, target_epsilon: float, target_delta: float, train_nodes: int,
+    sampled_train_nodes: int, ppr_releases: int, ppr_clip: float,
+    sgd_clip: float, batch_size: int, steps: int,
     sigma_rtol: float = 1e-3, sigma_atol: float = 1e-6,
     max_noise_multiplier: float = 1e6,
 ) -> DPARNoiseCalibration:
@@ -257,6 +261,9 @@ def calibrate_dpar_noise(
     if not math.isfinite(target_delta) or not 0.0 < target_delta < 1.0:
         raise ValueError("target_delta must lie in (0, 1)")
     train_nodes = _dpar_positive_int("train_nodes", train_nodes)
+    sampled_train_nodes = _dpar_positive_int(
+        "sampled_train_nodes", sampled_train_nodes
+    )
     ppr_releases = _dpar_positive_int("ppr_releases", ppr_releases)
     batch_size = _dpar_positive_int("batch_size", batch_size)
     steps = _dpar_positive_int("steps", steps)
@@ -265,12 +272,13 @@ def calibrate_dpar_noise(
     sigma_rtol = _dpar_positive_finite("sigma_rtol", sigma_rtol)
     sigma_atol = _dpar_positive_finite("sigma_atol", sigma_atol)
     max_noise_multiplier = _dpar_positive_finite("max_noise_multiplier", max_noise_multiplier)
-    if ppr_releases > train_nodes:
-        raise ValueError("ppr_releases must not exceed train_nodes")
-    if batch_size > ppr_releases:
-        raise ValueError("batch_size must not exceed ppr_releases")
+    if not 0 < ppr_releases <= sampled_train_nodes <= train_nodes:
+        raise ValueError(
+            "DPAR populations must satisfy 0 < ppr_releases <= "
+            "sampled_train_nodes <= train_nodes"
+        )
 
-    amplification_rate = ppr_releases / train_nodes
+    amplification_rate = sampled_train_nodes / train_nodes
     ppr_epsilon = sgd_epsilon = target_epsilon / 2.0
     ppr_delta = sgd_delta = target_delta / 2.0
     epsilon_g = ppr_epsilon / amplification_rate
@@ -286,10 +294,13 @@ def calibrate_dpar_noise(
     accountant = DPARAccountant()
     candidates: dict[float, PrivacyResult] = {}
 
+    effective_batch_size = min(batch_size, sampled_train_nodes)
+
     def candidate(multiplier: float) -> PrivacyResult:
         if multiplier not in candidates:
             candidates[multiplier] = accountant.account_training(
-                noise_multiplier=multiplier, sample_rate=batch_size / ppr_releases,
+                noise_multiplier=multiplier,
+                sample_rate=effective_batch_size / sampled_train_nodes,
                 steps=steps, delta=sgd_delta, amplification_rate=amplification_rate,
             )
         return candidates[multiplier]
@@ -321,6 +332,7 @@ def calibrate_dpar_noise(
         sgd_epsilon=float(safe.epsilon), sgd_delta=sgd_delta,
         target_epsilon=target_epsilon, target_delta=target_delta,
         amplification_rate=amplification_rate, ppr_releases=ppr_releases,
+        sampled_train_nodes=sampled_train_nodes,
         sgd_evaluations=len(candidates),
     )
 

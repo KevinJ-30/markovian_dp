@@ -13,7 +13,8 @@
       "parameters": {
         "epochs": 100,
         "topk": 16,
-        "sampled_train_nodes": 70,
+        "sampled_train_rate": 0.09,
+        "ppr_num": 70,
         "dp_ppr": true,
         "dp_sgd": true
       }

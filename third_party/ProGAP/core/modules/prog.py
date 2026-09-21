@@ -112,22 +112,38 @@ class ProgressiveModule(TrainableModule):
     def step(self, data: Data, phase: Phase) -> tuple[Optional[Tensor], Metrics]:
         xs = [data[f'x{i}'][data.batch_nodes] for i in range(self.current_stage + 1)]
         y = data.y[data.batch_nodes]
-        
+
         preds: Tensor = self(xs)[1]
-        acc = preds.detach().argmax(dim=1).eq(y).float().mean() * 100
-        metrics = {f'{phase}/acc': acc}
+        if y.ndim == 2:
+            positive, actual = preds.detach() >= 0, y.bool()
+            numerator = 2 * (positive & actual).sum()
+            denominator = positive.sum() + actual.sum()
+            score = numerator / denominator.clamp_min(1) * 100
+            metrics = {f'{phase}/micro_f1': score}
+        else:
+            score = preds.detach().argmax(dim=1).eq(y).float().mean() * 100
+            metrics = {f'{phase}/acc': score}
 
         loss = None
         if phase != 'test':
-            loss = F.cross_entropy(input=preds, target=y)
+            loss = self.root_losses(preds, y).mean()
             metrics[f'{phase}/loss'] = loss.detach()
 
         return loss, metrics
 
+    @staticmethod
+    def root_losses(preds: Tensor, y: Tensor) -> Tensor:
+        if y.ndim == 2:
+            return F.binary_cross_entropy_with_logits(
+                preds, y.float(), reduction='none'
+            ).mean(dim=1)
+        return F.cross_entropy(preds, y, reduction='none')
+
     def predict(self, data: Data) -> tuple[Tensor, Tensor]:
         xs = [data[f'x{i}'][data.batch_nodes] for i in range(self.current_stage + 1)]
         x, y = self(xs)
-        return x, torch.softmax(y, dim=-1)
+        probabilities = torch.sigmoid(y) if getattr(self, 'multilabel', False) else torch.softmax(y, dim=-1)
+        return x, probabilities
         
     def reset_parameters(self):
         self.current_stage = 0

@@ -34,7 +34,8 @@ def run_partitioned(manifest: str | Path, result_path: str | Path, *, steps: int
                     batch_size: int = 32, noise_multiplier: float = 2.0,
                     evaluate_every: int = 50, seed: int = 0,
                     clip: float = 1.0, regression: bool = False,
-                    max_private_batch_nodes: int = 8192) -> dict[str, Any]:
+                    max_private_batch_nodes: int = 8192,
+                    architecture: str = "graphsage") -> dict[str, Any]:
     """Train first-party DP-GNN on train.pt and evaluate val.pt/test.pt.
 
     The manifest is the graph-disjoint boundary: no validation or test graph is
@@ -49,6 +50,7 @@ def run_partitioned(manifest: str | Path, result_path: str | Path, *, steps: int
             noise_multiplier=noise_multiplier, evaluate_every=evaluate_every,
             seed=seed, clip=clip, regression=regression,
             max_private_batch_nodes=max_private_batch_nodes,
+            architecture=architecture,
         ),
     )
     trained = trainer.fit(data["train"], data["val"], data["test"])
@@ -69,6 +71,7 @@ def run_partitioned(manifest: str | Path, result_path: str | Path, *, steps: int
             "composition_count": steps,
         },
         "implementation": {
+            "architecture": trained["architecture"],
             "source": "src.training.dpgnn",
             "algorithm": [
                 "reverse-edge bounded-degree sampling",

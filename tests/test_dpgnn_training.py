@@ -10,7 +10,9 @@ from opacus.optimizers import DPOptimizer
 from dp_accounting import GaussianDpEvent
 from dp_accounting.rdp import RdpAccountant
 
-from src.models.baselines import _OneHopGCN, _PaddedOneHopGCN
+from src.models.baselines import (
+    _OneHopGCN, _OneHopGraphSAGE, _PaddedOneHopGCN, _PaddedOneHopGraphSAGE,
+)
 from src.processing.dpgnn import iter_dpgnn_batches
 from src.processing.sparse_expand import build_adjacency
 from src.training.dpgnn import DPGNNConfig, PartitionedDPGNN
@@ -61,6 +63,15 @@ def test_padded_root_logits_match_explicit_one_hop_stars(one_hop_stars):
     with torch.no_grad():
         expected = torch.stack([_explicit_star_logits(model, star) for star in stars])
         actual = _PaddedOneHopGCN(model)(features, node_mask)
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+def test_padded_graphsage_logits_match_explicit_one_hop_stars(one_hop_stars):
+    _, features, node_mask, _, stars = one_hop_stars
+    model = _OneHopGraphSAGE(inputs=3, hidden=5, classes=2)
+    with torch.no_grad():
+        expected = torch.stack([_explicit_star_logits(model, star) for star in stars])
+        actual = _PaddedOneHopGraphSAGE(model)(features, node_mask)
     torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
 
 
@@ -262,7 +273,7 @@ def test_small_population_fit_uses_effective_terms_for_release_and_accounting():
         num_classes=2, steps=2, batch_size=3, noise_multiplier=0.7, seed=0,
         max_degree=5, latent_size=5, clip=0.2, max_private_batch_nodes=2)
     torch.manual_seed(config.seed)
-    reference = _OneHopGCN(inputs=3, hidden=5, classes=2)
+    reference = _OneHopGraphSAGE(inputs=3, hidden=5, classes=2)
     reference_adam = torch.optim.Adam(reference.parameters(), lr=config.learning_rate)
     generator = torch.Generator().manual_seed(10_000)
     for _ in range(config.steps):

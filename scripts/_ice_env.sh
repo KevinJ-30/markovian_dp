@@ -109,7 +109,7 @@ PREFLIGHT
 #
 #   14.8303  union-safe shells, n_d = 2*K_out^d -- the DEFAULT since
 #            2026-09-13.  Assumption 5.2 bounds the union g u g', which
-#            cap_degrees cannot enforce on the single graph we hold.
+#            preprocessing cannot enforce on the single graph we hold.
 #    7.2143  legacy shells, n_d = K_out^d, reachable via union_safe=False.
 #
 # Both are pinned deliberately.  Checking only the default would let a future

@@ -7,7 +7,9 @@
   "parameters": {
     "epochs": 1,
     "topk": 4,
+    "sampled_train_rate": null,
     "sampled_train_nodes": 8,
+    "ppr_num": 4,
     "batch_size": 8,
     "hidden_size": 16,
     "target_epsilon": 8.0,

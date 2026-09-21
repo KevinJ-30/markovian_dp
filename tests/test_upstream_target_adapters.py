@@ -55,6 +55,7 @@ def test_progap_target_pair_is_forwarded_without_runtime_loss(adapter_source, tm
         "PROGAP_DEPTH": "1",
         "PROGAP_EPOCHS": "1",
         "PROGAP_MAX_DEGREE": "5",
+        "PROGAP_MULTILABEL": "0",
         "PROGAP_SEED": "17",
         "PROGAP_TARGET_DELTA": "0.0005",
         "PROGAP_TARGET_EPSILON": "8.0",

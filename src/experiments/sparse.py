@@ -25,14 +25,16 @@ from src.models.gnn_mechanism import GNNMechanism           # noqa: E402
 from src.models.multilabel_mechanism import MultiLabelGNNMechanism  # noqa: E402
 from src.models.binary_mechanism import BinaryGNNMechanism  # noqa: E402
 from src.models.regression_mechanism import RegressionGNNMechanism  # noqa: E402
-from src.processing.sparse_expand import (                      # noqa: E402
-    build_adjacency, cap_degrees, cap_degrees_undirected, dedup_arcs,
-    max_degrees, sparse_expand,
-)
+from src.processing.sparse_expand import build_adjacency, sparse_expand  # noqa: E402
 from src.privacy.accounting import calibrate_sparsegnn_noise  # noqa: E402
 from src.training.sparse_gnn import train_sparse_gnn          # noqa: E402
 
-from src.processing.graphs import make_training_graph
+from src.processing.graphs import (
+    make_training_graph,
+    max_degrees,
+    preprocess_edges,
+    preprocess_graph,
+)
 
 from src.models.objectives import trivial_baseline
 
@@ -327,6 +329,13 @@ def main():
         print(f"  common inductive split: {split.path}; removed "
               f"{int((~within_partition).sum())} crossing edges")
 
+    evaluation_edges_before = int(data.edge_index.size(1))
+    data = preprocess_graph(data)
+    print("  preprocessing=remove self-loops, make bidirectional, "
+          "deduplicate arcs, optional non-self degree cap")
+    print(f"  evaluation graph: edges {evaluation_edges_before} -> "
+          f"{int(data.edge_index.size(1))}; max (in,out) "
+          f"{max_degrees(data.edge_index, int(data.num_nodes))}")
     # Model/task guard: fail fast on pairings that would crash deep in a shape
     # error (single-label GNN on multilabel PPI) or silently report a
     # misleading metric (accuracy on an imbalanced binary RelBench task).
@@ -376,86 +385,53 @@ def main():
           f"{edge_index.size(1)}; training roots "
           f"{int(train_data.train_mask.sum())}/{int(train_data.num_nodes)}")
 
-    # The accounting (path counts, Lemma 20) assumes graphs WITHOUT parallel
-    # edges; duplicates also get outsized survival odds under capping.  All
-    # shipped loaders are simple graphs, but enforce it here so e.g. a RelBench
-    # table with two foreign keys to the same parent row cannot break the
-    # assumption silently.
     n_nodes = int(train_data.num_nodes)
     K_in_req = args.K_in
     K_out_req = args.K_out if args.K_out is not None else args.K_in
+    if K_in_req is None and args.K_out is not None:
+        raise SystemExit(
+            "--K_out requires --K_in: capping is driven by K_in here, "
+            "so --K_out on its own silently applies no cap at all. "
+            f"Pass --K_in (e.g. --K_in {args.K_out} --K_out {args.K_out}).")
+    cap_mode = "directed" if args.cap_mode == "auto" else args.cap_mode
+    if K_in_req is not None and cap_mode == "undirected" and K_in_req != K_out_req:
+        raise SystemExit("--cap_mode undirected needs K_in == K_out")
     raw_train_ei = edge_index
 
-    def _simplify_and_cap(ei, label, cap_seed):
-        """Deduplicate arcs, then enforce the degree bound."""
-        n_raw = ei.size(1)
-        ei = dedup_arcs(ei, n_nodes)
-        if ei.size(1) < n_raw and label:
-            print(f"  removed {n_raw - ei.size(1)} parallel arc(s): "
-                  f"{n_raw} -> {ei.size(1)} (simple-graph assumption)")
-        if K_in_req is None:
-            # `--K_out N` alone used to land here and silently apply NO cap at
-            # all, because K_out_req is only consulted below.  Fail instead.
-            if args.K_out is not None:
-                raise SystemExit(
-                    "--K_out requires --K_in: capping is driven by K_in here, "
-                    "so --K_out on its own silently applies no cap at all. "
-                    f"Pass --K_in (e.g. --K_in {args.K_out} --K_out {args.K_out}).")
-            return ei, ''
-        before = max_degrees(ei, n_nodes)
-        # Offset from the root-sampling stream, which is seeded with the same
-        # integer (sparse_gnn._make_generator(seed), seed == cap_seed by
-        # default).  Two fresh Generators from one seed draw the SAME uniforms,
-        # so which arcs survived the cap and which nodes are roots at step 1
-        # were deterministically coupled.  The amplification argument wants the
-        # Bernoulli root draws independent of graph construction.
-        cap_gen = torch.Generator().manual_seed(int(cap_seed) + 20_000)
-        mode = args.cap_mode
-        if mode == 'auto':
-            # ALWAYS directed, symmetric input or not.  Every graph is treated
-            # as a directed arc set: dropping an arc does not oblige us to drop
-            # its reverse.  This is what the accounting actually assumes --
-            # Assumption 5.2 bounds in- and out-degree of a directed graph, and
-            # cap_degrees enforces exactly those two bounds.
-            #
-            # This reverses an earlier policy that preferred the undirected
-            # variant on a symmetric graph to preserve edge symmetry (capping
-            # the two arcs of an edge independently loses the reverse of ~2/3 of
-            # survivors at K=5).  Symmetry was never required by the mechanism;
-            # preserving it just made in- and out-expansion coincide.  One
-            # capping rule for all graphs is simpler to state and to account.
-            mode = 'directed'
-        if mode == 'undirected':
-            if K_in_req != K_out_req:
-                raise SystemExit("--cap_mode undirected needs K_in == K_out")
-            ei = cap_degrees_undirected(ei, n_nodes, K_in_req, generator=cap_gen)
-        else:
-            ei = cap_degrees(ei, n_nodes, K_in=K_in_req, K_out=K_out_req,
-                             generator=cap_gen)
-        if label:
-            print(f"  degree cap K_in={K_in_req} K_out={K_out_req} "
-                  f"(mode={mode}, cap_seed={cap_seed}) [{label}]: "
-                  f"max (in,out) {before} -> {max_degrees(ei, n_nodes)}, "
-                  f"edges {n_raw} -> {ei.size(1)}")
-        return ei, mode
-
     def _build_graphs(cap_seed, label):
-        """Cap the graph at `cap_seed` and derive everything that depends on it.
-
-        The capped graph is a random draw, so it belongs inside the seed loop:
-        holding it fixed makes every seed train on the same graph and hides the
-        cap's contribution to run-to-run variance.
-        """
-        train_ei, mode = _simplify_and_cap(raw_train_ei, label, cap_seed)
+        """Preprocess one graph draw and derive every cap-dependent artifact."""
+        before = max_degrees(raw_train_ei, n_nodes)
+        # Offset from the root-sampling stream, which is seeded with the same
+        # integer by default. Independent generators from the same seed would
+        # otherwise couple cap selection to the first root-sampling draw.
+        cap_gen = torch.Generator().manual_seed(int(cap_seed) + 20_000)
+        train_ei = preprocess_edges(
+            raw_train_ei,
+            n_nodes,
+            max_in_degree=K_in_req,
+            max_out_degree=K_out_req,
+            degree_cap_mode=cap_mode if K_in_req is not None else "directed",
+            add_self_loops=False,
+            generator=cap_gen,
+        )
+        applied_mode = cap_mode if K_in_req is not None else ""
+        achieved = max_degrees(train_ei, n_nodes)
+        if label:
+            cap_description = (
+                f"K_in={K_in_req} K_out={K_out_req} mode={applied_mode} "
+                if K_in_req is not None else "no degree cap "
+            )
+            print(f"  structural preprocessing [{label}]: {cap_description}"
+                  f"cap_seed={cap_seed}; max (in,out) {before} -> {achieved}; "
+                  f"edges {raw_train_ei.size(1)} -> {train_ei.size(1)}")
         k_in, k_out = K_in_req, K_out_req
         if k_in is None and args.dp:
             if label:
                 print("  WARNING: --dp without --K_in — the degree-bound "
                       "assumption (Assumption 5.2) is not enforced; post-hoc "
-                      "epsilon will use the graph's raw max degrees.")
-            k_in, k_out = max_degrees(train_ei, n_nodes)
-        achieved = max_degrees(train_ei, n_nodes)
-        return {'train_ei': train_ei, 'cap_mode': mode,
+                      "epsilon will use the graph's preprocessed max degrees.")
+            k_in, k_out = achieved
+        return {'train_ei': train_ei, 'cap_mode': applied_mode,
                 'K_in': k_in, 'K_out': k_out, 'cap_seed': cap_seed,
                 'achieved': achieved,
                 'adj': build_adjacency(train_ei, n_nodes,

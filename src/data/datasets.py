@@ -242,7 +242,7 @@ def _load_graphsaint(name, root=None):
         column counts them: 793,632 undirected edges + 25,084 self-loops =
         818,716, its stated figure.  Reddit has none, and its 23,213,838 arcs
         are exactly 2 x 11,606,919.  We drop them because the accounting counts
-        paths in a simple graph and `cap_degrees` would otherwise spend a node's
+        paths in a simple graph and degree capping would otherwise spend a node's
         budget on an arc to itself.
 
     `data.edge_index` is the full graph and `data.train_edge_index` the

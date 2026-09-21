@@ -15,16 +15,15 @@ import sys, torch
 from src.data.datasets import load_dataset
 from src.models.multilabel_mechanism import (
     MultiLabelGNNMechanism, _micro_f1, _micro_auroc)
-from src.processing.sparse_expand import (
-    build_adjacency, cap_degrees_undirected)
-from src.processing.graphs import make_training_graph
+from src.processing.sparse_expand import build_adjacency
+from src.processing.graphs import make_training_graph, preprocess_edges
 from src.training.sparse_gnn import train_sparse_gnn
 
 ds, data = load_dataset(sys.argv[1])
 train_data = make_training_graph(data)
-ei = torch.unique(train_data.edge_index.cpu(), dim=1)
-ei = cap_degrees_undirected(
-    ei, int(train_data.num_nodes), 5,
+ei = preprocess_edges(
+    train_data.edge_index, int(train_data.num_nodes),
+    max_in_degree=5, max_out_degree=5, degree_cap_mode="undirected",
     generator=torch.Generator().manual_seed(12345))
 adj = build_adjacency(ei, int(train_data.num_nodes), direction='in')
 te = data.test_mask

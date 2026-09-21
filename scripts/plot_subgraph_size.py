@@ -19,8 +19,8 @@ import matplotlib.pyplot as plt  # noqa: E402
 import torch  # noqa: E402
 
 from src.data.datasets import load_dataset  # noqa: E402
-from src.processing.sparse_expand import (  # noqa: E402
-    build_out_adjacency, cap_degrees, max_degrees, sparse_expand)
+from src.processing.graphs import max_degrees, preprocess_edges  # noqa: E402
+from src.processing.sparse_expand import build_out_adjacency, sparse_expand  # noqa: E402
 
 
 def main():
@@ -30,7 +30,9 @@ def main():
     ei = ei[:, tr[ei[0]] & tr[ei[1]]]
     in_raw, out_raw = max_degrees(ei, int(data.num_nodes))
     g = torch.Generator().manual_seed(12345)
-    ei = cap_degrees(ei, int(data.num_nodes), K_in=5, K_out=5, generator=g)
+    ei = preprocess_edges(
+        ei, int(data.num_nodes), max_in_degree=5, max_out_degree=5,
+        generator=g)
     adj = build_out_adjacency(ei, int(data.num_nodes))
 
     roots = torch.where(tr)[0]

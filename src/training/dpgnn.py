@@ -18,7 +18,9 @@ import torch.nn.functional as F
 from opacus.grad_sample import GradSampleModule
 from opacus.optimizers import DPOptimizer
 
-from src.models.baselines import _OneHopGCN, _PaddedOneHopGCN
+from src.models.baselines import (
+    _OneHopGCN, _OneHopGraphSAGE, _PaddedOneHopGCN, _PaddedOneHopGraphSAGE,
+)
 from src.models.objectives import _multilabel_micro_f1, _task_loss, _task_metric
 from src.processing.dpgnn import (
     iter_dpgnn_batches, sample_dpgnn_roots, sample_training_edges,
@@ -45,6 +47,7 @@ class DPGNNConfig:
     multilabel: bool = False
     # Loss/metric only; epsilon is unchanged.
     regression: bool = False
+    architecture: str = "graphsage"
 
 
 def _inverse_degree_weights(edge_index: torch.Tensor, num_nodes: int,
@@ -71,6 +74,8 @@ class PartitionedDPGNN:
             raise ValueError("max_subgraph_nodes must be positive")
         if config.max_private_batch_nodes < 1:
             raise ValueError("max_private_batch_nodes must be positive")
+        if config.architecture not in {"gcn", "graphsage"}:
+            raise ValueError("architecture must be 'gcn' or 'graphsage'")
         self.config = config
         self.device = torch.device(device)
 
@@ -115,7 +120,7 @@ class PartitionedDPGNN:
             current = following
 
     @torch.no_grad()
-    def evaluate(self, model: _OneHopGCN, data: Any, *, seed: int) -> float:
+    def evaluate(self, model: torch.nn.Module, data: Any, *, seed: int) -> float:
         model.eval()
         x, labels, edge_index, weights = self._prepared_graph(data, seed=seed)
         predictions = model(x, edge_index, weights)
@@ -143,11 +148,17 @@ class PartitionedDPGNN:
                        if (self.config.multilabel or self.config.regression)
                        else torch.long)
         x, labels = train.x.to(self.device), train.y.to(self.device, dtype=label_dtype)
-        model = _OneHopGCN(x.size(1), self.config.latent_size,
-                            self.config.num_classes).to(self.device)
+        if self.config.architecture == "graphsage":
+            model = _OneHopGraphSAGE(
+                x.size(1), self.config.latent_size, self.config.num_classes).to(self.device)
+            private_model = _PaddedOneHopGraphSAGE(model)
+        else:
+            model = _OneHopGCN(
+                x.size(1), self.config.latent_size, self.config.num_classes).to(self.device)
+            private_model = _PaddedOneHopGCN(model)
         adam = torch.optim.Adam(model.parameters(), lr=self.config.learning_rate)
         private_module = GradSampleModule(
-            _PaddedOneHopGCN(model), batch_first=True, loss_reduction="mean", strict=True)
+            private_model, batch_first=True, loss_reduction="mean", strict=True)
         root_generator = torch.Generator().manual_seed(self.config.seed + 2)
         noise_generator = torch.Generator(device=self.device).manual_seed(self.config.seed + 10_000)
         # lambda is sensitivity-normalized, unlike Opacus's clip-normalized multiplier.
@@ -171,6 +182,7 @@ class PartitionedDPGNN:
                   else "accuracy")
         return {
             "model": model,
+            "architecture": self.config.architecture,
             # Keys are metric-named; publish the name so callers can resolve.
             "metric": metric,
             f"validation_{metric}": self.evaluate(model, val, seed=self.config.seed + 3),

@@ -224,6 +224,10 @@ Method `parameters` accept:
   a single oversized star is processed alone.
 - `batch_size`: positive logical batch size `B`, no larger than training size `N`.
 - `noise_multiplier`: sensitivity-normalized multiplier `lambda`.
+- `architecture` (default `graphsage`): `graphsage` uses separate root and
+  mean-neighbor transforms; `gcn` selects the original one-hop model. This
+  changes only the clipped per-root model, so sampling and privacy accounting
+  are unchanged.
 
 For `M = min(K+1, N)`, Opacus adds isotropic Gaussian noise with standard deviation
 `2*M*C*lambda` to the clipped sum, then divides by `B`. Its internal multiplier

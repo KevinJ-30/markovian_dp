@@ -1,8 +1,17 @@
+import math
+from types import SimpleNamespace
+
 import torch
 from torch_geometric.data import Data
 
 from src.training.baselines import BaselineConfig, BaselineTrainer
-from src.training.dpar import DPARConfig, DPARTrainer, private_ista_ppr
+from src.training.dpar import (
+    DPARConfig,
+    DPARTrainer,
+    _dpar_adjacency,
+    _sample_train_partition,
+    private_ista_ppr,
+)
 from src.processing.splits import load_or_create_inductive_split
 
 
@@ -24,8 +33,20 @@ def test_saved_partition_removes_cross_edges(tmp_path):
 
 def test_private_baselines_run_on_train_partition(tmp_path):
     split = load_or_create_inductive_split(_graph(), "unit", root=tmp_path, seed=0)
-    dpar = DPARTrainer(DPARConfig(epochs=1, hidden_size=4, topk=2, sampled_train_nodes=2,
-                                   batch_size=64, dropout=0.0, dp_sgd=True), "cpu").fit(split)
+    dpar = DPARTrainer(
+        DPARConfig(
+            epochs=1,
+            hidden_size=4,
+            topk=2,
+            sampled_train_rate=None,
+            sampled_train_nodes=2,
+            ppr_num=1,
+            batch_size=64,
+            dropout=0.0,
+            dp_sgd=True,
+        ),
+        "cpu",
+    ).fit(split)
     mlp = BaselineTrainer(BaselineConfig(method="dp_mlp", epochs=1, hidden_size=4,
                                           batch_size=64, noise_multiplier=1.0), "cpu").fit(split)
     assert 0.0 <= dpar["test_accuracy"] <= 1.0
@@ -35,51 +56,169 @@ def test_private_baselines_run_on_train_partition(tmp_path):
     assert mlp["privacy"]["epsilon"] is not None
 
 
-def test_private_ista_returns_topk_rows():
+def test_sampled_train_rate_rounds_up_and_separates_ppr_roots():
     data = _graph()
-    ppr = private_ista_ppr(data.edge_index, data.num_nodes,
-                           DPARConfig(topk=2), torch.device("cpu"))
-    counts = torch.bincount(ppr.coalesce().indices()[0], minlength=data.num_nodes)
-    assert torch.all(counts <= 2)
+    partition = SimpleNamespace(data=data)
+    sampled, roots, statistics = _sample_train_partition(
+        partition,
+        DPARConfig(sampled_train_rate=0.21, ppr_num=2),
+        torch.Generator().manual_seed(3),
+        torch.device("cpu"),
+    )
+    assert sampled.num_nodes == math.ceil(0.21 * data.num_nodes) == 7
+    assert roots.numel() == 2
+    assert torch.unique(roots).numel() == 2
+    assert statistics["nodes"] == 7
 
 
-def test_private_ista_releases_every_row_and_column_clips():
+def test_dpar_adjacency_replaces_diagonals_without_mutating_edges():
+    edge_index = torch.tensor(
+        [[0, 0, 0, 0, 1, 2, 2], [0, 0, 1, 1, 2, 1, 2]]
+    )
+    original = edge_index.clone()
+    adjacency = _dpar_adjacency(edge_index, 3, torch.device("cpu")).coalesce()
+    assert torch.equal(edge_index, original)
+    assert set(map(tuple, adjacency.indices().t().tolist())) == {
+        (0, 0), (1, 1), (2, 2), (0, 1), (1, 0), (1, 2), (2, 1)
+    }
+    diagonal = adjacency.indices()[0] == adjacency.indices()[1]
+    assert int(diagonal.sum()) == 3
+    assert torch.all(adjacency.values() == 1)
+
+
+def test_private_ista_limits_released_rows_and_appends_identity_rows():
     data = _graph()
+    roots = torch.tensor([1, 4, 7])
     ppr = private_ista_ppr(
-        data.edge_index, data.num_nodes,
-        DPARConfig(topk=2, ppr_column_clip=0.05), torch.device("cpu"),
+        data.edge_index,
+        data.num_nodes,
+        roots,
+        DPARConfig(topk=2),
+        torch.device("cpu"),
     ).coalesce()
     row_counts = torch.bincount(ppr.indices()[0], minlength=data.num_nodes)
+    assert torch.all(row_counts[roots] <= 2)
+    nonreleased = torch.ones(data.num_nodes, dtype=torch.bool)
+    nonreleased[roots] = False
+    assert torch.all(row_counts[nonreleased] == 1)
+    for row in torch.where(nonreleased)[0]:
+        columns = ppr.indices()[1, ppr.indices()[0] == row]
+        assert columns.tolist() == [int(row)]
     column_mass = torch.zeros(data.num_nodes)
     column_mass.scatter_add_(0, ppr.indices()[1], ppr.values().abs())
-    assert torch.all(row_counts > 0)
-    assert torch.all(row_counts <= 2)
-    assert torch.all(column_mass <= 0.05 + 1e-7)
+    assert torch.allclose(
+        column_mass[column_mass > 0],
+        torch.ones_like(column_mass[column_mass > 0]),
+        atol=1e-7,
+        rtol=0.0,
+    )
+
+
+def _literal_released_ista(edge_index, num_nodes, roots, config):
+    adjacency = torch.zeros((num_nodes, num_nodes), dtype=torch.float64)
+    adjacency[edge_index[0], edge_index[1]] = 1
+    adjacency.fill_diagonal_(1)
+    out_degree = (adjacency > 0).sum(dim=1).to(torch.float64)
+    inverse_degree = adjacency.sum(dim=1).clamp_min(1e-12).reciprocal()
+    dense = torch.zeros((num_nodes, num_nodes), dtype=torch.float64)
+    for root in roots.tolist():
+        p_old = torch.zeros(num_nodes, dtype=torch.float64)
+        p_new = torch.zeros(num_nodes, dtype=torch.float64)
+        residual_old = torch.zeros(num_nodes, dtype=torch.float64)
+        residual_old[root] = -config.alpha * inverse_degree[root]
+        while residual_old.abs().max() > (1 + config.ista_epsilon) * config.rho * config.alpha:
+            active = torch.where(p_old - residual_old >= config.rho * config.alpha)[0]
+            active_set = set(active.tolist())
+            delta_pk = -(residual_old[active] + config.rho * config.alpha)
+            p_new[active] = p_old[active] + delta_pk
+            residual_new = residual_old
+            delta_full = torch.zeros(num_nodes, dtype=torch.float64)
+            delta_full[active] = delta_pk
+            for node in active.tolist():
+                neighbours = torch.where(adjacency[node] > 0)[0].tolist()
+                message = sum(
+                    float(delta_full[other] / out_degree[other])
+                    for other in neighbours
+                    if other in active_set
+                )
+                residual_new[node] = (
+                    (1 - 1 / out_degree[node]) * residual_old[node]
+                    - config.rho * config.alpha / out_degree[node]
+                    - 0.5 * (1 - config.alpha) * delta_full[node] / out_degree[node]
+                    - 0.5 * (1 - config.alpha) * message / out_degree[node]
+                )
+            neighbour_set = {
+                neighbour
+                for node in active.tolist()
+                for neighbour in torch.where(adjacency[node] > 0)[0].tolist()
+                if neighbour not in active_set
+            }
+            for node in neighbour_set:
+                neighbours = torch.where(adjacency[node] > 0)[0].tolist()
+                message = sum(
+                    float(delta_full[other] / out_degree[other])
+                    for other in neighbours
+                    if other in active_set
+                )
+                residual_new[node] = (
+                    residual_old[node]
+                    - 0.5 * (1 - config.alpha) * message / out_degree[node]
+                )
+            residual_old = residual_new
+            p_old = p_new
+        nonzero = torch.where(p_old != 0)[0]
+        chosen = nonzero[torch.argsort(p_old[nonzero])[-min(config.topk, nonzero.numel()):]]
+        dense[root, chosen] = p_old[chosen]
+    released = torch.zeros(num_nodes, dtype=torch.bool)
+    released[roots] = True
+    identity = torch.where(~released)[0]
+    dense[identity, identity] = 1
+    mass = dense.abs().sum(dim=0)
+    dense[:, mass > 0] /= mass[mass > 0]
+    return dense
+
+
+def test_private_ista_matches_released_aliased_recurrence():
+    edge_index = torch.tensor(
+        [[0, 1, 1, 2, 2, 3, 3, 0], [1, 0, 2, 1, 3, 2, 0, 3]]
+    )
+    roots = torch.tensor([2])
+    config = DPARConfig(topk=3, rho=0.02, ista_epsilon=1e-4)
+    actual = private_ista_ppr(
+        edge_index, 4, roots, config, torch.device("cpu")
+    ).to_dense()
+    expected = _literal_released_ista(edge_index, 4, roots, config)
+    assert torch.allclose(actual.to(torch.float64), expected, atol=1e-6, rtol=1e-6)
 
 
 def test_dpar_target_budget_samples_graph_and_composes_total(tmp_path):
     split = load_or_create_inductive_split(_graph(), "target", root=tmp_path, seed=0)
     target = DPARTrainer(
         DPARConfig(
-            epochs=1, hidden_size=4, topk=2, sampled_train_nodes=8,
-            batch_size=8, dropout=0.0, ppr_column_clip=0.05,
+            epochs=1, hidden_size=4, topk=2,
+            sampled_train_rate=None, sampled_train_nodes=8, ppr_num=2,
+            batch_size=8, dropout=0.0,
             target_epsilon=8.0, target_delta=5e-4,
         ), "cpu",
     ).fit(split)
     privacy = target["privacy"]
     assert target["sampled_train_graph"]["nodes"] == 8
     assert privacy["ppr"]["accountant"] == "dpar.upstream_ppr_formula"
+    assert privacy["ppr"]["composition_count"] == 2
     assert privacy["training"]["accountant"] == "dpar.upstream_rdp_accountant"
+    assert privacy["training"]["sampling_probability"] == 1.0
     assert privacy["total"]["accountant"] == "dpar.paper_theorem2_composition"
     assert privacy["total"]["epsilon"] <= 8.0
     assert privacy["total"]["delta"] == 5e-4
-    assert target["calibration"]["ppr_releases"] == 8
+    assert target["calibration"]["sampled_train_nodes"] == 8
+    assert target["calibration"]["ppr_releases"] == 2
     assert target["calibration"]["target_delta"] == 5e-4
     assert target["config"]["dp_ppr"] and target["config"]["dp_sgd"]
 
     fixed = DPARTrainer(
         DPARConfig(
-            epochs=1, hidden_size=4, topk=2, sampled_train_nodes=8,
+            epochs=1, hidden_size=4, topk=2,
+            sampled_train_rate=None, sampled_train_nodes=8, ppr_num=2,
             batch_size=8, dropout=0.0, dp_ppr=True, ppr_noise=0.7,
             ppr_delta=2e-5, dp_sgd=True, sgd_noise=1.2, sgd_delta=7e-4,
         ), "cpu",

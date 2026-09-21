@@ -107,3 +107,54 @@ class _PaddedOneHopGCN(nn.Module):
         encoded = encoded.masked_fill(~node_mask.unsqueeze(-1), 0)
         averaged = encoded.sum(dim=1) / node_mask.sum(dim=1, keepdim=True)
         return self.decoder(averaged + torch.tanh(self.core(averaged)))
+
+
+class _OneHopGraphSAGE(nn.Module):
+    """One-hop mean GraphSAGE with separate root and neighbour transforms."""
+
+    def __init__(self, inputs: int, hidden: int, classes: int):
+        super().__init__()
+        self.root_encoder = nn.Linear(inputs, hidden)
+        self.neighbour_encoder = nn.Linear(inputs, hidden, bias=False)
+        self.decoder = nn.Linear(hidden, classes)
+
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor,
+                edge_weight: torch.Tensor) -> torch.Tensor:
+        del edge_weight
+        neighbours = torch.zeros_like(x)
+        if edge_index.numel():
+            senders, receivers = edge_index
+            nonself = senders != receivers
+            senders, receivers = senders[nonself], receivers[nonself]
+            if senders.numel():
+                degree = torch.bincount(senders, minlength=x.size(0)).to(
+                    dtype=x.dtype).clamp_min_(1.0)
+                neighbours.index_add_(
+                    0, senders, x[receivers] / degree[senders, None])
+        hidden = torch.tanh(
+            self.root_encoder(x) + self.neighbour_encoder(neighbours))
+        return self.decoder(hidden)
+
+
+class _PaddedOneHopGraphSAGE(nn.Module):
+    """Root-only padded-star view sharing a one-hop GraphSAGE model."""
+
+    def __init__(self, model: _OneHopGraphSAGE):
+        super().__init__()
+        self.root_encoder = model.root_encoder
+        self.neighbour_encoder = model.neighbour_encoder
+        self.decoder = model.decoder
+
+    def forward(
+        self, features: torch.Tensor, node_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        neighbour_mask = node_mask.clone()
+        neighbour_mask[:, 0] = False
+        neighbours = features.masked_fill(
+            ~neighbour_mask.unsqueeze(-1), 0).sum(dim=1)
+        neighbours = neighbours / neighbour_mask.sum(
+            dim=1, keepdim=True).clamp_min_(1)
+        hidden = torch.tanh(
+            self.root_encoder(features[:, 0])
+            + self.neighbour_encoder(neighbours))
+        return self.decoder(hidden)

@@ -72,9 +72,13 @@ def test_global_class_space_includes_held_out_labels(monkeypatch, tmp_path):
         return dpar_mlp(inputs, classes, hidden, layers, dropout)
 
     monkeypatch.setattr(dpar, "DPARMLP", capture_dpar_mlp)
-    dpar.DPARTrainer(dpar.DPARConfig(epochs=1, hidden_size=4, topk=2, batch_size=8, dropout=0.0), "cpu").fit(
-        split
-    )
+    dpar.DPARTrainer(
+        dpar.DPARConfig(
+            epochs=1, hidden_size=4, topk=2, batch_size=8, dropout=0.0,
+            sampled_train_rate=None, sampled_train_nodes=2, ppr_num=1,
+        ),
+        "cpu",
+    ).fit(split)
     assert captured["classes"] == 3
 
     manifest = export_partitions(split, tmp_path / "partitions")
@@ -150,6 +154,12 @@ def test_ogb_loader_rejects_invalid_official_indices(monkeypatch):
 
 def test_runner_reports_native_split_strategy(monkeypatch, tmp_path):
     data = _native_graph()
+    data.edge_index = torch.tensor(
+        [
+            [0, 2, 4, 0, 3, 5, 0, 0, 2, 2, 4, 4],
+            [1, 3, 5, 2, 4, 0, 0, 1, 2, 3, 4, 5],
+        ]
+    )
     monkeypatch.setattr(experiment_runner, "load_dataset", lambda dataset, device: (object(), data))
 
     result = experiment_runner.run(
@@ -170,4 +180,8 @@ def test_runner_reports_native_split_strategy(monkeypatch, tmp_path):
         "val": 2,
         "test": 2,
     }
+    assert {
+        name: result["partitions"][name]["edges"]
+        for name in ("train", "val", "test")
+    } == {"train": 2, "val": 2, "test": 2}
 

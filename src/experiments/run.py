@@ -17,6 +17,7 @@ import torch
 from src.data.datasets import load_dataset
 from src.training.baselines import BaselineConfig, BaselineTrainer
 from src.training.dpar import DPARConfig, DPARTrainer
+from src.processing.graphs import preprocess_inductive_split
 from src.processing.splits import load_or_create_inductive_split
 
 
@@ -103,10 +104,11 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
         multilabel=multilabel,
         regression=regression,
     )
+    split = preprocess_inductive_split(split)
     method = config["method"]
     options = dict(config.get("parameters", {}))
     options.setdefault("seed", seed)
-    if method in {"dpar", "mlp", "dp_mlp", "graphsage"}:
+    if method in {"dpar", "mlp", "dp_mlp", "graphsage", "progap"}:
         options.setdefault("multilabel", multilabel)
     if method in _REGRESSION_METHODS:
         options.setdefault("regression", regression)

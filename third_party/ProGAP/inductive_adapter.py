@@ -14,12 +14,13 @@ import torch
 from torch_geometric.data import Data
 from torch_geometric.transforms import ToSparseTensor
 
+from core import console
+from core.data.loader.node import NodeDataLoader
 from core.methods.progap.node import NodeLevelProGAP
 
-
-def _load(manifest, name):
-    file = json.loads(Path(manifest).read_text())["partitions"][name]
-    return torch.load(Path(manifest).parent / file, map_location="cpu", weights_only=False)["data"]
+def _load(manifest_path, manifest, name):
+    file = manifest["partitions"][name]
+    return torch.load(Path(manifest_path).parent / file, map_location="cpu", weights_only=False)["data"]
 
 
 def _prepare(data):
@@ -31,6 +32,36 @@ def _prepare(data):
     return data
 
 
+class InductiveNodeLevelProGAP(NodeLevelProGAP):
+    """Select each progressive stage on a graph-disjoint validation partition."""
+
+    def fit(self):
+        self.data.x0 = self.data.x
+        self.validation.x0 = self.validation.x
+        metrics = {}
+        for stage in range(self.num_stages):
+            if stage:
+                for graph in (self.data, self.validation):
+                    embeddings, _ = self.trainer.predict(
+                        dataloader=NodeDataLoader(graph, batch_size="full", shuffle=False)
+                    )
+                    graph[f"x{stage}"] = self.nap(embeddings, graph.adj_t)
+
+            self.classifier.set_stage(stage)
+            console.info(f"Fitting stage {stage + 1} of {self.num_stages}")
+            self.trainer = self.configure_trainer()
+            metrics = self.trainer.fit(
+                model=self.classifier,
+                train_dataloader=self.data_loader("train"),
+                val_dataloader=NodeDataLoader(
+                    self.validation, batch_size="full", shuffle=False
+                ),
+            )
+
+        self.data.ready = True
+        return metrics
+
+
 def _metrics(method, data):
     # Do not call NodeLevelProGAP.setup here: it would recalibrate the private
     # training mechanism from a held-out graph. Prediction stages reuse the
@@ -38,15 +69,31 @@ def _metrics(method, data):
     data = _prepare(data)
     method.data = method.to_device(Data(**data.to_dict()))
     method.data.ready = False
-    prediction = method.predict()[1].argmax(dim=-1).cpu() #had 0 before was using the embeddings
+    probabilities = method.predict()[1].cpu()
     target = data.y.cpu()
+    if target.ndim == 2:
+        positive = probabilities >= 0.5
+        actual = target.bool()
+        denominator = int(positive.sum() + actual.sum())
+        micro_f1 = (
+            0.0
+            if denominator == 0
+            else 2.0 * int((positive & actual).sum()) / denominator
+        )
+        return micro_f1, micro_f1
+
+    prediction = probabilities.argmax(dim=-1)
     accuracy = float((prediction == target).float().mean())
     f1_scores = []
     for label in torch.unique(target):
         predicted = prediction == label
         actual = target == label
         denominator = int(predicted.sum() + actual.sum())
-        f1_scores.append(0.0 if denominator == 0 else 2.0 * int((predicted & actual).sum()) / denominator)
+        f1_scores.append(
+            0.0
+            if denominator == 0
+            else 2.0 * int((predicted & actual).sum()) / denominator
+        )
     return accuracy, float(sum(f1_scores) / len(f1_scores))
 
 
@@ -68,6 +115,13 @@ def _positive_int(name, default):
     return value
 
 
+def _multilabel():
+    value = os.environ.get("PROGAP_MULTILABEL")
+    if value not in {"0", "1"}:
+        raise ValueError("PROGAP_MULTILABEL must be exactly '0' or '1'")
+    return value == "1"
+
+
 def _seed():
     seed = int(os.environ.get("PROGAP_SEED", "0"))
     random.seed(seed)
@@ -76,9 +130,11 @@ def _seed():
 
 
 def main():
-    manifest = os.environ["PARTITION_MANIFEST"]
+    manifest_path = os.environ["PARTITION_MANIFEST"]
+    manifest = json.loads(Path(manifest_path).read_text())
     result_path = Path(os.environ["RESULT_PATH"])
     epsilon, delta = _target_pair()
+    multilabel = _multilabel()
     _seed()
     epochs = _positive_int("PROGAP_EPOCHS", 1)
     batch_size = _positive_int("PROGAP_BATCH_SIZE", 32)
@@ -86,15 +142,18 @@ def main():
     depth = _positive_int("PROGAP_DEPTH", 1)
     verbose = os.environ.get("PROGAP_VERBOSE", "0") == "1"
     device = os.environ.get("PROGAP_DEVICE", "cpu")
-    train = _prepare(_load(manifest, "train"))
+    train = _prepare(_load(manifest_path, manifest, "train"))
+    validation = _prepare(_load(manifest_path, manifest, "val"))
+    if multilabel != (train.y.ndim == 2):
+        raise ValueError("PROGAP_MULTILABEL does not match the training label rank")
     # Opacus 1.1.3 clones modules with torch.load; newer PyTorch defaults to
     # weights-only deserialization. This is an in-process compatibility bridge
     # for a freshly constructed, trusted module—not an algorithm change.
     load = torch.load
     torch.load = lambda *args, **kwargs: load(*args, **{**kwargs, "weights_only": False})
     try:
-        method = NodeLevelProGAP(
-            num_classes=int(train.y.max()) + 1,
+        method = InductiveNodeLevelProGAP(
+            num_classes=int(manifest["num_classes"]),
             epsilon=epsilon,
             delta=delta,
             batch_size=batch_size,
@@ -103,17 +162,25 @@ def main():
             verbose=verbose,
             max_degree=max_degree,
             depth=depth,
+            monitor="val/micro_f1" if multilabel else "val/acc",
         )
     finally:
         torch.load = load
-    method.run(train)
+    method.classifier.multilabel = multilabel
+    method.validation = method.to_device(Data(**validation.to_dict()))
+    method.setup(train)
+    method.fit()
     achieved_epsilon = float(method.composed_mechanism.get_approxDP(method.effective_delta))
     if achieved_epsilon > epsilon:
         raise RuntimeError(
             f"ProGAP calibration exceeded target epsilon: {achieved_epsilon} > {epsilon}"
         )
-    validation_accuracy, validation_macro_f1 = _metrics(method, _load(manifest, "val"))
-    test_accuracy, test_macro_f1 = _metrics(method, _load(manifest, "test"))
+    validation_accuracy, validation_macro_f1 = _metrics(
+        method, _load(manifest_path, manifest, "val")
+    )
+    test_accuracy, test_macro_f1 = _metrics(
+        method, _load(manifest_path, manifest, "test")
+    )
     coefficients = list(method.composed_mechanism.params["coeff_list"])
     result = {
         "validation_accuracy": validation_accuracy,

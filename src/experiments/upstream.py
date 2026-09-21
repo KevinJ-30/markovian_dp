@@ -95,6 +95,7 @@ def _target_environment(method: str, config: dict[str, Any], configured_env: dic
         for parameter, environment in optional.items():
             if parameter in parameters:
                 encoded[environment] = str(parameters[parameter])
+        encoded["PROGAP_MULTILABEL"] = "1" if parameters.get("multilabel", False) else "0"
         return encoded
     if "degree_bound" in parameters:
         raise ValueError(

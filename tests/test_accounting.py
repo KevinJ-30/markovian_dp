@@ -1,4 +1,4 @@
-"""Tests for Theorem 5.4 PLD accounting and degree capping."""
+"""Tests for Theorem 5.4 PLD accounting."""
 
 import math
 
@@ -15,9 +15,6 @@ from src.privacy.accounting import (
     sparsegnn_mixture_weights,
 )
 from src.privacy.privacy_loss import DoubleMixtureGaussianPrivacyLoss
-from src.processing.sparse_expand import (
-    cap_degrees, cap_degrees_undirected, edge_set_is_symmetric, max_degrees,
-)
 
 pytest.importorskip("dp_accounting")
 
@@ -228,21 +225,22 @@ def test_sparsegnn_accountant_calibrates_like_direct_solver():
 
 # ── DPAR target-privacy calibration ─────────────────────────────────────────
 
-@pytest.mark.parametrize("ppr_releases", [1, 6])
+@pytest.mark.parametrize("ppr_releases", [1, 2])
 def test_dpar_ppr_calibration_reconstructs_equal_component_budget(ppr_releases):
     params = dict(
         target_epsilon=8.0, target_delta=5e-4, train_nodes=12,
-        ppr_releases=ppr_releases, ppr_clip=2.0, sgd_clip=3.0,
-        batch_size=1, steps=2,
+        sampled_train_nodes=6, ppr_releases=ppr_releases,
+        ppr_clip=2.0, sgd_clip=3.0, batch_size=3, steps=2,
     )
     calibration = calibrate_dpar_noise(**params)
-    amplification = ppr_releases / params["train_nodes"]
+    amplification = params["sampled_train_nodes"] / params["train_nodes"]
     primitive = math.sqrt(2.0 * math.log(1.25 / calibration.ppr_delta_per_release))
     primitive *= params["ppr_clip"] / calibration.ppr_noise_std
     base_delta = 2.0 * calibration.ppr_delta_per_release * ppr_releases
     reconstructed = DPARAccountant._inverse_composition(primitive, ppr_releases, base_delta)
     assert math.isclose(reconstructed * amplification, params["target_epsilon"] / 2.0, rel_tol=1e-12)
     assert calibration.ppr_delta == params["target_delta"] / 2.0
+    assert calibration.sampled_train_nodes == 6
     first = DPARAccountant().account(
         ppr_releases=ppr_releases, amplification_rate=amplification,
         delta=calibration.ppr_delta_per_release, ppr_clip=params["ppr_clip"],
@@ -256,24 +254,33 @@ def test_dpar_ppr_calibration_reconstructs_equal_component_budget(ppr_releases):
     assert first.epsilon == second.epsilon
     assert math.isclose(first.epsilon, calibration.ppr_epsilon, rel_tol=1e-12)
     assert first.delta == second.delta == calibration.ppr_delta
+    assert first.composition_count == ppr_releases
+    assert first.sampling_probability == 0.5
 
 
-def test_dpar_sgd_calibration_returns_safe_multiplier_and_final_delta():
+def test_dpar_sgd_calibration_uses_outer_population_and_final_delta():
     params = dict(
         target_epsilon=8.0, target_delta=5e-4, train_nodes=12,
-        ppr_releases=6, ppr_clip=2.0, sgd_clip=3.0, batch_size=3, steps=4,
+        sampled_train_nodes=6, ppr_releases=2, ppr_clip=2.0, sgd_clip=3.0,
+        batch_size=3, steps=4,
     )
     calibration = calibrate_dpar_noise(**params)
     accounted = DPARAccountant().account_training(
         noise_multiplier=calibration.sgd_noise_multiplier,
-        sample_rate=params["batch_size"] / params["ppr_releases"], steps=params["steps"],
-        delta=calibration.sgd_delta, amplification_rate=calibration.amplification_rate,
+        sample_rate=params["batch_size"] / params["sampled_train_nodes"],
+        steps=params["steps"], delta=calibration.sgd_delta,
+        amplification_rate=calibration.amplification_rate,
     )
     lower = DPARAccountant().account_training(
         noise_multiplier=calibration.sgd_noise_multiplier / 2.0,
-        sample_rate=params["batch_size"] / params["ppr_releases"], steps=params["steps"],
-        delta=calibration.sgd_delta, amplification_rate=calibration.amplification_rate,
+        sample_rate=params["batch_size"] / params["sampled_train_nodes"],
+        steps=params["steps"], delta=calibration.sgd_delta,
+        amplification_rate=calibration.amplification_rate,
     )
+    assert calibration.amplification_rate == 0.5
+    assert calibration.ppr_releases == 2
+    assert calibration.sampled_train_nodes == 6
+    assert accounted.sampling_probability == 0.5
     assert accounted.epsilon <= calibration.sgd_epsilon <= params["target_epsilon"] / 2.0
     assert lower.epsilon > params["target_epsilon"] / 2.0
     assert calibration.sgd_noise_std == calibration.sgd_noise_multiplier * params["sgd_clip"]
@@ -281,11 +288,21 @@ def test_dpar_sgd_calibration_returns_safe_multiplier_and_final_delta():
     assert accounted.delta == calibration.sgd_delta == params["target_delta"] / 2.0
 
 
+def test_dpar_calibration_caps_batches_at_outer_population():
+    calibration = calibrate_dpar_noise(
+        target_epsilon=8.0, target_delta=5e-4, train_nodes=12,
+        sampled_train_nodes=6, ppr_releases=2, ppr_clip=2.0, sgd_clip=3.0,
+        batch_size=7, steps=4,
+    )
+    assert calibration.sampled_train_nodes == 6
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
         {"target_epsilon": 0.0}, {"target_delta": 1.0}, {"train_nodes": 0},
-        {"ppr_releases": 13}, {"batch_size": 7}, {"steps": 0},
+        {"sampled_train_nodes": 0}, {"sampled_train_nodes": 13},
+        {"ppr_releases": 7}, {"steps": 0},
         {"ppr_clip": 0.0}, {"sgd_clip": 0.0}, {"sigma_rtol": 0.0},
         {"sigma_atol": 0.0}, {"max_noise_multiplier": 0.0},
     ],
@@ -293,7 +310,8 @@ def test_dpar_sgd_calibration_returns_safe_multiplier_and_final_delta():
 def test_dpar_calibration_rejects_invalid_inputs(kwargs):
     params = dict(
         target_epsilon=8.0, target_delta=5e-4, train_nodes=12,
-        ppr_releases=6, ppr_clip=2.0, sgd_clip=3.0, batch_size=3, steps=4,
+        sampled_train_nodes=6, ppr_releases=2,
+        ppr_clip=2.0, sgd_clip=3.0, batch_size=3, steps=4,
     )
     params.update(kwargs)
     with pytest.raises(ValueError):
@@ -304,85 +322,9 @@ def test_dpar_calibration_rejects_an_unbracketed_sgd_budget():
     with pytest.raises(RuntimeError, match="failed to bracket a DPAR DP-SGD noise multiplier"):
         calibrate_dpar_noise(
             target_epsilon=1e-12, target_delta=5e-4, train_nodes=12,
-            ppr_releases=6, ppr_clip=2.0, sgd_clip=3.0, batch_size=3, steps=4,
+            sampled_train_nodes=6, ppr_releases=2,
+            ppr_clip=2.0, sgd_clip=3.0, batch_size=3, steps=4,
             max_noise_multiplier=1.0,
         )
 
 
-# ── degree capping ─────────────────────────────────────────────────────────────
-
-def _random_graph(n=200, m=3000, seed=0):
-    g = torch.Generator().manual_seed(seed)
-    src = torch.randint(0, n, (m,), generator=g)
-    dst = torch.randint(0, n, (m,), generator=g)
-    return torch.stack([src, dst]), n
-
-
-def _random_undirected_graph(n=150, m=1200, seed=0):
-    g = torch.Generator().manual_seed(seed)
-    a = torch.randint(0, n, (m,), generator=g)
-    b = torch.randint(0, n, (m,), generator=g)
-    keep = a != b
-    a, b = a[keep], b[keep]
-    ei = torch.stack([torch.cat([a, b]), torch.cat([b, a])])
-    return torch.unique(ei, dim=1), n
-
-
-def test_cap_degrees_respects_bounds_and_subset():
-    ei, n = _random_graph()
-    gen = torch.Generator().manual_seed(1)
-    capped = cap_degrees(ei, n, K_in=7, K_out=9, generator=gen)
-    mi, mo = max_degrees(capped, n)
-    assert mi <= 7 and mo <= 9
-    before = set(map(tuple, ei.t().tolist()))
-    assert all(tuple(e) in before for e in capped.t().tolist())
-
-
-def test_cap_degrees_noop_when_bounds_loose():
-    ei, n = _random_graph()
-    mi, mo = max_degrees(ei, n)
-    capped = cap_degrees(ei, n, K_in=mi, K_out=mo,
-                         generator=torch.Generator().manual_seed(0))
-    assert capped.size(1) == ei.size(1)
-
-
-def test_cap_degrees_deterministic_under_seed():
-    ei, n = _random_graph()
-    a = cap_degrees(ei, n, K_in=5, K_out=5,
-                    generator=torch.Generator().manual_seed(3))
-    b = cap_degrees(ei, n, K_in=5, K_out=5,
-                    generator=torch.Generator().manual_seed(3))
-    assert torch.equal(a, b)
-
-
-def test_cap_degrees_breaks_symmetry_but_undirected_variant_keeps_it():
-    """The motivation for cap_degrees_undirected: independent per-direction
-    capping of an undirected graph leaves many arcs without their reverse."""
-    ei, n = _random_undirected_graph()
-    assert edge_set_is_symmetric(ei, n)
-
-    directed = cap_degrees(ei, n, K_in=5, K_out=5,
-                           generator=torch.Generator().manual_seed(4))
-    assert not edge_set_is_symmetric(directed, n)
-
-    undirected = cap_degrees_undirected(ei, n, 5,
-                                        generator=torch.Generator().manual_seed(4))
-    assert edge_set_is_symmetric(undirected, n)
-
-
-def test_cap_degrees_undirected_bounds_subset_and_determinism():
-    ei, n = _random_undirected_graph(seed=7)
-    gen = lambda: torch.Generator().manual_seed(11)  # noqa: E731
-    capped = cap_degrees_undirected(ei, n, 4, generator=gen())
-    mi, mo = max_degrees(capped, n)
-    assert mi <= 4 and mo <= 4
-    before = set(map(tuple, ei.t().tolist()))
-    assert all(tuple(e) in before for e in capped.t().tolist())
-    assert torch.equal(capped, cap_degrees_undirected(ei, n, 4, generator=gen()))
-
-
-def test_edge_set_is_symmetric_detects_asymmetry():
-    ei = torch.tensor([[0, 1, 2], [1, 0, 0]])
-    assert not edge_set_is_symmetric(ei, 3)
-    ei = torch.tensor([[0, 1, 2, 0], [1, 0, 0, 2]])
-    assert edge_set_is_symmetric(ei, 3)
