@@ -31,10 +31,9 @@ The number of contributing roots is then
 which is exactly the law pi of Eq. (46) at r=1, where q_1 = p2 and n_1 = K_out.
 The true mechanism is therefore
     M_g  = sum_k pi_k N(+k, sigma^2),   M_g' = sum_k pi_k N(-k, sigma^2)
-in units of C, while the theorem's pair sits at -2k and +2k.  The factor of two
-in the spacing is the known looseness of Corollary 6.5 (noise variance off by at
-most a factor of 2), so these tests also quantify that gap rather than merely
-asserting domination.
+in units of C.  The dominating pair uses the same +/-k centers with the
+union-safe affected-root count law, which stochastically dominates the exact
+single-graph count law.
 """
 
 import math
@@ -146,48 +145,39 @@ def test_real_expansion_reproduces_the_theorem_sampling_law(p1, p2, K_out):
 @pytest.mark.parametrize("alpha", [1.0, 1.5, 2.0, 5.0, 20.0])
 def test_dominating_pair_upper_bounds_the_true_mechanism(p1, p2, K_out, sigma,
                                                          alpha):
-    """H_alpha(M_g || M_g') <= H_alpha(P || Q): Theorem 5.4."""
-    pi = np.asarray(sparsegnn_mixture_weights(
+    """The union-safe +/-k pair dominates the exact star mechanism."""
+    true_weights = _true_contribution_law(p1, p2, K_out)
+    true_ks = np.arange(len(true_weights))
+    pair_weights = np.asarray(sparsegnn_mixture_weights(
         p1, p2, r=1, K_in=1, K_out=K_out))
-    ks = np.arange(len(pi))
+    pair_ks = np.arange(len(pair_weights))
 
-    # True mechanism, in units of C: adversarial g0 puts the two graphs at
-    # +k and -k for k contributing roots.
-    true = _hockey_stick(alpha, -ks, pi, +ks, pi, sigma)
-    # Theorem's pair: means spaced by 2 (Eq. 47).
-    claimed = _hockey_stick(alpha, -2.0 * ks, pi, +2.0 * ks, pi, sigma)
+    true = _hockey_stick(
+        alpha, -true_ks, true_weights, +true_ks, true_weights, sigma)
+    claimed = _hockey_stick(
+        alpha, -pair_ks, pair_weights, +pair_ks, pair_weights, sigma)
 
     assert true <= claimed + 1e-9, (
-        f"THEOREM VIOLATED: true H_{alpha}={true:.6g} > claimed {claimed:.6g}")
+        f"DOMINATION VIOLATED: true H_{alpha}={true:.6g} > "
+        f"claimed {claimed:.6g}")
 
 
-def test_the_slack_is_the_corollary_6_5_factor_of_two():
-    """The pair's looseness should be exactly 'sigma off by 2', not more.
-
-    Corollary 6.5 brackets the truth between spacing-1 at sigma and spacing-2 at
-    sigma (equivalently spacing-1 at sigma/2).  Check that the claimed bound at
-    sigma equals the true divergence at sigma/2, so the slack is understood
-    rather than mysterious.
-    """
-    p1, p2, K_out, sigma, alpha = 0.5, 0.5, 4, 1.0, 2.0
-    pi = np.asarray(sparsegnn_mixture_weights(
-        p1, p2, r=1, K_in=1, K_out=K_out))
-    ks = np.arange(len(pi))
-    claimed = _hockey_stick(alpha, -2.0 * ks, pi, +2.0 * ks, pi, sigma)
-    true_at_half_sigma = _hockey_stick(alpha, -ks, pi, +ks, pi, sigma / 2.0)
-    assert claimed == pytest.approx(true_at_half_sigma, rel=1e-6)
 
 
 # ── 3. the bound is not vacuous ──────────────────────────────────────────────
 
 def test_bound_is_tight_enough_to_be_meaningful():
-    """The claimed divergence must stay well below 1 (the trivial bound) and
-    above the true one, at a configuration we actually run."""
-    pi = np.asarray(sparsegnn_mixture_weights(
-        0.01, 0.1, r=1, K_in=5, K_out=5))
-    ks = np.arange(len(pi))
+    """The derived divergence remains below the trivial bound."""
+    p1, p2, K_out = 0.01, 0.1, 5
+    true_weights = _true_contribution_law(p1, p2, K_out)
+    true_ks = np.arange(len(true_weights))
+    pair_weights = np.asarray(sparsegnn_mixture_weights(
+        p1, p2, r=1, K_in=5, K_out=K_out))
+    pair_ks = np.arange(len(pair_weights))
     for alpha in (1.0, 2.0):
-        true = _hockey_stick(alpha, -ks, pi, +ks, pi, 5.0)
-        claimed = _hockey_stick(alpha, -2.0 * ks, pi, +2.0 * ks, pi, 5.0)
+        true = _hockey_stick(
+            alpha, -true_ks, true_weights, +true_ks, true_weights, 5.0)
+        claimed = _hockey_stick(
+            alpha, -pair_ks, pair_weights, +pair_ks, pair_weights, 5.0)
         assert true <= claimed + 1e-12
         assert claimed < 1.0

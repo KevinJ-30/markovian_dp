@@ -56,7 +56,7 @@ def test_mixture_weights_p2_zero_is_root_only():
 
 def test_double_mixture_maps_to_theorem_pair():
     weights = np.array([0.6, 0.3, 0.1])
-    support = 2.0 * np.arange(len(weights))
+    support = np.arange(len(weights), dtype=float)
     sigma = 2.5
     privacy_loss = DoubleMixtureGaussianPrivacyLoss(
         sigma, support, support, weights, weights)
@@ -77,7 +77,7 @@ def test_identity_pair_has_zero_epsilon():
 
 def test_connect_dots_is_pessimistic_for_analytic_profile():
     weights = np.array([0.7, 0.2, 0.1])
-    support = 2.0 * np.arange(len(weights))
+    support = np.arange(len(weights), dtype=float)
     privacy_loss = DoubleMixtureGaussianPrivacyLoss(
         3.0, support, support, weights, weights)
     pld = mixture_gaussian_pld(weights, sigma=3.0, grid=1e-3)
@@ -88,13 +88,13 @@ def test_connect_dots_is_pessimistic_for_analytic_profile():
 
 
 @pytest.mark.parametrize("sigma", [5.0, 10.0])
-def test_p1_one_r0_matches_gaussian_at_sensitivity_four(sigma):
+def test_p1_one_r0_matches_gaussian_at_sensitivity_two(sigma):
     T, delta = 100, 1e-6
     ours = sparsegnn_epsilon(
         p1=1.0, p2=0.0, r=0, K_in=5, K_out=5, sigma=sigma,
         steps=T, delta=delta)
     ref = naive_opacus_epsilon(
-        sigma / 4.0, 1.0, T, delta, mechanism="prv")
+        sigma / 2.0, 1.0, T, delta, mechanism="prv")
     assert abs(ours - ref) < 0.05 * ref
 
 

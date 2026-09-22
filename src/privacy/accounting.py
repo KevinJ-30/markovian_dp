@@ -3,8 +3,8 @@
 For in-expansion, let ``pi`` be the law of the number of affected sampled
 rooted subgraphs.  The one-step mechanism is dominated by
 
-    P = sum_k pi[k] N(-2k, sigma^2)
-    Q = sum_k pi[k] N(+2k, sigma^2).
+    P = sum_k pi[k] N(-k, sigma^2)
+    Q = sum_k pi[k] N(+k, sigma^2).
 
 Here ``sigma`` is the Opacus noise multiplier; training adds Gaussian noise
 with standard deviation ``sigma*C`` after clipping each contribution at ``C``.
@@ -63,6 +63,30 @@ def shell_sizes(r: int, K_out: int, union_safe: bool = True) -> List[int]:
     return [1] + [factor * K_out ** d for d in range(1, r + 1)]
 
 
+# def sparsegnn_mixture_weights(
+#     p1: float,
+#     p2: float,
+#     r: int,
+#     K_in: int,
+#     K_out: Optional[int] = None,
+#     union_safe: bool = True,
+# ) -> np.ndarray:
+#     """Theorem 5.4 mixture weights for in-expansion."""
+#     if not (0.0 <= p1 <= 1.0 and 0.0 <= p2 <= 1.0):
+#         raise ValueError("p1 and p2 must lie in [0, 1]")
+#     if r < 0 or K_in < 1:
+#         raise ValueError("need r >= 0 and K_in >= 1")
+#     K_out = K_in if K_out is None else K_out
+#     if K_out < 1:
+#         raise ValueError("K_out must be at least one")
+#     q = _q_products(p2, r, min(K_in, K_out))
+#     sizes = shell_sizes(r, K_out, union_safe=union_safe)
+#     weights = np.array([1.0])
+#     for n_d, q_d in zip(sizes, q):
+#         weights = np.convolve(weights, _binom_pmf(n_d, p1 * q_d))
+#     weights = np.clip(weights, 0.0, None)
+#     return weights / weights.sum()
+
 def sparsegnn_mixture_weights(
     p1: float,
     p2: float,
@@ -71,19 +95,36 @@ def sparsegnn_mixture_weights(
     K_out: Optional[int] = None,
     union_safe: bool = True,
 ) -> np.ndarray:
-    """Theorem 5.4 mixture weights for in-expansion."""
+    """Path-bound mixture weights for in-expansion.
+
+    Returns weights[k] = Pr(J_path = k).
+    union_safe=True uses ordinary degree bounds (chi=2).
+    union_safe=False requires bounded neighboring unions (chi=1).
+    """
     if not (0.0 <= p1 <= 1.0 and 0.0 <= p2 <= 1.0):
         raise ValueError("p1 and p2 must lie in [0, 1]")
     if r < 0 or K_in < 1:
         raise ValueError("need r >= 0 and K_in >= 1")
+
     K_out = K_in if K_out is None else K_out
     if K_out < 1:
         raise ValueError("K_out must be at least one")
-    q = _q_products(p2, r, min(K_in, K_out))
-    sizes = shell_sizes(r, K_out, union_safe=union_safe)
-    weights = np.array([1.0])
-    for n_d, q_d in zip(sizes, q):
-        weights = np.convolve(weights, _binom_pmf(n_d, p1 * q_d))
+
+    chi = 2 if union_safe else 1
+    weights = np.array([1.0 - p1, p1])
+
+    for ell in range(1, r + 1):
+        m_ell = chi * K_out**ell
+
+        if p1 == 1.0:
+            # Boundary convention: h_1(0)=0, h_1(t)=1 for t>0.
+            b_ell = float(p2 > 0.0)
+        else:
+            t = p2**ell
+            b_ell = p1 * t / (1.0 - p1 + p1 * t)
+
+        weights = np.convolve(weights, _binom_pmf(m_ell, b_ell))
+
     weights = np.clip(weights, 0.0, None)
     return weights / weights.sum()
 
@@ -94,7 +135,7 @@ def mixture_gaussian_pld(
     """Build a pessimistic dp_accounting PLD from integer-mark weights.
 
     Clipping and noise both scale by ``C`` during training, so normalization by
-    ``C`` leaves mixture centers ``+-2k`` and Gaussian standard deviation
+    ``C`` leaves mixture centers ``+-k`` and Gaussian standard deviation
     ``sigma``.
     """
     from dp_accounting.pld.privacy_loss_distribution import (
@@ -116,7 +157,7 @@ def mixture_gaussian_pld(
     if support.size == 1 and int(support[0]) == 0:
         return PrivacyLossDistribution.identity(grid)
     probabilities = weights[support]
-    sensitivities = 2.0 * support.astype(float)
+    sensitivities = support.astype(float)
     privacy_loss = DoubleMixtureGaussianPrivacyLoss(
         standard_deviation=sigma,
         sensitivities_upper=sensitivities,
