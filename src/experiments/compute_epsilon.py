@@ -21,7 +21,7 @@ def parse_args():
     parser.add_argument("--csv", required=True)
     parser.add_argument("--delta", required=True, type=float)
     parser.add_argument(
-        "--grid", default=1e-4, type=float,
+        "--grid", default=1e-3, type=float,
         help="dp_accounting privacy-loss discretization interval")
     parser.add_argument(
         "--legacy_shells", action="store_true",

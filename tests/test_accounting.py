@@ -25,24 +25,20 @@ def test_shell_sizes_use_union_safe_out_degree_bound():
     assert shell_sizes(3, K_out=4)[0] == 1
 
 
-def test_mixture_weights_are_a_distribution_of_the_right_length():
+def test_path_bound_mixture_is_a_distribution_of_the_right_length():
     weights = sparsegnn_mixture_weights(0.3, 0.5, 2, 4, 3)
-    assert len(weights) == sum(shell_sizes(2, 3)) + 1
+    assert len(weights) == 2 + 3 + 3 ** 2
     assert math.isclose(float(weights.sum()), 1.0, abs_tol=1e-12)
     assert (weights >= 0).all()
 
 
-def test_mixture_weights_mean_matches_paper_expectation():
+def test_path_bound_mixture_mean_matches_conditional_retention_formula():
     p1, p2, radius, k_in, k_out = 0.2, 0.5, 2, 4, 5
     weights = sparsegnn_mixture_weights(p1, p2, radius, k_in, k_out)
-    sizes = shell_sizes(radius, k_out)
-    K = min(k_in, k_out)
-    retention = [1.0] + [
-        1.0 - math.prod((1.0 - p2 ** level) ** (K ** (level - 1))
-                        for level in range(distance, radius + 1))
-        for distance in range(1, radius + 1)
-    ]
-    expected = p1 * sum(n * q for n, q in zip(sizes, retention))
+    expected = p1
+    for level in range(1, radius + 1):
+        retained_given_path = p1 * p2 ** level / (1.0 - p1 + p1 * p2 ** level)
+        expected += k_out ** level * retained_given_path
     observed = float(sum(index * mass for index, mass in enumerate(weights)))
     assert math.isclose(observed, expected, rel_tol=1e-9)
 
@@ -200,6 +196,54 @@ def test_calibration_prepares_sigma_independent_weights_once(monkeypatch):
         p1=0.05, p2=0.1, r=1, K_in=2, K_out=2, steps=2,
         grid=1e-3, sigma_rtol=1e-2)
     assert calls == 1
+
+
+def test_calibration_progress_pairs_uncached_evaluations(monkeypatch):
+    class FakePLD:
+        def __init__(self, sigma):
+            self.sigma = sigma
+
+        def self_compose(self, steps):
+            assert steps == 2
+            return self
+
+        def get_epsilon_for_delta(self, delta):
+            assert delta == 1e-5
+            return 4.0 / self.sigma
+
+    constructed = []
+
+    def fake_pld(weights, sigma, grid):
+        assert math.isclose(float(weights.sum()), 1.0)
+        constructed.append((sigma, grid))
+        return FakePLD(sigma)
+
+    monkeypatch.setattr(sparse_accounting, "mixture_gaussian_pld", fake_pld)
+    params = dict(
+        target_epsilon=1.0, target_delta=1e-5,
+        p1=0.05, p2=0.1, r=1, K_in=2, K_out=2, steps=2,
+        grid=1e-3, sigma_rtol=1e-2)
+    events = []
+    observed = calibrate_sparsegnn_noise(**params, progress=events.append)
+    callback_calls = list(constructed)
+    constructed.clear()
+    callback_free = calibrate_sparsegnn_noise(**params)
+
+    assert observed == callback_free
+    assert constructed == callback_calls
+    assert events[0] == {"event": "calibration_start", "grid": 1e-3}
+    assert events[-1]["event"] == "calibration_complete"
+    assert events[-1]["sigma"] == observed.noise_multiplier
+    assert events[-1]["epsilon"] == observed.epsilon
+    assert events[-1]["evaluations"] == observed.evaluations
+    starts = [event for event in events if event["event"] == "sigma_evaluation_start"]
+    completes = [event for event in events if event["event"] == "sigma_evaluation_complete"]
+    assert [event["evaluation"] for event in starts] == list(range(1, observed.evaluations + 1))
+    assert [event["evaluation"] for event in completes] == list(range(1, observed.evaluations + 1))
+    assert [(event["sigma"], event["grid"]) for event in starts] == callback_calls
+    assert [(event["sigma"], event["grid"]) for event in completes] == callback_calls
+    assert all(event["elapsed_seconds"] >= 0 for event in completes)
+    assert events[-1]["elapsed_seconds"] >= 0
 
 
 def test_sparsegnn_accountant_calibrates_like_direct_solver():

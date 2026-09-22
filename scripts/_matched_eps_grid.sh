@@ -35,7 +35,7 @@ T=${T:-500}
 K=${K:-5}
 SEEDS=${SEEDS:-1}
 DELTA=${DELTA:-1e-6}
-GRID=${GRID:-1e-4}
+GRID=${GRID:-1e-3}
 EPS_LIST=${EPS_LIST:-"2 8"}
 TRACK_EVERY=${TRACK_EVERY:-50}
 # Depth/sparsification for the non-DP GNN ceiling.  Defaults are the UNCAPPED
@@ -67,10 +67,10 @@ if [ -n "${EPOCHS:-}" ]; then
   T=$($PY -c "print(max(1, round($EPOCHS / $P1)))")
   echo "    EPOCHS=$EPOCHS at p1=$P1 -> T=$T"
 fi
-# The PLD floor is ~T*grid, so the usable grid depends on T. 1e-4 (the
-# dp_accounting default) keeps the floor under ~4% of eps=8 up to T~3000; going
-# finer at large T is what OOMs, so raise BATCH to cut T instead.
-if [ "$T" -gt 3000 ] && [ "${GRID:-1e-4}" != "1e-4" ]; then
+# The PLD floor is ~T*grid, so the usable grid depends on T. The 1e-3
+# default is faster and less memory-intensive; set GRID explicitly when a
+# smaller discretization floor is required.
+if [ "$T" -gt 3000 ] && [ "$GRID" != "1e-3" ]; then
   echo "    [warn] T=$T with grid=$GRID: fine grids at large T OOM the" >&2
   echo "           accountant.  Consider raising BATCH to cut T." >&2
 fi

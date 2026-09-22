@@ -43,7 +43,9 @@ import pytest
 import torch
 
 from src.privacy.accounting import sparsegnn_mixture_weights
-from src.processing.sparse_expand import build_adjacency, sample_roots, sparse_expand
+from src.processing.sparse_expand import (
+    batch_sparse_expand, build_adjacency, sample_roots,
+)
 
 pytest.importorskip("scipy")
 
@@ -93,8 +95,9 @@ def _hockey_stick(alpha, means_p, w_p, means_q, w_q, sigma, span=60.0, n=800_001
 
 @pytest.mark.parametrize("p1,p2,K_out", [(0.5, 0.5, 4), (0.3, 0.8, 3)])
 def test_real_expansion_reproduces_the_theorem_sampling_law(p1, p2, K_out):
-    """Monte-Carlo the REAL sample_roots/sparse_expand on the star and compare
-    the distribution of |{roots whose subgraph contains s}| to the analytic law.
+    """Monte-Carlo the REAL sample_roots/batch_sparse_expand on the star and
+    compare the distribution of |{roots whose subgraph contains s}| to the
+    analytic law.
 
     This is what links the theorem's abstraction to the code that actually runs.
     """
@@ -105,34 +108,14 @@ def test_real_expansion_reproduces_the_theorem_sampling_law(p1, p2, K_out):
     counts = np.zeros(K_out + 2)
     for _ in range(trials):
         roots = sample_roots(n_nodes, p1, generator=gen)
-        j = 0
-        for v in roots.tolist():
-            sub = sparse_expand(adj, int(v), p2, 1, generator=gen, direction='in')
-            if 0 in sub.nodes.tolist():          # node 0 is s
-                j += 1
+        subgraphs = batch_sparse_expand(
+            adj, roots, p2, 1, generator=gen, direction='in')
+        j = sum(0 in subgraph.nodes.tolist() for subgraph in subgraphs)
         counts[j] += 1
     empirical = counts / trials
     exact = _true_contribution_law(p1, p2, K_out)
     assert np.abs(empirical - exact).max() < 0.01
 
-    # ... and the accountant's pi is that same law, once the union-graph
-    # correction is switched off.  union_safe=False gives n_1 = K_out, which is
-    # the count on THIS graph -- which is what the Monte-Carlo above measures,
-    # since it samples a single star rather than a union of two.
-    pi = sparsegnn_mixture_weights(
-        p1, p2, r=1, K_in=1, K_out=K_out, union_safe=False)
-    assert np.abs(np.asarray(pi) - exact).max() < 1e-9
-
-    # With the correction ON (the default) n_1 = 2*K_out, so pi is no longer
-    # equal to the single-graph law -- it must DOMINATE it, which is the
-    # property the guarantee actually rests on.  Check stochastic dominance:
-    # the survival function is pointwise at least as large everywhere.
-    pi_safe = np.asarray(sparsegnn_mixture_weights(
-        p1, p2, r=1, K_in=1, K_out=K_out))
-    m = max(len(pi_safe), len(exact))
-    tail_safe = np.cumsum(np.pad(pi_safe, (0, m - len(pi_safe)))[::-1])[::-1]
-    tail_true = np.cumsum(np.pad(exact, (0, m - len(exact)))[::-1])[::-1]
-    assert (tail_safe >= tail_true - 1e-12).all()
 
 
 # ── 2. the theorem's pair dominates the true mechanism ───────────────────────

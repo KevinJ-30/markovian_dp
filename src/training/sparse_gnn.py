@@ -26,7 +26,9 @@ import torch
 from src.models.base_mechanism import BaseMechanism
 from src.privacy.accounting import SparseGNNNoiseCalibration, calibrate_sparsegnn_noise
 from src.processing.padded import iter_padded_root_batches
-from src.processing.sparse_expand import SparseAdjacency, build_adjacency, sample_roots, sparse_expand
+from src.processing.sparse_expand import (
+    SparseAdjacency, batch_sparse_expand, build_adjacency, sample_roots,
+)
 
 
 def _make_generator(seed, device="cpu"):
@@ -89,7 +91,7 @@ class OpacusPrivateUpdate:
         )
         mechanism.optimizer = self.optimizer
 
-    def _process(self, batch, *, final: bool) -> torch.Tensor:
+    def _process(self, batch, *, final: bool) -> None:
         losses = self.mechanism.private_losses(self.private_module, batch)
         if losses.ndim != 1 or losses.numel() != batch.batch_size:
             raise RuntimeError("private_losses must return one scalar per sample")
@@ -97,9 +99,8 @@ class OpacusPrivateUpdate:
         if not final:
             self.optimizer.signal_skip_step(True)
         self.optimizer.step()
-        return losses.detach().sum()
 
-    def step(self, subgraphs: List) -> float:
+    def step(self, subgraphs: List) -> None:
         self.mechanism.train_mode()
         self.private_module.train()
         self.optimizer.zero_grad()
@@ -112,15 +113,13 @@ class OpacusPrivateUpdate:
             max_padded_nodes=self.mechanism.max_private_batch_nodes,
         )
         current = next(iter(batches))
-        running = torch.zeros((), device=self.mechanism.device)
         for following in batches:
-            running = running + self._process(current, final=False)
+            self._process(current, final=False)
             # On a skipped physical step Opacus retains summed_grad while
             # clearing grad_sample for the next chunk.
             self.optimizer.zero_grad()
             current = following
-        running = running + self._process(current, final=True)
-        return float(running)
+        self._process(current, final=True)
 
 
 def _evaluate(mechanism, test_data):
@@ -188,7 +187,7 @@ def train_sparse_gnn(
 
     sample_gen = _make_generator(seed)
 
-    candidate_nodes = torch.where(train_data.train_mask)[0]
+    candidate_nodes = torch.where(train_data.train_mask.detach().cpu())[0]
     expected_batch = p1 * int(candidate_nodes.numel())
     private_update = None
     if dp:
@@ -206,14 +205,14 @@ def train_sparse_gnn(
     for t in range(1, T + 1):
         roots = sample_roots(num_nodes, p1, generator=sample_gen,
                              candidate_nodes=candidate_nodes)
-        subgraphs = [sparse_expand(adj, int(v), p2, r, generator=sample_gen,
-                                   direction=direction)
-                     for v in roots.tolist()]
+        subgraphs = batch_sparse_expand(
+            adj, roots, p2, r, generator=sample_gen, direction=direction)
 
         if dp:
             # Always execute the logical mechanism.  An empty root draw becomes
             # a masked zero-signal batch and therefore a noise-only update.
-            loss = private_update.step(subgraphs)
+            private_update.step(subgraphs)
+            loss = None
         else:
             if roots.numel() == 0:
                 continue
@@ -227,8 +226,9 @@ def train_sparse_gnn(
 
         if verbose and eval_every and (t % eval_every == 0 or t == 1):
             accs = mechanism.evaluate(test_data)
+            loss_text = "private" if loss is None else f"{loss:.4f}"
             print(f"  step {t:4d}/{T}  |V_root|={roots.numel():4d}  "
-                  f"loss={loss:.4f}  val={accs['val']:.4f}  test={accs['test']:.4f}")
+                  f"loss={loss_text}  val={accs['val']:.4f}  test={accs['test']:.4f}")
 
     final = _evaluate(mechanism, test_data)
     if track_every:
@@ -252,7 +252,7 @@ def train_sparse_gnn_with_budget(
     T: int,
     clip: float,
     direction: str = "in",
-    accounting_grid: float = 1e-4,
+    accounting_grid: float = 1e-3,
     union_safe: bool = True,
     calibration_rtol: float = 1e-3,
     calibration_atol: float = 1e-6,

@@ -133,9 +133,8 @@ def test_opacus_private_update_accepts_padded_gnn_batch():
         mechanism, C=1.0, sigma=0.0, expected_batch=2.0,
         noise_gen=torch.Generator().manual_seed(7))
 
-    loss = update.step(_subgraphs()[:2])
+    update.step(_subgraphs()[:2])
 
-    assert loss > 0
     for parameter in mechanism.parameters():
         assert parameter.grad is not None
         assert torch.isfinite(parameter.grad).all()
@@ -148,7 +147,7 @@ def test_opacus_private_update_empty_batch_adds_noise():
         mechanism, C=0.5, sigma=1.0, expected_batch=3.0,
         noise_gen=torch.Generator().manual_seed(7))
 
-    assert update.step([]) == 0.0
+    update.step([])
     flat = torch.cat([parameter.grad.reshape(-1)
                       for parameter in mechanism.parameters()])
     assert flat.norm() > 0

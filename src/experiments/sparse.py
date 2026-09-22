@@ -216,7 +216,7 @@ def parse_args():
     p.add_argument('--legacy_shells', action='store_true',
                    help='drop the union-graph correction in the in-process '
                         'calibration (n_d = K^d instead of 2*K^d)')
-    p.add_argument('--accounting_grid', type=float, default=1e-4,
+    p.add_argument('--accounting_grid', type=float, default=1e-3,
                    help='dp_accounting value discretization interval')
     p.add_argument('--calibration_rtol', type=float, default=1e-3,
                    help='relative tolerance for calibrated noise multiplier')

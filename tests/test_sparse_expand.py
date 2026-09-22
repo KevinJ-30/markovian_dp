@@ -9,8 +9,8 @@ import pytest
 import torch
 
 from src.processing.sparse_expand import (
-    SparseAdjacency, build_adjacency, build_out_adjacency, sample_roots,
-    sparse_expand,
+    SparseAdjacency, batch_sparse_expand, build_adjacency,
+    build_out_adjacency, sample_roots, sparse_expand,
 )
 
 
@@ -34,6 +34,88 @@ def _reachable(adj, root, r):
                     nxt.append(w)
         frontier = nxt
     return seen
+
+
+def _assert_same_subgraph(actual, expected):
+    assert actual.root == expected.root
+    assert torch.equal(actual.nodes, expected.nodes)
+    assert torch.equal(actual.edge_index, expected.edge_index)
+
+
+def test_batch_sparse_expand_empty_and_preserves_root_order():
+    edge_index, n = _toy_graph()
+    adjacency = build_adjacency(edge_index, n, direction='in')
+    assert batch_sparse_expand(
+        adjacency, torch.empty(0, dtype=torch.long), p2=1.0, r=3,
+        direction='in') == []
+
+    roots = torch.tensor([3, 1, 3, 0], dtype=torch.long)
+    subgraphs = batch_sparse_expand(
+        adjacency, roots, p2=1.0, r=3, direction='in')
+    assert [subgraph.root for subgraph in subgraphs] == roots.tolist()
+    for subgraph, root in zip(subgraphs, roots.tolist()):
+        _assert_same_subgraph(
+            subgraph,
+            sparse_expand(adjacency, root, p2=1.0, r=3, direction='in'),
+        )
+
+
+@pytest.mark.parametrize('direction', ['in', 'out'])
+@pytest.mark.parametrize('p2', [0.0, 1.0])
+def test_batch_sparse_expand_matches_scalar_at_probability_boundaries(
+        direction, p2):
+    edge_index, n = _toy_graph()
+    adjacency = build_adjacency(edge_index, n, direction=direction)
+    roots = torch.tensor([3, 1, 4, 0, 1], dtype=torch.long)
+    batch_generator = torch.Generator().manual_seed(19)
+    untouched_generator = torch.Generator().manual_seed(19)
+    actual = batch_sparse_expand(
+        adjacency, roots, p2=p2, r=4, generator=batch_generator,
+        direction=direction)
+    expected = [
+        sparse_expand(adjacency, root, p2=p2, r=4, direction=direction)
+        for root in roots.tolist()
+    ]
+    for batch_subgraph, scalar_subgraph in zip(actual, expected):
+        _assert_same_subgraph(batch_subgraph, scalar_subgraph)
+    assert torch.equal(
+        torch.rand(8, generator=batch_generator),
+        torch.rand(8, generator=untouched_generator),
+    )
+
+
+def test_batch_sparse_expand_keeps_converging_and_parallel_arcs():
+    edge_index = torch.tensor(
+        [[0, 0, 1, 1, 2], [1, 2, 3, 3, 3]], dtype=torch.long)
+    adjacency = build_adjacency(edge_index, 4, direction='out')
+    subgraph = batch_sparse_expand(
+        adjacency, torch.tensor([0]), p2=1.0, r=2,
+        direction='out')[0]
+
+    assert subgraph.nodes.tolist() == [0, 1, 2, 3]
+    assert subgraph.edge_index.tolist() == [
+        [0, 0, 1, 1, 2],
+        [1, 2, 3, 3, 3],
+    ]
+
+
+@pytest.mark.parametrize('direction', ['in', 'out'])
+def test_batch_sparse_expand_is_deterministic_under_fixed_seed(direction):
+    edge_index = torch.tensor(
+        [[0, 1, 2, 1, 1, 3, 3], [1, 2, 3, 3, 3, 1, 3]],
+        dtype=torch.long)
+    adjacency = build_adjacency(edge_index, 4, direction=direction)
+    roots = torch.tensor([0, 3, 1, 1, 2], dtype=torch.long)
+    first = batch_sparse_expand(
+        adjacency, roots, p2=0.37, r=3,
+        generator=torch.Generator().manual_seed(91),
+        direction=direction)
+    second = batch_sparse_expand(
+        adjacency, roots, p2=0.37, r=3,
+        generator=torch.Generator().manual_seed(91),
+        direction=direction)
+    for expected, actual in zip(first, second):
+        _assert_same_subgraph(actual, expected)
 
 
 @pytest.mark.parametrize('direction', ['in', 'out'])

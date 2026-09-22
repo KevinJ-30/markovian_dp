@@ -64,32 +64,60 @@ def pad_rooted_subgraphs(
         )
 
     batch_size = len(subgraphs)
-    max_nodes = max(subgraph.num_nodes for subgraph in subgraphs)
-    max_edges = max(subgraph.num_edges for subgraph in subgraphs)
-    roots = torch.empty(batch_size, dtype=torch.long, device=device)
-    node_ids = torch.zeros((batch_size, max_nodes), dtype=torch.long, device=device)
-    node_mask = torch.zeros((batch_size, max_nodes), dtype=torch.bool, device=device)
-    edge_index = torch.zeros((batch_size, 2, max_edges), dtype=torch.long, device=device)
-    edge_mask = torch.zeros((batch_size, max_edges), dtype=torch.bool, device=device)
+    nodes = [
+        subgraph.nodes.detach().to(device="cpu", dtype=torch.long)
+        for subgraph in subgraphs
+    ]
+    edges = [
+        subgraph.edge_index.detach().to(device="cpu", dtype=torch.long)
+        for subgraph in subgraphs
+    ]
+    node_counts = torch.tensor([part.numel() for part in nodes], dtype=torch.long)
+    edge_counts = torch.tensor([part.size(1) for part in edges], dtype=torch.long)
+    if bool((node_counts < 1).any()):
+        raise ValueError("each RootedSubgraph must contain its root")
 
-    for index, subgraph in enumerate(subgraphs):
-        if subgraph.num_nodes < 1 or int(subgraph.nodes[0]) != int(subgraph.root):
-            raise ValueError("each RootedSubgraph must store its root at local index 0")
-        roots[index] = int(subgraph.root)
-        node_ids[index, :subgraph.num_nodes] = subgraph.nodes.to(device)
-        node_mask[index, :subgraph.num_nodes] = True
-        if subgraph.num_edges:
-            local_edges = subgraph.edge_index.to(device)
-            if int(local_edges.min()) < 0 or int(local_edges.max()) >= subgraph.num_nodes:
-                raise ValueError("RootedSubgraph edge_index contains an invalid local node")
-            edge_index[index, :, :subgraph.num_edges] = local_edges
-            edge_mask[index, :subgraph.num_edges] = True
+    max_nodes = int(node_counts.max())
+    max_edges = int(edge_counts.max())
+    roots = torch.tensor([subgraph.root for subgraph in subgraphs], dtype=torch.long)
+    node_mask = (
+        torch.arange(max_nodes, dtype=torch.long).unsqueeze(0)
+        < node_counts.unsqueeze(1)
+    )
+    node_ids = torch.zeros((batch_size, max_nodes), dtype=torch.long)
+    node_ids[node_mask] = torch.cat(nodes)
+    if bool((node_ids[:, 0] != roots).any()):
+        raise ValueError("each RootedSubgraph must store its root at local index 0")
 
+    edge_mask = (
+        torch.arange(max_edges, dtype=torch.long).unsqueeze(0)
+        < edge_counts.unsqueeze(1)
+    )
+    edge_index = torch.zeros((batch_size, 2, max_edges), dtype=torch.long)
+    nonempty_edges = [part for part in edges if part.numel()]
+    if nonempty_edges:
+        flat_edges = torch.cat(nonempty_edges, dim=1)
+        edge_index[:, 0][edge_mask] = flat_edges[0]
+        edge_index[:, 1][edge_mask] = flat_edges[1]
+        limits = node_counts.unsqueeze(1)
+        invalid = edge_mask & (
+            (edge_index[:, 0] < 0)
+            | (edge_index[:, 1] < 0)
+            | (edge_index[:, 0] >= limits)
+            | (edge_index[:, 1] >= limits)
+        )
+        if bool(invalid.any()):
+            raise ValueError("RootedSubgraph edge_index contains an invalid local node")
+
+    roots = roots.to(device)
+    node_ids = node_ids.to(device)
+    node_mask = node_mask.to(device)
+    edge_index = edge_index.to(device)
+    edge_mask = edge_mask.to(device)
     features = x.to(device)[node_ids]
     features = features * node_mask.unsqueeze(-1).to(features.dtype)
-    roots_for_lookup = roots.to(y.device)
-    labels = y[roots_for_lookup].to(device)
-    supervised = train_mask[roots.to(train_mask.device)].to(device=device, dtype=torch.bool)
+    labels = y.to(device)[roots]
+    supervised = train_mask.to(device)[roots].to(dtype=torch.bool)
     return PaddedRootedBatch(
         roots=roots,
         node_ids=node_ids,

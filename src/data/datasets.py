@@ -232,8 +232,8 @@ def _load_graphsaint(name, root=None):
                      /labels.npy       [N, C] float, amazon only (faster than
                                        its 523 MB class_map.json)
 
-    Two preprocessing steps are REQUIRED and are what reconcile the files with
-    the paper's Table 1:
+    Three preprocessing steps are REQUIRED and are what reconcile the files with
+    the paper's Table 1 and training protocol:
 
       * BINARIZE.  The stored matrices hold 1/deg, not 1 -- they are the
         row-normalized adjacency, which is also why `A != A.T` before
@@ -244,6 +244,9 @@ def _load_graphsaint(name, root=None):
         are exactly 2 x 11,606,919.  We drop them because the accounting counts
         paths in a simple graph and degree capping would otherwise spend a node's
         budget on an arc to itself.
+      * STANDARDIZE FEATURES.  Match GraphSAINT's loader by fitting a
+        StandardScaler on nodes present in the training adjacency and applying
+        it to every split.
 
     `data.edge_index` is the full graph and `data.train_edge_index` the
     train-induced one. `src.experiments.sparse` uses the latter for training and passes
@@ -252,6 +255,7 @@ def _load_graphsaint(name, root=None):
     import json
     import numpy as np
     import scipy.sparse as sp
+    from sklearn.preprocessing import StandardScaler
 
     if name not in GRAPHSAINT_DATASETS:
         raise ValueError(
@@ -269,17 +273,20 @@ def _load_graphsaint(name, root=None):
             f"GRAPHSAINT_DATA_ROOT to the directory holding <name>/ folders.")
 
     def _arcs(path):
-        """CSR -> [2, E] edge_index, binarized and with self-loops removed."""
+        """CSR -> edge_index plus nodes present before self-loop removal."""
         a = sp.load_npz(path).tocoo()
+        active_nodes = np.unique(a.row)
         keep = a.row != a.col                      # drop self-loops
         row, col = a.row[keep], a.col[keep]
-        ei = torch.from_numpy(np.stack([row, col])).long()
-        return ei
+        edge_index = torch.from_numpy(np.stack([row, col])).long()
+        return edge_index, active_nodes
 
-    edge_index = _arcs(os.path.join(d, 'adj_full.npz'))
-    train_edge_index = _arcs(os.path.join(d, 'adj_train.npz'))
+    edge_index, _ = _arcs(os.path.join(d, 'adj_full.npz'))
+    train_edge_index, train_nodes = _arcs(os.path.join(d, 'adj_train.npz'))
 
-    x = torch.from_numpy(np.load(os.path.join(d, 'feats.npy'))).float()
+    features = np.load(os.path.join(d, 'feats.npy'))
+    scaler = StandardScaler(copy=False).fit(features[train_nodes])
+    x = torch.from_numpy(scaler.transform(features)).float()
     n = int(x.size(0))
 
     role = json.load(open(os.path.join(d, 'role.json')))

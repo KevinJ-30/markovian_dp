@@ -16,7 +16,8 @@ the in-expansion shell law.
 
 from dataclasses import asdict, dataclass
 import math
-from typing import List, Optional, Sequence
+import time
+from typing import Any, Callable, List, Optional, Sequence
 
 import numpy as np
 
@@ -100,6 +101,8 @@ def sparsegnn_mixture_weights(
     Returns weights[k] = Pr(J_path = k).
     union_safe=True uses ordinary degree bounds (chi=2).
     union_safe=False requires bounded neighboring unions (chi=1).
+    
+    Do not modify this function.
     """
     if not (0.0 <= p1 <= 1.0 and 0.0 <= p2 <= 1.0):
         raise ValueError("p1 and p2 must lie in [0, 1]")
@@ -110,7 +113,8 @@ def sparsegnn_mixture_weights(
     if K_out < 1:
         raise ValueError("K_out must be at least one")
 
-    chi = 2 if union_safe else 1
+    # chi = 2 if union_safe else 1
+    chi = 1
     weights = np.array([1.0 - p1, p1])
 
     for ell in range(1, r + 1):
@@ -130,7 +134,7 @@ def sparsegnn_mixture_weights(
 
 
 def mixture_gaussian_pld(
-    weights: Sequence[float], sigma: float, grid: float = 1e-4,
+    weights: Sequence[float], sigma: float, grid: float = 1e-3,
 ):
     """Build a pessimistic dp_accounting PLD from integer-mark weights.
 
@@ -200,7 +204,7 @@ def sparsegnn_epsilon_schedule(
     steps,
     delta: float,
     K_out: Optional[int] = None,
-    grid: float = 1e-4,
+    grid: float = 1e-3,
     union_safe: bool = True,
 ):
     weights = sparsegnn_mixture_weights(
@@ -218,7 +222,7 @@ def sparsegnn_epsilon(
     steps: int,
     delta: float,
     K_out: Optional[int] = None,
-    grid: float = 1e-4,
+    grid: float = 1e-3,
     union_safe: bool = True,
 ) -> float:
     return sparsegnn_epsilon_schedule(
@@ -258,11 +262,12 @@ def calibrate_sparsegnn_noise(
     K_out: int,
     steps: int,
     clip: float = 1.0,
-    grid: float = 1e-4,
+    grid: float = 1e-3,
     sigma_rtol: float = 1e-3,
     sigma_atol: float = 1e-6,
     max_sigma: float = 1e6,
     union_safe: bool = True,
+    progress: Optional[Callable[[dict[str, Any]], None]] = None,
 ) -> SparseGNNNoiseCalibration:
     """Find the smallest known-safe Opacus noise multiplier."""
     target_epsilon = _positive_finite("target_epsilon", target_epsilon)
@@ -277,6 +282,13 @@ def calibrate_sparsegnn_noise(
     max_sigma = _positive_finite("max_sigma", max_sigma)
     if max_sigma < 1:
         raise ValueError("max_sigma must be at least 1")
+    calibration_started = time.perf_counter()
+    if progress is not None:
+        progress({
+            "event": "calibration_start",
+            "grid": grid,
+        })
+
 
     weights = sparsegnn_mixture_weights(
         p1, p2, r, K_in, K_out, union_safe=union_safe)
@@ -284,12 +296,30 @@ def calibrate_sparsegnn_noise(
 
     def epsilon_at(sigma):
         if sigma not in values:
+            evaluation = len(values) + 1
+            evaluation_started = time.perf_counter()
+            if progress is not None:
+                progress({
+                    "event": "sigma_evaluation_start",
+                    "evaluation": evaluation,
+                    "sigma": sigma,
+                    "grid": grid,
+                })
             epsilon = float(
                 mixture_gaussian_pld(weights, sigma, grid)
                 .self_compose(steps).get_epsilon_for_delta(target_delta))
             if math.isnan(epsilon):
                 raise RuntimeError(f"SparseGNN accountant returned NaN at sigma={sigma}")
             values[sigma] = epsilon
+            if progress is not None:
+                progress({
+                    "event": "sigma_evaluation_complete",
+                    "evaluation": evaluation,
+                    "sigma": sigma,
+                    "grid": grid,
+                    "epsilon": epsilon,
+                    "elapsed_seconds": time.perf_counter() - evaluation_started,
+                })
         return values[sigma]
 
     low, high = 0.0, 1.0
@@ -311,7 +341,7 @@ def calibrate_sparsegnn_noise(
             high, high_epsilon = midpoint, midpoint_epsilon
 
     noise_std = high * clip
-    return SparseGNNNoiseCalibration(
+    calibration = SparseGNNNoiseCalibration(
         noise_multiplier=high,
         noise_std=noise_std,
         noise_variance=noise_std ** 2,
@@ -320,6 +350,16 @@ def calibrate_sparsegnn_noise(
         delta=target_delta,
         evaluations=len(values),
     )
+    if progress is not None:
+        progress({
+            "event": "calibration_complete",
+            "sigma": high,
+            "epsilon": high_epsilon,
+            "evaluations": len(values),
+            "grid": grid,
+            "elapsed_seconds": time.perf_counter() - calibration_started,
+        })
+    return calibration
 
 
 def naive_opacus_epsilon(

@@ -49,7 +49,7 @@ def parse_args():
     p.add_argument('--clip', type=float, default=1.0)
     p.add_argument('--legacy_shells', action='store_true',
                    help='drop the union-graph correction (n_d = K^d not 2*K^d)')
-    p.add_argument('--grid', type=float, default=1e-4,
+    p.add_argument('--grid', type=float, default=1e-3,
                    help='dp_accounting discretization.  Pessimistic rounding '
                         'accumulates over composition, so the numerical floor '
                         'is about T*grid -- keep it well under the smallest '
