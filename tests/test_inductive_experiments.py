@@ -5,10 +5,15 @@ import torch
 import pytest
 from torch_geometric.data import Data
 
-from src.training.baselines import BaselineConfig, BaselineTrainer
+from src.training.baselines import (
+    BaselineConfig,
+    BaselineTrainer,
+    _LayerwiseNeighborSampler,
+)
 import src.experiments.run as run_module
 from src.experiments.run import _resolve_task_metadata
 from src.models.objectives import _binary_auroc, _task_loss
+from src.models.baselines import GraphSAGE
 from src.training.dpar import (
     DPARConfig,
     DPARTrainer,
@@ -273,6 +278,76 @@ def test_baseline_scores_eval_mask_and_ignore_label_after_full_forward():
     assert accuracy == 1.0
     assert macro_f1 == 1.0
 
+
+def test_hierarchical_graphsage_matches_untrimmed_sampled_loss():
+    edge_index = torch.tensor([
+        [1, 2, 3, 4, 5, 5, 6, 7, 7, 0],
+        [0, 0, 0, 1, 1, 2, 2, 3, 4, 4],
+    ])
+    sampler = _LayerwiseNeighborSampler(edge_index, num_nodes=8)
+    sampled = sampler.sample(
+        torch.tensor([0, 2]),
+        fanouts=[2, 2],
+        generator=torch.Generator().manual_seed(4),
+    )
+    assert sampled.num_sampled_nodes[0] == 2
+    assert len(sampled.num_sampled_nodes) == 3
+    assert len(sampled.num_sampled_edges) == 2
+
+    offset = 0
+    for hop, edge_count in enumerate(sampled.num_sampled_edges):
+        hop_edges = sampled.edge_index[:, offset:offset + edge_count]
+        counts = torch.bincount(
+            hop_edges[1], minlength=sampled.node_ids.numel())
+        frontier_start = sum(sampled.num_sampled_nodes[:hop])
+        frontier_size = sampled.num_sampled_nodes[hop]
+        if frontier_size:
+            assert int(
+                counts[frontier_start:frontier_start + frontier_size].max()
+            ) <= 2
+        offset += edge_count
+    model = GraphSAGE(inputs=3, classes=1, hidden=5, layers=2, dropout=0.0)
+    model.eval()
+    features = torch.randn(sampled.node_ids.numel(), 3)
+    neighbor_logits = model.forward_sampled(
+        features,
+        sampled.edge_index,
+        sampled.num_sampled_nodes,
+        sampled.num_sampled_edges,
+        hierarchical=False,
+    )
+    hierarchical_logits = model.forward_sampled(
+        features,
+        sampled.edge_index,
+        sampled.num_sampled_nodes,
+        sampled.num_sampled_edges,
+        hierarchical=True,
+    )
+    torch.testing.assert_close(hierarchical_logits, neighbor_logits)
+
+
+
+@pytest.mark.parametrize("sampling", ["neighbor", "hierarchical"])
+def test_graphsage_sampling_modes_train(sampling, tmp_path):
+    split = load_or_create_inductive_split(
+        _graph(), f"graphsage-{sampling}", root=tmp_path, seed=3
+    )
+    result = BaselineTrainer(
+        BaselineConfig(
+            method="graphsage",
+            graphsage_sampling=sampling,
+            max_fanout=2,
+            layers=2,
+            hidden_size=4,
+            batch_size=4,
+            epochs=1,
+            dropout=0.0,
+        ),
+        "cpu",
+    ).fit(split)
+    assert result["config"]["graphsage_sampling"] == sampling
+    assert 0.0 <= result["validation_accuracy"] <= 1.0
+    assert 0.0 <= result["test_accuracy"] <= 1.0
 
 def test_dataset_task_metadata_is_authoritative():
     dataset = SimpleNamespace(

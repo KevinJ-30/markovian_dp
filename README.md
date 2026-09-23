@@ -180,13 +180,27 @@ save the following as `/tmp/mag-domain.json` and run
     "val_ratio": 0.2
   },
   "parameters": {
-    "epochs": 100
+    "epochs": 100,
+    "layers": 2,
+    "batch_size": 1024,
+    "max_fanout": 10,
+    "graphsage_sampling": "hierarchical"
   }
 }
 ```
 
 The same dataset metadata is consumed by the first-party `mlp`, `dp_mlp`,
 `graphsage`, `dpar`, and `dp_gnn` methods and by the retained ProGAP adapter.
+
+The first-party GraphSAGE trainer uses fresh fixed-fanout neighborhoods for
+each root minibatch. `graphsage_sampling: "hierarchical"` (the default) uses
+the same sampled seed-node computation as `"neighbor"`, but progressively
+trims the deepest unused hop before each layer. Set `max_fanout` to the per-layer
+bound; the trainer repeats it for `layers` hops. Each training root appears
+once per shuffled epoch, with a final partial batch. Validation and test use
+deterministic full-neighbor propagation over each complete held-out context
+graph and score only its `eval_mask`.
+
 SparseGNN uses matching flags instead:
 
 ```bash

@@ -35,19 +35,68 @@ class GraphSAGE(nn.Module):
         self.dropout = dropout
 
     @staticmethod
-    def _mean_neighbors(x: Tensor, edge_index: Tensor) -> Tensor:
+    def _mean_neighbors(
+        x: Tensor,
+        edge_index: Tensor,
+        num_targets: int | None = None,
+    ) -> Tensor:
         source, target = edge_index
-        sums = torch.zeros_like(x)
+        target_count = x.size(0) if num_targets is None else num_targets
+        sums = x.new_zeros((target_count, x.size(1)))
         sums.index_add_(0, target, x[source])
-        degree = torch.bincount(target, minlength=x.size(0)).to(x.dtype).clamp_min_(1)
+        degree = torch.bincount(target, minlength=target_count).to(
+            x.dtype
+        ).clamp_min_(1)
         return sums / degree[:, None]
 
     def forward(self, x: Tensor, edge_index: Tensor | None = None) -> Tensor:
         if edge_index is None:
             raise ValueError("GraphSAGE requires edge_index")
-        for index, (self_layer, neighbor_layer) in enumerate(zip(self.self_layers, self.neighbor_layers)):
-            x = self_layer(x) + neighbor_layer(self._mean_neighbors(x, edge_index))
+        for index, (self_layer, neighbor_layer) in enumerate(
+            zip(self.self_layers, self.neighbor_layers)
+        ):
+            x = self_layer(x) + neighbor_layer(
+                self._mean_neighbors(x, edge_index)
+            )
             if index < len(self.self_layers) - 1:
+                x = F.relu(x)
+                x = F.dropout(x, p=self.dropout, training=self.training)
+        return x
+
+    def forward_sampled(
+        self,
+        x: Tensor,
+        edge_index: Tensor,
+        num_sampled_nodes: list[int],
+        num_sampled_edges: list[int],
+        *,
+        hierarchical: bool,
+    ) -> Tensor:
+        """Return seed logits from a BFS-ordered sampled neighborhood.
+
+        ``hierarchical=False`` applies every layer to the complete sampled
+        subgraph. ``hierarchical=True`` progressively drops the deepest hop,
+        preserving identical seed logits while avoiding unused activations.
+        """
+        layer_count = len(self.self_layers)
+        if len(num_sampled_nodes) != layer_count + 1:
+            raise ValueError("sampled node counts must contain one entry per hop")
+        if len(num_sampled_edges) != layer_count:
+            raise ValueError("sampled edge counts must contain one entry per layer")
+        if not hierarchical:
+            return self.forward(x, edge_index)[:num_sampled_nodes[0]]
+
+        for index, (self_layer, neighbor_layer) in enumerate(
+            zip(self.self_layers, self.neighbor_layers)
+        ):
+            retained_hops = layer_count - index
+            target_count = sum(num_sampled_nodes[:retained_hops])
+            edge_count = sum(num_sampled_edges[:retained_hops])
+            layer_edges = edge_index[:, :edge_count]
+            x = self_layer(x[:target_count]) + neighbor_layer(
+                self._mean_neighbors(x, layer_edges, target_count)
+            )
+            if index < layer_count - 1:
                 x = F.relu(x)
                 x = F.dropout(x, p=self.dropout, training=self.training)
         return x
