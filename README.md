@@ -115,8 +115,8 @@ scratch rather than in the repo. The script is idempotent; re-run it freely.
 | `ppi-large`    |    56,944 |     818,716 | 121 multilabel | 36 MB |
 | `saint-flickr` |    89,250 |     899,756 | 7 classes      | — |
 | `saint-reddit` |   232,965 |  11,606,919 | 41 classes     | 1.2 GB |
-| `yelp`         |   716,847 |   6,977,410 | 100 multilabel | 2.2 GB |
-| `amazon`       | 1,598,960 | 132,169,734 | 107 multilabel | 3.7 GB |
+| `saint-yelp`    |   716,847 |   6,977,410 | 100 multilabel | 2.2 GB |
+| `saint-amazon`  | 1,598,960 | 132,169,734 | 107 multilabel | 3.7 GB |
 
 The edge column is GraphSAINT's Table 1 verbatim, and the loader reproduces it
 from the raw files — but **that figure counts self-loops and the loaded graph
@@ -128,14 +128,108 @@ or run — treat that row as untested. First load writes a `_labels_cache.pt`
 next to the raw files (27 MB on PPI-large), so budget roughly double the
 extracted size.
 
-`saint-flickr` and `saint-reddit` are deliberately distinct names from the bare
-`flickr` and `reddit` keys, which are **PyG's different versions of the same
-graphs** — PyG's Reddit has 57.3M undirected edges against GraphSAINT's 11.6M,
-and the splits differ too. Only the GraphSAINT files are comparable to that
-paper's published baselines. Two preprocessing steps in `_load_graphsaint`
-reconcile the released files with the paper's Table 1 (they ship the
-*row-normalized* adjacency, and PPI-large carries 25,084 self-loops); its
-docstring has the arithmetic.
+All four public aliases use the `saint-` prefix: `saint-flickr`,
+`saint-reddit`, `saint-yelp`, and `saint-amazon`. For Flickr and Reddit the
+prefix also distinguishes GraphSAINT's releases from the bare PyG datasets;
+PyG's Reddit has 57.3M undirected edges against GraphSAINT's 11.6M, and the
+splits differ too. The raw GraphSAINT directory names remain `flickr`, `reddit`,
+`yelp`, and `amazon`. The `_load_graphsaint` docstring documents the
+preprocessing needed to reconcile the released files with the paper's Table 1.
+
+### Domain-disjoint datasets
+
+Three dataset names expose provenance-defined domains rather than a random node
+split. `facebook100` is a new 18-school benchmark; the existing `facebook`
+dataset remains the single UIllinois20 graph and is unchanged.
+
+| dataset | canonical domains | default train | default validation | default test | reported metric |
+|---|---|---|---|---|---|
+| `twitch-explicit` | `de`, `engb`, `es`, `fr`, `ptbr`, `ru`, `tw` | `de` | `engb` | `es`, `fr`, `ptbr`, `ru`, `tw` | AUROC |
+| `facebook100` | `penn94`, `amherst41`, `cornell5`, `johns-hopkins55`, `reed98`, `caltech36`, `berkeley13`, `brown11`, `columbia2`, `yale4`, `virginia63`, `texas80`, `bingham82`, `duke14`, `princeton12`, `washu32`, `brandeis99`, `carnegie49` | `johns-hopkins55`, `caltech36`, `amherst41` | `cornell5`, `yale4` | `penn94`, `brown11`, `texas80` | accuracy |
+| `mag-countries` | `us`, `cn`, `de`, `fr`, `ru`, `jp` | `us` | `cn` | `cn` | accuracy |
+
+The defaults apply when no domain role is supplied. A custom split must provide
+all of `train`, `val`, and `test`, with nonempty lists of canonical lower-case
+names. Names cannot repeat within a role, and no training domain may occur in
+either held-out role. Validation and test may overlap. Their overlapping domain
+is present in full in both evaluation graphs, so message passing has the same
+complete target-domain context; deterministic, class-stratified, complementary
+node masks decide which nodes each role scores. `seed` controls that assignment
+and `val_ratio` is its validation fraction (defaults: `0` and `0.2`). Classes
+with at least two nodes contribute to both masks. Thus the default shared `cn`
+MAG target implements a 20/80 validation/test split without cutting its
+topology. Different normalized domain selections receive different split,
+cache, and result fingerprints.
+
+Configuration-driven experiments put the mapping at the top level. For example,
+save the following as `/tmp/mag-domain.json` and run
+`python -m src.experiments.run --config /tmp/mag-domain.json`:
+
+```json
+{
+  "dataset": "mag-countries",
+  "method": "graphsage",
+  "seed": 0,
+  "device": "auto",
+  "split_root": "data/inductive_splits",
+  "domain_split": {
+    "train": ["us"],
+    "val": ["cn"],
+    "test": ["cn"],
+    "seed": 0,
+    "val_ratio": 0.2
+  },
+  "parameters": {
+    "epochs": 100
+  }
+}
+```
+
+The same dataset metadata is consumed by the first-party `mlp`, `dp_mlp`,
+`graphsage`, `dpar`, and `dp_gnn` methods and by the retained ProGAP adapter.
+SparseGNN uses matching flags instead:
+
+```bash
+python -m src.experiments.sparse \
+    --dataset twitch-explicit --model binary_gnn \
+    --train_domains de --val_domains engb --test_domains es fr ptbr ru tw \
+    --domain_split_seed 0 --domain_val_ratio 0.2 \
+    --T 500 --seeds 3 --out_dir results/twitch-explicit/default
+```
+
+Twitch is binary and must use `binary_gnn`; it trains a single logit and reports
+tie-correct AUROC (`validation_auroc` and `test_auroc`), not accuracy.
+`facebook100` is a two-class accuracy task; matching GraphOOD, raw missing
+gender `0` is collapsed into class `0`. MAG is a 20-class task. Label 19 still
+participates in training loss but is excluded from validation/test accuracy.
+
+All three families download automatically on first use over HTTPS. The cache
+roots can be overridden, and otherwise are:
+
+| variable | default | acquisition |
+|---|---|---|
+| `GRAPHOOD_TWITCH_DATA_ROOT` | `data/graphood/twitch` | selected domains only, from `CUAI/Non-Homophily-Benchmarks` commit `af14a88470d30b1dadd3803d911dfc1064bcf172` |
+| `GRAPHOOD_FB100_DATA_ROOT` | `data/graphood/facebook100` | all 18 schools, from `sisaman/pyg-datasets` commit `9a92bf1e84f73b7b24dd745eb14f13e4d1979769` |
+| `PAIR_ALIGN_MAG_DATA_ROOT` | `data/pair_align_mag` | selected countries only, from Zenodo record `10681285` |
+
+FB-100 downloads all schools even when only one is selected because GraphOOD's
+categorical feature vocabulary is shared across the 18 matrices. Twitch and MAG
+download only selected domains. First use therefore needs network access and
+enough space in the chosen roots; subsequent loads reuse valid cached files and
+can run offline. Downloads go to temporary files and are renamed atomically, so
+an interrupted transfer is not accepted as cache and a retry is safe. A failure
+reports both the source URL and cache root.
+
+MAG files are untrusted until both their published byte size and MD5 digest have
+been checked; only then are the PyTorch products deserialized. The record's
+digests are `us` `677b46f78e5fb946b2d9d2e4f76418fb`, `cn`
+`3e09b899d12d5801f39bf9cd187edcad`, `de`
+`3e3830bd6102db954f1b0163761aebc3`, `fr`
+`a2387bdff7841edb395f23d224b0b1c5`, `ru`
+`3c86cf9b3b2052d31a433d5422a7ec5f`, and `jp`
+`7910d054a972897fc2466f177cb9fed4`. GitHub sources are pinned to immutable
+commits and their parsed filenames and schemas are validated, but those
+upstreams do not publish conventional artifact checksums.
 
 ## Usage
 

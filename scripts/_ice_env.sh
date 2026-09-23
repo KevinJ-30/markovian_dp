@@ -18,6 +18,9 @@
 #   VENV        venv to activate (default: first candidate below that exists)
 #   PY          python to use (default: whatever `python` resolves to after that)
 #   DATA_ROOT   dataset cache location (default: $SCRATCH/data)
+#   GRAPHOOD_TWITCH_DATA_ROOT  Twitch domain cache
+#   GRAPHOOD_FB100_DATA_ROOT   FB-100 domain cache
+#   PAIR_ALIGN_MAG_DATA_ROOT   regional MAG domain cache
 
 if [ -z "${SCRATCH:-}" ]; then
   if [ -d "$HOME/scratch" ]; then SCRATCH="$HOME/scratch"; else SCRATCH="$HOME"; fi
@@ -57,6 +60,9 @@ export PYTHONNOUSERSITE=1
 mkdir -p "$DATA_ROOT" "$CACHE_ROOT"
 
 export PPI_DATA_ROOT=${PPI_DATA_ROOT:-$DATA_ROOT/PPI}
+export GRAPHOOD_TWITCH_DATA_ROOT=${GRAPHOOD_TWITCH_DATA_ROOT:-$DATA_ROOT/graphood/twitch}
+export GRAPHOOD_FB100_DATA_ROOT=${GRAPHOOD_FB100_DATA_ROOT:-$DATA_ROOT/graphood/facebook100}
+export PAIR_ALIGN_MAG_DATA_ROOT=${PAIR_ALIGN_MAG_DATA_ROOT:-$DATA_ROOT/pair_align_mag}
 # The sbatch drivers export this themselves, but an interactive shell did not,
 # so loading a GraphSAINT graph by hand fell back to the relative default and
 # reported the data missing when it was there all along.
@@ -74,6 +80,9 @@ echo "  VENV       = ${VENV:-<none>}"
 echo "  PY         = $(command -v $PY)  ($($PY --version 2>&1))"
 echo "  DATA_ROOT  = $DATA_ROOT"
 echo "  CACHE_ROOT = $CACHE_ROOT"
+echo "  Twitch     = $GRAPHOOD_TWITCH_DATA_ROOT"
+echo "  FB-100     = $GRAPHOOD_FB100_DATA_ROOT"
+echo "  MAG         = $PAIR_ALIGN_MAG_DATA_ROOT"
 echo "  threads    = $OMP_NUM_THREADS"
 
 # Preflight.  dp_accounting is the one most likely to be missing: it is only

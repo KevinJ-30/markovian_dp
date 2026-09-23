@@ -12,7 +12,7 @@ predictor scores ~0.82 accuracy and tells you nothing).
 
 from typing import Dict
 
-import numpy as np
+from src.models.objectives import _binary_auroc
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -40,20 +40,8 @@ class _BinaryGNN(nn.Module):
         return x.view(-1)
 
 
-def _auroc(y_true: np.ndarray, scores: np.ndarray) -> float:
-    """Rank-based AUROC; nan when a split has only one class."""
-    pos, neg = y_true == 1, y_true == 0
-    n_pos, n_neg = int(pos.sum()), int(neg.sum())
-    if n_pos == 0 or n_neg == 0:
-        return float('nan')
-    order = np.argsort(scores, kind='mergesort')
-    ranks = np.empty(len(scores), dtype=np.float64)
-    ranks[order] = np.arange(1, len(scores) + 1)
-    # Average ranks within ties so tied scores do not create spurious ordering.
-    _, inv, counts = np.unique(scores, return_inverse=True, return_counts=True)
-    sums = np.bincount(inv, weights=ranks)
-    ranks = (sums / counts)[inv]
-    return (ranks[pos].sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
+# Backward-compatible private import used by the existing mechanism tests.
+_auroc = _binary_auroc
 
 
 class BinaryGNNMechanism(BaseMechanism):
@@ -104,19 +92,19 @@ class BinaryGNNMechanism(BaseMechanism):
         self.eval_mode()
         # The caller supplies the test graph; for RelBench this is the graph at
         # the test cutoff, so held-out rows keep their real neighbourhoods.
-        scores = self.module(data.x, self.eval_edges(data)).cpu().numpy()
-        y = data.y.cpu().numpy()
+        scores = self.module(data.x, self.eval_edges(data)).cpu()
+        y = data.y.cpu()
         metrics = {}
         for split in ("train", "val", "test"):
-            mask = getattr(data, f"{split}_mask").cpu().numpy()
-            metrics[split] = (_auroc(y[mask], scores[mask]) if mask.any()
-                              else float("nan"))
+            mask = getattr(data, f"{split}_mask").cpu()
+            metrics[split] = (_binary_auroc(y[mask], scores[mask])
+                              if mask.any() else float("nan"))
             # Secondary metric, NOT the primary one -- see the module
             # docstring: on an imbalanced split (e.g. rel-hm/user-churn's
             # ~82% positive rate) a constant predictor scores ~0.82 accuracy
             # while having zero discriminative ability, so this number is
             # only meaningful read alongside AUROC, never in place of it.
             metrics[f"{split}_bin_acc"] = (
-                float((((scores[mask] > 0).astype(y.dtype)) == y[mask]).mean())
+                float(((scores[mask] > 0).to(y.dtype) == y[mask]).float().mean())
                 if mask.any() else float("nan"))
         return metrics

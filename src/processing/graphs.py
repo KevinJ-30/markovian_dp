@@ -237,13 +237,19 @@ def preprocess_inductive_split(
         partitions[name] = GraphPartition(
             data=data,
             node_ids=partition.node_ids,
-            stats=graph_statistics(data),
+            stats=graph_statistics(data, partition.eval_mask),
+            eval_mask=partition.eval_mask,
         )
     return InductiveSplit(
         **partitions,
         masks=split.masks,
         num_classes=split.num_classes,
         path=split.path,
+        primary_metric=split.primary_metric,
+        binary=split.binary,
+        metric_ignore_label=split.metric_ignore_label,
+        domain_split=split.domain_split,
+        domain_split_id=split.domain_split_id,
     )
 
 

@@ -51,10 +51,13 @@ class GNNMechanism(BaseMechanism):
                     faithful receptive field, though not enforced).
         dropout:   dropout probability.
         device:    torch device.
+        metric_ignore_label: label retained in training loss but excluded from
+                             reported split accuracy, or None.
     """
 
     def __init__(self, data, num_features, num_classes, *, hidden=64,
                  num_layers=2, dropout=0.5, aggr='mean', device=None,
+                 metric_ignore_label=None,
                  max_batched_subgraph_nodes: int = 8192):
         module = _NodeGNN(num_features, hidden, num_classes,
                           dropout=dropout, num_layers=num_layers, aggr=aggr)
@@ -64,6 +67,7 @@ class GNNMechanism(BaseMechanism):
         self.max_batched_subgraph_nodes = int(max_batched_subgraph_nodes)
         self.max_private_batch_nodes = self.max_batched_subgraph_nodes
         self.data = data
+        self.metric_ignore_label = metric_ignore_label
         # Root ids originate in CPU SparseExpand. Keeping the lookup on CPU
         # avoids synchronizing CUDA once per sampled root.
         self._train_mask = data.train_mask.cpu()
@@ -170,6 +174,8 @@ class GNNMechanism(BaseMechanism):
         accs = {}
         for split in ("train", "val", "test"):
             mask = getattr(data, f"{split}_mask")
+            if self.metric_ignore_label is not None:
+                mask = mask & data.y.ne(self.metric_ignore_label)
             n = int(mask.sum().item())
             accs[split] = (float((pred[mask] == data.y[mask]).sum().item()) / n
                            if n else float("nan"))

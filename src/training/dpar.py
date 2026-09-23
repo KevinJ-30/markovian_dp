@@ -22,7 +22,7 @@ from src.privacy.accountants import DPARAccountant, PrivacyResult, calibrate_dpa
 
 from src.models.baselines import DPARMLP
 
-from src.models.objectives import _task_loss, _task_metric
+from src.models.objectives import _metric_rows, _task_loss, _task_metric
 
 
 @dataclass(frozen=True)
@@ -59,8 +59,12 @@ class DPARConfig:
     multilabel: bool = False
     # Loss/metric only; epsilon is unchanged.
     regression: bool = False
+    binary: bool = False
+    metric_ignore_label: int | None = None
 
     def __post_init__(self) -> None:
+        if sum((self.multilabel, self.regression, self.binary)) > 1:
+            raise ValueError("binary, multilabel, and regression tasks are mutually exclusive")
         selectors = (self.sampled_train_rate is not None, self.sampled_train_nodes is not None)
         if sum(selectors) != 1:
             raise ValueError(
@@ -289,16 +293,27 @@ class DPARTrainer:
         data = partition.data.to(self.device)
         model.eval()
         with torch.no_grad():
-            logits = propagate_logits(model(data.x), data.edge_index, self.config.alpha, self.config.inference_steps)
-        return _task_metric(logits, data.y, self.config.multilabel,
-                            regression=self.config.regression)
+            logits = propagate_logits(
+                model(data.x), data.edge_index, self.config.alpha,
+                self.config.inference_steps)
+        logits, labels = _metric_rows(
+            logits,
+            data.y,
+            eval_mask=getattr(partition, "eval_mask", None),
+            metric_ignore_label=self.config.metric_ignore_label,
+        )
+        return _task_metric(
+            logits, labels, self.config.multilabel,
+            regression=self.config.regression, binary=self.config.binary)
 
     def fit(self, split: Any) -> dict[str, Any]:
         """Train, choose on the validation metric, and evaluate the held-out graph."""
         torch.manual_seed(self.config.seed)
         full_train_data = split.train.data
-        model = DPARMLP(full_train_data.x.size(1), split.num_classes,
-                         self.config.hidden_size, self.config.layers, self.config.dropout).to(self.device)
+        outputs = 1 if (self.config.binary or self.config.regression) else split.num_classes
+        model = DPARMLP(
+            full_train_data.x.size(1), outputs, self.config.hidden_size,
+            self.config.layers, self.config.dropout).to(self.device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.config.learning_rate,
                                      weight_decay=self.config.weight_decay)
         sampling_generator = torch.Generator(device=self.device).manual_seed(self.config.seed + 1)
@@ -349,29 +364,57 @@ class DPARTrainer:
                 else:
                     optimizer.zero_grad(set_to_none=True)
                     logits = torch.sparse.mm(_select_ppr_rows(ppr, root_indices), model(train_data.x))
-                    _task_loss(logits, train_data.y[root_indices],
-                               effective_config.multilabel,
-                               regression=effective_config.regression).backward()
+                    _task_loss(
+                        logits, train_data.y[root_indices],
+                        effective_config.multilabel,
+                        regression=effective_config.regression,
+                        binary=effective_config.binary).backward()
                     optimizer.step()
             val_metric, _ = self._evaluate(model, split.val)
-            improved = (val_metric < best_val) if lower_is_better else (val_metric > best_val)
-            if improved:
+            improved = (
+                val_metric < best_val if lower_is_better else val_metric > best_val
+            )
+            if not math.isnan(val_metric) and improved:
                 best_val = val_metric
-                best_state = {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
+                best_state = {
+                    name: value.detach().cpu().clone()
+                    for name, value in model.state_dict().items()
+                }
+            elif best_state is None:
+                best_state = {
+                    name: value.detach().cpu().clone()
+                    for name, value in model.state_dict().items()
+                }
         training_seconds = time.perf_counter() - training_start
         assert best_state is not None
         model.load_state_dict(best_state)
-        val_accuracy, val_f1 = self._evaluate(model, split.val)
-        test_accuracy, test_f1 = self._evaluate(model, split.test)
+        validation, validation_secondary = self._evaluate(model, split.val)
+        test, test_secondary = self._evaluate(model, split.test)
         privacy = self._privacy(
             int(full_train_data.num_nodes), sampled_nodes, ppr_releases, effective_config
         )
         result = {
-            "method": "dpar", "config": asdict(effective_config), "validation_accuracy": val_accuracy,
-            "validation_macro_f1": val_f1, "test_accuracy": test_accuracy, "test_macro_f1": test_f1,
-            "preprocessing_seconds": preprocessing_seconds, "training_seconds": training_seconds,
-            "privacy": privacy, "train_graph": split.train.stats, "sampled_train_graph": sampled_train_graph,
+            "method": "dpar", "config": asdict(effective_config),
+            "preprocessing_seconds": preprocessing_seconds,
+            "training_seconds": training_seconds, "privacy": privacy,
+            "train_graph": split.train.stats,
+            "sampled_train_graph": sampled_train_graph,
         }
+        if effective_config.binary:
+            result.update({
+                "metric": "auroc",
+                "validation_auroc": validation,
+                "validation_binary_accuracy": validation_secondary,
+                "test_auroc": test,
+                "test_binary_accuracy": test_secondary,
+            })
+        else:
+            result.update({
+                "validation_accuracy": validation,
+                "validation_macro_f1": validation_secondary,
+                "test_accuracy": test,
+                "test_macro_f1": test_secondary,
+            })
         if calibration is not None:
             result["calibration"] = calibration.as_dict()
         return result
@@ -385,8 +428,9 @@ class DPARTrainer:
         root_logits = torch.sparse.mm(_select_ppr_rows(ppr, roots), logits)
         for row, target in zip(root_logits, y[roots]):
             gradients = torch.autograd.grad(
-                _task_loss(row.unsqueeze(0), target.unsqueeze(0), config.multilabel,
-                           regression=config.regression),
+                _task_loss(
+                    row.unsqueeze(0), target.unsqueeze(0), config.multilabel,
+                    regression=config.regression, binary=config.binary),
                 parameters, retain_graph=True)
             norm = torch.sqrt(sum(gradient.square().sum() for gradient in gradients)).clamp_min(1e-12)
             scale = min(1.0, config.sgd_clip / float(norm))

@@ -78,13 +78,13 @@ case $_ds in
     CAP=(--K_in 5 --K_out 5)
     HIDDEN=128; DROPOUT=0.1
     ;;
-  yelp)
+  saint-yelp)
     MODEL=(--model multilabel_gnn --aggr mean)
     P1=0.000952; T=300
     CAP=(--K_in 5 --K_out 5)
     HIDDEN=512; DROPOUT=0.1
     ;;
-  amazon)
+  saint-amazon)
     MODEL=(--model multilabel_gnn --aggr mean)
     P1=0.000408; T=300
     CAP=(--K_in 5 --K_out 5)
@@ -109,6 +109,27 @@ case $_ds in
     MODEL=(--model binary_gnn --aggr mean)
     P1=0.05; T=900
     CAP=(--K_in 20 --K_out 3)
+    ;;
+  twitch-explicit)
+    # Domain roles come from the loader's benchmark defaults unless the caller
+    # adds explicit --*_domains flags. Twitch is binary and reports AUROC.
+    MODEL=(--model binary_gnn --aggr mean)
+    P1=0.005; T=500
+    CAP=(--K_in 5 --K_out 5)
+    ;;
+  facebook100)
+    # The 18-school benchmark is distinct from facebook/UIllinois20. Domain
+    # defaults are resolved by the loader; this is a categorical accuracy task.
+    MODEL=(--model gnn --aggr mean)
+    P1=0.005; T=500
+    CAP=(--K_in 5 --K_out 5)
+    ;;
+  mag-countries)
+    # Class 19 remains in the categorical loss and is filtered only from the
+    # reported metric. The loader owns the default US -> shared CN protocol.
+    MODEL=(--model gnn --aggr mean)
+    P1=0.005; T=500
+    CAP=(--K_in 5 --K_out 5)
     ;;
   facebook)
     # FB100 UIllinois20 has no native inductive split. The loader's masks define

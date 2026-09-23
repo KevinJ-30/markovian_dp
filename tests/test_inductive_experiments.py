@@ -2,9 +2,13 @@ import math
 from types import SimpleNamespace
 
 import torch
+import pytest
 from torch_geometric.data import Data
 
 from src.training.baselines import BaselineConfig, BaselineTrainer
+import src.experiments.run as run_module
+from src.experiments.run import _resolve_task_metadata
+from src.models.objectives import _binary_auroc, _task_loss
 from src.training.dpar import (
     DPARConfig,
     DPARTrainer,
@@ -227,3 +231,76 @@ def test_dpar_target_budget_samples_graph_and_composes_total(tmp_path):
     assert fixed["config"]["sgd_noise"] == 1.2
     assert fixed["privacy"]["training"]["delta"] == 7e-4
     assert "calibration" not in fixed
+
+
+def test_binary_objective_is_tie_correct_and_uses_one_logit():
+    labels = torch.tensor([0, 0, 1, 1])
+    scores = torch.tensor([0.0, 0.0, 0.0, 1.0])
+    assert _binary_auroc(labels, scores) == pytest.approx(0.75)
+    logits = scores[:, None].requires_grad_()
+    loss = _task_loss(logits, labels, multilabel=False, binary=True)
+    expected = torch.nn.functional.binary_cross_entropy_with_logits(
+        scores, labels.float())
+    torch.testing.assert_close(loss, expected)
+
+    trainer = BaselineTrainer(BaselineConfig(method="mlp", binary=True))
+    model = trainer._model(Data(x=torch.randn(4, 3)), num_classes=2)
+    assert model(torch.randn(4, 3)).shape == (4, 1)
+
+
+def test_baseline_scores_eval_mask_and_ignore_label_after_full_forward():
+    observed = {}
+
+    class FixedLogits(torch.nn.Module):
+        def forward(self, x, edge_index=None):
+            observed["nodes"] = x.size(0)
+            logits = torch.zeros((x.size(0), 20), device=x.device)
+            logits[1, 1] = 5.0
+            logits[2, 0] = 5.0
+            return logits
+
+    data = Data(
+        x=torch.randn(4, 3),
+        y=torch.tensor([0, 1, 19, 0]),
+        edge_index=torch.tensor([[0, 1, 2], [1, 2, 3]]),
+    )
+    partition = SimpleNamespace(
+        data=data, eval_mask=torch.tensor([False, True, True, False]))
+    trainer = BaselineTrainer(BaselineConfig(
+        method="graphsage", metric_ignore_label=19))
+    accuracy, macro_f1 = trainer._evaluate(FixedLogits(), partition)
+    assert observed["nodes"] == 4
+    assert accuracy == 1.0
+    assert macro_f1 == 1.0
+
+
+def test_dataset_task_metadata_is_authoritative():
+    dataset = SimpleNamespace(
+        task_type="BINARY", primary_metric="auroc", metric_ignore_label=None)
+    resolved = _resolve_task_metadata(dataset, {})
+    assert resolved["binary"]
+    assert resolved["primary_metric"] == "auroc"
+    with pytest.raises(ValueError, match="conflicts"):
+        _resolve_task_metadata(dataset, {"binary": False})
+
+
+def test_domain_dataset_rejects_unsupported_heterpoisson(monkeypatch):
+    dataset = SimpleNamespace(
+        domain_dataset=True,
+        task_type="MULTICLASS",
+        primary_metric="accuracy",
+        metric_ignore_label=None,
+    )
+    data = Data(
+        x=torch.zeros((3, 2)),
+        y=torch.tensor([0, 1, 0]),
+        edge_index=torch.empty((2, 0), dtype=torch.long),
+    )
+    monkeypatch.setattr(
+        run_module, "load_dataset", lambda *args, **kwargs: (dataset, data))
+    with pytest.raises(ValueError, match="does not support domain datasets"):
+        run_module.run({
+            "dataset": "facebook100",
+            "method": "heterpoisson",
+            "device": "cpu",
+        })

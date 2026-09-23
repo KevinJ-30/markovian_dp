@@ -303,3 +303,51 @@ def test_invalid_fit_population_is_rejected_before_graph_preparation(num_nodes, 
     invalid_graph = SimpleNamespace(num_nodes=num_nodes, x=None, y=None, edge_index=None)
     with pytest.raises(ValueError):
         trainer.fit(invalid_graph, object(), object())
+
+
+def test_evaluate_forwards_full_context_but_scores_eval_mask_and_ignore_label():
+    observed = {}
+
+    class FixedModel(torch.nn.Module):
+        def forward(self, x, edge_index, edge_weight):
+            observed["nodes"] = x.size(0)
+            return x
+
+    logits = torch.zeros((4, 20))
+    logits[1, 1] = 5.0
+    logits[2, 0] = 5.0
+    data = SimpleNamespace(
+        num_nodes=4,
+        x=logits,
+        y=torch.tensor([0, 1, 19, 0]),
+        edge_index=torch.tensor([[0, 1, 2], [1, 2, 3]]),
+        eval_mask=torch.tensor([False, True, True, False]),
+    )
+    trainer = PartitionedDPGNN(DPGNNConfig(
+        num_classes=20, steps=1, batch_size=1, noise_multiplier=1.0,
+        metric_ignore_label=19))
+    assert trainer.evaluate(FixedModel(), data, seed=0) == 1.0
+    assert observed["nodes"] == 4
+
+
+def test_binary_fit_uses_one_logit_and_auroc_result_keys():
+    train = SimpleNamespace(
+        num_nodes=6,
+        x=torch.randn(6, 3),
+        y=torch.tensor([0, 1, 0, 1, 0, 1]),
+        edge_index=torch.empty((2, 0), dtype=torch.long),
+    )
+    held_out = SimpleNamespace(
+        num_nodes=4,
+        x=torch.randn(4, 3),
+        y=torch.tensor([0, 1, 0, 1]),
+        edge_index=torch.empty((2, 0), dtype=torch.long),
+        eval_mask=torch.tensor([True, True, False, False]),
+    )
+    result = PartitionedDPGNN(DPGNNConfig(
+        num_classes=2, steps=1, batch_size=3, noise_multiplier=1.0,
+        latent_size=5, binary=True, max_private_batch_nodes=16,
+    )).fit(train, held_out, held_out)
+    assert result["model"].decoder.out_features == 1
+    assert result["metric"] == "auroc"
+    assert set(result) >= {"validation_auroc", "test_auroc"}

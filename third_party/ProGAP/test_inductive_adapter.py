@@ -9,7 +9,7 @@ from torch_geometric.data import Data
 
 from core.methods.progap.edge import EdgeLevelProGAP
 from core.methods.progap.node import NodeLevelProGAP
-from core.modules.prog import ProgressiveModule
+from core.modules.prog import ProgressiveModule, binary_auroc
 
 def test_numeric_delta_calibrates_node_and_edge_safely(monkeypatch):
     load = torch.load
@@ -37,6 +37,7 @@ def test_manifest_adapter_uses_train_for_setup_and_validation_for_fit(monkeypatc
             x=torch.full((3, 2), float(index)),
             y=torch.tensor([0, 1, 0]),
             edge_index=torch.tensor([[0, 1], [1, 2]]),
+            eval_mask=torch.tensor([True, False, True]),
         )
         for index, name in enumerate(("train", "val", "test"), start=1)
     }
@@ -54,6 +55,7 @@ def test_manifest_adapter_uses_train_for_setup_and_validation_for_fit(monkeypatc
             assert kwargs["num_classes"] == 3
             assert kwargs["epsilon"] == 8.0
             assert kwargs["delta"] == 5e-4
+            assert kwargs["monitor"] == "val/acc"
             self.classifier = SimpleNamespace(multilabel=None)
             self.composed_mechanism = Mechanism()
             self.effective_delta = 5e-4
@@ -78,7 +80,11 @@ def test_manifest_adapter_uses_train_for_setup_and_validation_for_fit(monkeypatc
     monkeypatch.setattr(adapter, "_metrics", metrics)
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps({
+        "format": 2,
         "num_classes": 3,
+        "binary": False,
+        "primary_metric": "accuracy",
+        "metric_ignore_label": None,
         "partitions": {"train": "train.pt", "val": "val.pt", "test": "test.pt"},
     }))
     result_path = tmp_path / "result.json"
@@ -87,6 +93,8 @@ def test_manifest_adapter_uses_train_for_setup_and_validation_for_fit(monkeypatc
     monkeypatch.setenv("PROGAP_TARGET_EPSILON", "8")
     monkeypatch.setenv("PROGAP_TARGET_DELTA", "0.0005")
     monkeypatch.setenv("PROGAP_MULTILABEL", "0")
+    monkeypatch.setenv("PROGAP_BINARY", "0")
+    monkeypatch.setenv("PROGAP_PRIMARY_METRIC", "accuracy")
     monkeypatch.setenv("PROGAP_EPOCHS", "1")
     monkeypatch.setenv("PROGAP_BATCH_SIZE", "2")
     monkeypatch.setenv("PROGAP_MAX_DEGREE", "5")
@@ -117,6 +125,7 @@ def test_progressive_fit_selects_every_stage_on_distinct_validation_graph():
         x=torch.full((3, 2), 2.0),
         y=torch.tensor([1, 0, 1]),
         edge_index=torch.tensor([[0, 2], [2, 1]]),
+        eval_mask=torch.tensor([True, True, True]),
     ))
     fit_validation_markers = []
 
@@ -133,6 +142,9 @@ def test_progressive_fit_selects_every_stage_on_distinct_validation_graph():
 
         def fit(self, model, train_dataloader, val_dataloader):
             assert train_dataloader == "train-loader"
+            assert val_dataloader.data.num_nodes == 3
+            assert val_dataloader.data.adj_t.values().numel() == 2
+            assert val_dataloader.node_indices.tolist() == [0, 2]
             fit_validation_markers.append(float(val_dataloader.data.x[0, 0]))
             return {"val/acc": torch.tensor(1.0)}
 
@@ -143,6 +155,7 @@ def test_progressive_fit_selects_every_stage_on_distinct_validation_graph():
         classifier=Classifier(),
         trainer=Trainer(),
         nap=lambda embeddings, adjacency: embeddings + 1,
+        metric_ignore_label=0,
         configure_trainer=Trainer,
         data_loader=lambda phase: "train-loader",
     )
@@ -156,10 +169,11 @@ def test_progressive_fit_selects_every_stage_on_distinct_validation_graph():
 class _ObjectiveModule(torch.nn.Module):
     root_losses = staticmethod(ProgressiveModule.root_losses)
 
-    def __init__(self, logits, multilabel):
+    def __init__(self, logits, multilabel, binary=False):
         super().__init__()
         self.logits = logits
         self.multilabel = multilabel
+        self.binary = binary
         self.current_stage = 0
 
     def forward(self, xs):
@@ -192,6 +206,131 @@ def test_progressive_multilabel_objective_metric_and_prediction():
     assert torch.allclose(probabilities, torch.sigmoid(logits))
 
 
+def test_progressive_binary_objective_uses_tie_correct_auroc_and_sigmoid():
+    logits = torch.tensor([[0.0], [0.0], [2.0], [-1.0]])
+    labels = torch.tensor([0, 1, 1, 0])
+    module = _ObjectiveModule(logits, multilabel=False, binary=True)
+    data = Data(x0=torch.ones(4, 1), y=labels, batch_nodes=torch.arange(4))
+
+    loss, metrics = ProgressiveModule.step(module, data, "val")
+    _, probabilities = ProgressiveModule.predict(module, data)
+
+    assert torch.allclose(
+        loss, F.binary_cross_entropy_with_logits(logits.squeeze(-1), labels.float())
+    )
+    assert metrics["val/auroc"] == 87.5
+    assert probabilities.shape == (4, 1)
+    assert torch.allclose(probabilities, torch.sigmoid(logits))
+    assert torch.isnan(binary_auroc(torch.tensor([0.1, 0.2]), torch.ones(2)))
+
+
+def test_target_metrics_score_only_eval_roots_but_predict_full_graph():
+    adapter = importlib.import_module("inductive_adapter")
+    graph = Data(
+        x=torch.arange(8, dtype=torch.float).reshape(4, 2),
+        y=torch.tensor([0, 1, 19, 1]),
+        edge_index=torch.tensor([[0, 1, 2, 3], [1, 2, 3, 0]]),
+        eval_mask=torch.tensor([True, True, True, False]),
+    )
+
+    class Method:
+        classifier = SimpleNamespace(binary=True)
+        metric_ignore_label = 19
+
+        def to_device(self, data):
+            return data
+
+        def predict(self):
+            assert self.data.num_nodes == 4
+            assert self.data.adj_t.values().numel() == 4
+            return self.data.x, torch.tensor([[0.5], [0.5], [0.99], [0.0]])
+
+    auroc, duplicate = adapter._metrics(Method(), graph)
+    assert auroc == 0.5
+    assert duplicate == auroc
+
+
+def test_binary_manifest_uses_one_logit_auroc_and_loads_test_after_fit(
+    monkeypatch, tmp_path
+):
+    adapter = importlib.import_module("inductive_adapter")
+    graphs = {
+        name: Data(
+            x=torch.full((3, 2), float(index)),
+            y=torch.tensor([0, 1, 0]),
+            edge_index=torch.tensor([[0, 1], [1, 2]]),
+            eval_mask=torch.tensor([True, True, False]),
+        )
+        for index, name in enumerate(("train", "val", "test"), start=1)
+    }
+    events = []
+
+    def load(_path, _manifest, name):
+        events.append(f"load-{name}")
+        return graphs[name]
+
+    class Mechanism:
+        params = {"coeff_list": [1, 2]}
+
+        def get_approxDP(self, _delta):
+            return 7.9
+
+    class FakeMethod:
+        def __init__(self, **kwargs):
+            assert kwargs["num_classes"] == 1
+            assert kwargs["monitor"] == "val/auroc"
+            self.classifier = SimpleNamespace()
+            self.composed_mechanism = Mechanism()
+            self.effective_delta = 5e-4
+            self.noise_scale = 1.25
+
+        def to_device(self, data):
+            return data
+
+        def setup(self, data):
+            events.append(f"setup-{int(data.x[0, 0])}")
+
+        def fit(self):
+            assert "load-test" not in events
+            events.append("fit")
+
+    monkeypatch.setattr(adapter, "InductiveNodeLevelProGAP", FakeMethod)
+    monkeypatch.setattr(adapter, "_load", load)
+    monkeypatch.setattr(
+        adapter,
+        "_metrics",
+        lambda _method, data: (
+            (0.75, 0.75) if int(data.x[0, 0]) == 2 else (0.625, 0.625)
+        ),
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({
+        "format": 2,
+        "num_classes": 2,
+        "binary": True,
+        "primary_metric": "auroc",
+        "metric_ignore_label": None,
+        "partitions": {"train": "train.pt", "val": "val.pt", "test": "test.pt"},
+    }))
+    result_path = tmp_path / "result.json"
+    monkeypatch.setenv("PARTITION_MANIFEST", str(manifest_path))
+    monkeypatch.setenv("RESULT_PATH", str(result_path))
+    monkeypatch.setenv("PROGAP_TARGET_EPSILON", "8")
+    monkeypatch.setenv("PROGAP_TARGET_DELTA", "0.0005")
+    monkeypatch.setenv("PROGAP_MULTILABEL", "0")
+    monkeypatch.setenv("PROGAP_BINARY", "1")
+    monkeypatch.setenv("PROGAP_PRIMARY_METRIC", "auroc")
+
+    adapter.main()
+
+    assert events.index("fit") < events.index("load-test")
+    result = json.loads(result_path.read_text())
+    assert result["metric"] == "auroc"
+    assert result["validation_auroc"] == 0.75
+    assert result["test_auroc"] == 0.625
+    assert "validation_accuracy" not in result
+
+
 def test_manifest_adapter_rejects_multilabel_flag_rank_mismatch(monkeypatch, tmp_path):
     adapter = importlib.import_module("inductive_adapter")
     graph = Data(
@@ -201,7 +340,11 @@ def test_manifest_adapter_rejects_multilabel_flag_rank_mismatch(monkeypatch, tmp
     )
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps({
+        "format": 2,
         "num_classes": 2,
+        "binary": False,
+        "primary_metric": "accuracy",
+        "metric_ignore_label": None,
         "partitions": {"train": "train.pt", "val": "val.pt", "test": "test.pt"},
     }))
     monkeypatch.setattr(adapter, "_load", lambda *_args: graph)
@@ -210,5 +353,7 @@ def test_manifest_adapter_rejects_multilabel_flag_rank_mismatch(monkeypatch, tmp
     monkeypatch.setenv("PROGAP_TARGET_EPSILON", "8")
     monkeypatch.setenv("PROGAP_TARGET_DELTA", "0.0005")
     monkeypatch.setenv("PROGAP_MULTILABEL", "0")
+    monkeypatch.setenv("PROGAP_BINARY", "0")
+    monkeypatch.setenv("PROGAP_PRIMARY_METRIC", "accuracy")
     with pytest.raises(ValueError, match="label rank"):
         adapter.main()

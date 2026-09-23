@@ -105,23 +105,23 @@ run_cell() {   # out_dir, then extra flags
 # r=2 is what costs K_out^2 in the shells, and p2 is what buys it back --
 # measured sigma for eps=8 at r=2, T=3000:
 #     PPI-large  K=5  p2=1.0 -> 102.25   p2=0.1 ->  8.20   (12.5x)
-#     Amazon     K=5  p2=1.0 ->   3.67   p2=0.1 ->  1.07
-#     Amazon     K=10 p2=1.0 ->  13.23   p2=0.1 ->  1.68
-# and at p2=0.1 larger K stays reachable on Amazon: K=15 -> 4.25, K=20 -> 9.41.
+#     saint-amazon K=5  p2=1.0 ->   3.67   p2=0.1 ->  1.07
+#     saint-amazon K=10 p2=1.0 ->  13.23   p2=0.1 ->  1.68
+# and at p2=0.1 larger K stays reachable on saint-amazon: K=15 -> 4.25, K=20 -> 9.41.
 # (K=25 at p2=1.0 is NOT reachable -- the PLD grid blows up with the component
 # count when sigma is large; aggressive p2 keeps the mixture concentrated.)
 #
 # Full sigma table for eps=8, r=2, T=3000 (the default cells below):
 #              K=5            K=10           K=15
-#   p2=0.1   yelp 1.28      yelp  3.36     yelp  9.90
-#            amz  1.07      amz   1.68     amz   4.25
-#   p2=0.5   yelp 6.71      yelp 29.28     yelp 66.50
-#            amz  2.92      amz  12.52     amz  28.45
-#   p2=1.0   yelp 8.53          --             --
-#            amz  3.67
+#   p2=0.1   saint-yelp 1.28      saint-yelp  3.36     saint-yelp  9.90
+#            saint-amz  1.07      saint-amz   1.68     saint-amz   4.25
+#   p2=0.5   saint-yelp 6.71      saint-yelp 29.28     saint-yelp 66.50
+#            saint-amz  2.92      saint-amz  12.52     saint-amz  28.45
+#   p2=1.0   saint-yelp 8.53          --             --
+#            saint-amz  3.67
 #
 # Note how the K x p2 INTERACTION behaves: at K=5 dropping p2 from 0.5 to 0.1
-# saves 2.7x on Amazon, but at K=10 it saves 7.5x and at K=15 6.7x.  The larger
+# saves 2.7x on saint-amazon, but at K=10 it saves 7.5x and at K=15 6.7x. The larger
 # the degree cap, the more sparsification is worth -- which is the mechanism
 # claim, and it is only legible at r=2.
 # which is the composite-subsampling claim, only visible at r=2.

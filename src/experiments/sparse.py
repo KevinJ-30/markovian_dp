@@ -12,6 +12,7 @@ Add --dp for the clip+noise path; epsilon is attached afterwards by
 import argparse
 import csv
 import itertools
+import json
 import os
 import random
 import sys
@@ -159,6 +160,16 @@ def parse_args():
     p.add_argument('--relbench_reverse_edges', action='store_true',
                    help='RelBench only: also add parent->child arcs; enriches '
                         'neighbourhoods but raises K_out and hence epsilon')
+    p.add_argument('--train_domains', nargs='+',
+                   help='domain datasets: canonical training domain slugs')
+    p.add_argument('--val_domains', nargs='+',
+                   help='domain datasets: canonical validation domain slugs')
+    p.add_argument('--test_domains', nargs='+',
+                   help='domain datasets: canonical test domain slugs')
+    p.add_argument('--domain_split_seed', type=int, default=0,
+                   help='seed for a shared validation/test domain split')
+    p.add_argument('--domain_val_ratio', type=float, default=0.2,
+                   help='validation fraction within a shared target domain')
     # Training is always inductive: run.py constructs separate training and
     # evaluation graphs before dispatching to SparseGNN.
     p.add_argument('--common_inductive_split', action='store_true',
@@ -263,6 +274,14 @@ def parse_args():
                         '--eval_every and has no effect without --verbose')
     p.add_argument('--eval_every', type=int, default=50)
     args = p.parse_args()
+    supplied_domain_roles = [
+        args.train_domains is not None,
+        args.val_domains is not None,
+        args.test_domains is not None,
+    ]
+    if any(supplied_domain_roles) and not all(supplied_domain_roles):
+        p.error("--train_domains, --val_domains, and --test_domains must be "
+                "provided together")
     if args.target_epsilon is None and args.target_delta is not None:
         p.error("--target_delta requires --target_epsilon")
     if args.target_epsilon is not None and args.target_delta is None:
@@ -278,11 +297,6 @@ def main():
     args = parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(args.out_dir, exist_ok=True)
-    tag = '_dp' if args.dp else ''
-    # relbench:<db>/<task> names contain separators that are not filename-safe.
-    ds_slug = args.dataset.replace(':', '_').replace('/', '_')
-    csv_path = os.path.join(args.out_dir,
-                            f'sparse_gnn_{ds_slug}{tag}_results.csv')
 
     target_mode = args.target_epsilon is not None
     sigmas = args.sigma if args.dp else [args.sigma[0]]
@@ -302,11 +316,52 @@ def main():
     print(f"  sweep: {len(grid)} configuration(s) x {args.seeds} seed(s)")
     print('='*66)
 
-    dataset, data = load_dataset(
-        args.dataset, device=str(device),
-        root=args.relbench_root, reverse_edges=args.relbench_reverse_edges,
-    ) if str(args.dataset).startswith('relbench') else load_dataset(
-        args.dataset, device=str(device))
+    domain_split = None
+    if args.train_domains is not None:
+        domain_split = {
+            'train': args.train_domains,
+            'val': args.val_domains,
+            'test': args.test_domains,
+            'seed': args.domain_split_seed,
+            'val_ratio': args.domain_val_ratio,
+        }
+
+    load_kwargs = {
+        'device': str(device),
+        'domain_split': domain_split,
+    }
+    if str(args.dataset).startswith('relbench'):
+        load_kwargs.update(
+            root=args.relbench_root,
+            reverse_edges=args.relbench_reverse_edges,
+        )
+    dataset, data = load_dataset(args.dataset, **load_kwargs)
+    is_domain_dataset = bool(getattr(dataset, 'domain_dataset', False))
+    normalized_domain_split = (
+        getattr(dataset, 'domain_split', None) if is_domain_dataset else None)
+    domain_split_id = (
+        str(getattr(dataset, 'domain_split_id', ''))
+        if is_domain_dataset else '')
+    normalized_domain_split_json = (
+        json.dumps(normalized_domain_split, sort_keys=True, separators=(',', ':'))
+        if normalized_domain_split is not None else '')
+
+    if args.dataset.lower() == 'twitch-explicit' and args.model != 'binary_gnn':
+        raise SystemExit(
+            "twitch-explicit is a binary AUROC task — use "
+            f"--model binary_gnn (got --model {args.model})")
+    if args.common_inductive_split and is_domain_dataset:
+        raise SystemExit(
+            "--common_inductive_split cannot be used with a domain dataset; "
+            "its domain_split masks already define the inductive protocol")
+
+    tag = '_dp' if args.dp else ''
+    # RelBench names contain separators; domain runs additionally carry their
+    # normalized split fingerprint so distinct protocols cannot overwrite.
+    ds_slug = args.dataset.replace(':', '_').replace('/', '_')
+    split_tag = f'_{domain_split_id}' if domain_split_id else ''
+    csv_path = os.path.join(
+        args.out_dir, f'sparse_gnn_{ds_slug}{split_tag}{tag}_results.csv')
     data = data.to(device)
     num_features = dataset.num_features
     num_classes = dataset.num_classes
@@ -473,8 +528,9 @@ def main():
         w = csv.writer(fh)
         # train_acc/val_acc/test_acc hold whatever `metric` names — accuracy for
         # single-label GNN, micro-F1 for multilabel, AUROC for binary.
-        w.writerow(['dataset', 'model', 'aggr', 'metric',
-                    'direction', 'p1', 'p2', 'r', 'sigma', 'clip', 'K_in',
+        w.writerow(['dataset', 'domain_split', 'domain_split_id',
+                    'model', 'aggr', 'metric', 'direction', 'p1', 'p2', 'r',
+                    'sigma', 'clip', 'K_in',
                     'K_out', 'cap_mode', 'optimizer', 'lr', 'momentum', 'T',
                     'L', 'dp', 'target_epsilon', 'target_delta',
                     'calibrated_epsilon', 'accounting_grid',
@@ -538,6 +594,9 @@ def main():
                 gph = graphs[seed]
                 Mechanism = _MECHANISMS[args.model]
                 extra = {'aggr': args.aggr}
+                if args.model == 'gnn':
+                    extra['metric_ignore_label'] = getattr(
+                        dataset, 'metric_ignore_label', None)
                 mech = Mechanism(
                     train_data, num_features, num_classes,
                     hidden=args.hidden, num_layers=args.num_layers,
@@ -580,8 +639,8 @@ def main():
                       f"val={accs['val']:.4f}  test={accs['test']:.4f}")
 
                 def _write_row(step, m):
-                    w.writerow([args.dataset, args.model,
-                                args.aggr,
+                    w.writerow([args.dataset, normalized_domain_split_json,
+                                domain_split_id, args.model, args.aggr,
                                 mech.metric_name, args.direction, p1, p2, r,
                                 sigma, args.clip,
                                 gph['K_in'] if gph['K_in'] is not None else '',
@@ -634,9 +693,13 @@ def main():
               f"--csv {csv_path} --delta <delta> --grid {args.accounting_grid:g}")
 
     if args.plot:
-        plot_path = plot_sweep([(s[0], s[1], s[2], s[4], s[5], s[6], s[7])
-                                for s in summary if s[3] == sigmas[0]],
-                               args.dataset, args.out_dir)
+        plot_dataset_name = (
+            f"{args.dataset}_{domain_split_id}"
+            if domain_split_id else args.dataset)
+        plot_path = plot_sweep(
+            [(s[0], s[1], s[2], s[4], s[5], s[6], s[7])
+             for s in summary if s[3] == sigmas[0]],
+            plot_dataset_name, args.out_dir)
         if plot_path:
             print(f"plot written to {plot_path}")
 

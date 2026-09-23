@@ -17,6 +17,7 @@ from torch_geometric.transforms import ToSparseTensor
 from core import console
 from core.data.loader.node import NodeDataLoader
 from core.methods.progap.node import NodeLevelProGAP
+from core.modules.prog import binary_auroc
 
 def _load(manifest_path, manifest, name):
     file = manifest["partitions"][name]
@@ -26,10 +27,30 @@ def _load(manifest_path, manifest, name):
 def _prepare(data):
     data = ToSparseTensor(layout=torch.sparse_csr)(data)
     all_nodes = torch.ones(data.num_nodes, dtype=torch.bool)
+    eval_mask = getattr(data, "eval_mask", all_nodes)
+    if (
+        not torch.is_tensor(eval_mask)
+        or eval_mask.dtype != torch.bool
+        or eval_mask.ndim != 1
+        or eval_mask.numel() != data.num_nodes
+    ):
+        raise ValueError("partition eval_mask must be a boolean vector over all nodes")
+    data.eval_mask = eval_mask.clone()
     data.train_mask = all_nodes
     data.val_mask = all_nodes.clone()
     data.test_mask = all_nodes.clone()
     return data
+
+
+def _score_mask(data, metric_ignore_label=None):
+    mask = data.eval_mask.clone()
+    if metric_ignore_label is not None:
+        if data.y.ndim != 1:
+            raise ValueError("metric_ignore_label requires one-dimensional labels")
+        mask &= data.y != metric_ignore_label
+    if not bool(mask.any()):
+        raise ValueError("partition has no nodes selected for evaluation")
+    return mask
 
 
 class InductiveNodeLevelProGAP(NodeLevelProGAP):
@@ -54,7 +75,12 @@ class InductiveNodeLevelProGAP(NodeLevelProGAP):
                 model=self.classifier,
                 train_dataloader=self.data_loader("train"),
                 val_dataloader=NodeDataLoader(
-                    self.validation, batch_size="full", shuffle=False
+                    self.validation,
+                    subset=_score_mask(
+                        self.validation, getattr(self, "metric_ignore_label", None)
+                    ),
+                    batch_size="full",
+                    shuffle=False,
                 ),
             )
 
@@ -71,6 +97,15 @@ def _metrics(method, data):
     method.data.ready = False
     probabilities = method.predict()[1].cpu()
     target = data.y.cpu()
+    mask = _score_mask(data, getattr(method, "metric_ignore_label", None)).cpu()
+    probabilities = probabilities[mask]
+    target = target[mask]
+    if getattr(method.classifier, "binary", False):
+        scores = probabilities.squeeze(-1)
+        if scores.ndim != 1:
+            raise ValueError("binary ProGAP predictions must have one output per node")
+        auroc = float(binary_auroc(scores, target))
+        return auroc, auroc
     if target.ndim == 2:
         positive = probabilities >= 0.5
         actual = target.bool()
@@ -129,16 +164,53 @@ def _seed():
     torch.manual_seed(seed)
 
 
+def _flag(name):
+    value = os.environ.get(name)
+    if value not in {"0", "1"}:
+        raise ValueError(f"{name} must be exactly '0' or '1'")
+    return value == "1"
+
+
+def _task_metadata(manifest):
+    binary = _flag("PROGAP_BINARY")
+    manifest_binary = bool(manifest.get("binary", False))
+    if int(manifest.get("format", 1)) >= 2 and binary != manifest_binary:
+        raise ValueError("PROGAP_BINARY does not match the partition manifest")
+
+    manifest_metric = manifest.get("primary_metric")
+    primary_metric = os.environ.get("PROGAP_PRIMARY_METRIC", manifest_metric)
+    if primary_metric is None:
+        primary_metric = "auroc" if binary else "accuracy"
+    if manifest_metric is not None and primary_metric != manifest_metric:
+        raise ValueError("PROGAP_PRIMARY_METRIC does not match the partition manifest")
+    if binary and primary_metric != "auroc":
+        raise ValueError("binary ProGAP requires primary metric 'auroc'")
+
+    manifest_ignore = manifest.get("metric_ignore_label")
+    configured_ignore = os.environ.get("PROGAP_METRIC_IGNORE_LABEL")
+    metric_ignore_label = (
+        int(configured_ignore) if configured_ignore is not None else manifest_ignore
+    )
+    if manifest_ignore is not None and metric_ignore_label != int(manifest_ignore):
+        raise ValueError(
+            "PROGAP_METRIC_IGNORE_LABEL does not match the partition manifest"
+        )
+    return binary, primary_metric, metric_ignore_label
 def main():
     manifest_path = os.environ["PARTITION_MANIFEST"]
     manifest = json.loads(Path(manifest_path).read_text())
     result_path = Path(os.environ["RESULT_PATH"])
     epsilon, delta = _target_pair()
     multilabel = _multilabel()
+    binary, primary_metric, metric_ignore_label = _task_metadata(manifest)
+    if binary and multilabel:
+        raise ValueError("PROGAP_BINARY and PROGAP_MULTILABEL cannot both be enabled")
     _seed()
     epochs = _positive_int("PROGAP_EPOCHS", 1)
     batch_size = _positive_int("PROGAP_BATCH_SIZE", 32)
     max_degree = _positive_int("PROGAP_MAX_DEGREE", 5)
+
+
     depth = _positive_int("PROGAP_DEPTH", 1)
     verbose = os.environ.get("PROGAP_VERBOSE", "0") == "1"
     device = os.environ.get("PROGAP_DEVICE", "cpu")
@@ -146,6 +218,8 @@ def main():
     validation = _prepare(_load(manifest_path, manifest, "val"))
     if multilabel != (train.y.ndim == 2):
         raise ValueError("PROGAP_MULTILABEL does not match the training label rank")
+    if binary and train.y.ndim != 1:
+        raise ValueError("binary ProGAP requires one-dimensional training labels")
     # Opacus 1.1.3 clones modules with torch.load; newer PyTorch defaults to
     # weights-only deserialization. This is an in-process compatibility bridge
     # for a freshly constructed, trusted module—not an algorithm change.
@@ -153,7 +227,7 @@ def main():
     torch.load = lambda *args, **kwargs: load(*args, **{**kwargs, "weights_only": False})
     try:
         method = InductiveNodeLevelProGAP(
-            num_classes=int(manifest["num_classes"]),
+            num_classes=1 if binary else int(manifest["num_classes"]),
             epsilon=epsilon,
             delta=delta,
             batch_size=batch_size,
@@ -162,11 +236,17 @@ def main():
             verbose=verbose,
             max_degree=max_degree,
             depth=depth,
-            monitor="val/micro_f1" if multilabel else "val/acc",
+            monitor=(
+                "val/auroc"
+                if binary
+                else "val/micro_f1" if multilabel else "val/acc"
+            ),
         )
     finally:
         torch.load = load
     method.classifier.multilabel = multilabel
+    method.classifier.binary = binary
+    method.metric_ignore_label = metric_ignore_label
     method.validation = method.to_device(Data(**validation.to_dict()))
     method.setup(train)
     method.fit()
@@ -175,18 +255,14 @@ def main():
         raise RuntimeError(
             f"ProGAP calibration exceeded target epsilon: {achieved_epsilon} > {epsilon}"
         )
-    validation_accuracy, validation_macro_f1 = _metrics(
+    validation_primary, validation_macro_f1 = _metrics(
         method, _load(manifest_path, manifest, "val")
     )
-    test_accuracy, test_macro_f1 = _metrics(
+    test_primary, test_macro_f1 = _metrics(
         method, _load(manifest_path, manifest, "test")
     )
     coefficients = list(method.composed_mechanism.params["coeff_list"])
     result = {
-        "validation_accuracy": validation_accuracy,
-        "validation_macro_f1": validation_macro_f1,
-        "test_accuracy": test_accuracy,
-        "test_macro_f1": test_macro_f1,
         "privacy": {
             "total": {
                 "epsilon": achieved_epsilon,
@@ -212,6 +288,19 @@ def main():
             "noise_std": method.noise_scale,
         },
     }
+    if binary:
+        result.update({
+            "metric": "auroc",
+            "validation_auroc": validation_primary,
+            "test_auroc": test_primary,
+        })
+    else:
+        result.update({
+            "validation_accuracy": validation_primary,
+            "validation_macro_f1": validation_macro_f1,
+            "test_accuracy": test_primary,
+            "test_macro_f1": test_macro_f1,
+        })
     result_path.write_text(json.dumps(result, indent=2) + "\n")
 
 

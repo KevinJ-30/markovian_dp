@@ -21,7 +21,7 @@ from opacus.optimizers import DPOptimizer
 from src.models.baselines import (
     _OneHopGCN, _OneHopGraphSAGE, _PaddedOneHopGCN, _PaddedOneHopGraphSAGE,
 )
-from src.models.objectives import _multilabel_micro_f1, _task_loss, _task_metric
+from src.models.objectives import _metric_rows, _task_loss, _task_metric
 from src.processing.dpgnn import (
     iter_dpgnn_batches, sample_dpgnn_roots, sample_training_edges,
 )
@@ -47,6 +47,8 @@ class DPGNNConfig:
     multilabel: bool = False
     # Loss/metric only; epsilon is unchanged.
     regression: bool = False
+    binary: bool = False
+    metric_ignore_label: int | None = None
     architecture: str = "graphsage"
 
 
@@ -62,6 +64,8 @@ class PartitionedDPGNN:
     """Train DP-GNN solely on a graph-disjoint training partition."""
 
     def __init__(self, config: DPGNNConfig, device: str | torch.device = "cpu"):
+        if sum((config.multilabel, config.regression, config.binary)) > 1:
+            raise ValueError("binary, multilabel, and regression tasks are mutually exclusive")
         if config.steps < 1 or config.batch_size < 1:
             raise ValueError("steps and batch_size must be positive")
         if not isfinite(config.noise_multiplier) or config.noise_multiplier <= 0.0:
@@ -83,9 +87,11 @@ class PartitionedDPGNN:
         edge_index = sample_training_edges(
             data, max_degree=self.config.max_degree, seed=seed).to(self.device)
         weights = _inverse_degree_weights(edge_index, int(data.num_nodes), self.device)
-        label_dtype = (torch.float32
-                       if (self.config.multilabel or self.config.regression)
-                       else torch.long)
+        label_dtype = (
+            torch.float32
+            if (self.config.multilabel or self.config.regression or self.config.binary)
+            else torch.long
+        )
         return data.x.to(self.device), data.y.to(self.device, dtype=label_dtype), edge_index, weights
 
     def _private_step(
@@ -101,8 +107,13 @@ class PartitionedDPGNN:
             logits = model(current.features, current.node_mask)
             if self.config.regression:
                 # One mean over roots, so Opacus keeps the per-sample axis.
-                _task_loss(logits, current.labels, multilabel=False,
-                           regression=True).backward()
+                _task_loss(
+                    logits, current.labels, multilabel=False,
+                    regression=True).backward()
+            elif self.config.binary:
+                _task_loss(
+                    logits, current.labels, multilabel=False,
+                    binary=True).backward()
             elif self.config.multilabel:
                 # BCE averages classes within each root, then roots. Opacus
                 # retains the leading root axis for globally clipped samples.
@@ -124,12 +135,15 @@ class PartitionedDPGNN:
         model.eval()
         x, labels, edge_index, weights = self._prepared_graph(data, seed=seed)
         predictions = model(x, edge_index, weights)
-        if self.config.regression:
-            # MAE, matching RegressionGNNMechanism.  Lower is better.
-            return _task_metric(predictions, labels, False, regression=True)[0]
-        if self.config.multilabel:
-            return _multilabel_micro_f1(predictions, labels)[0]
-        return float((predictions.argmax(dim=-1) == labels).float().mean())
+        predictions, labels = _metric_rows(
+            predictions,
+            labels,
+            eval_mask=getattr(data, "eval_mask", None),
+            metric_ignore_label=self.config.metric_ignore_label,
+        )
+        return _task_metric(
+            predictions, labels, self.config.multilabel,
+            regression=self.config.regression, binary=self.config.binary)[0]
 
     def fit(self, train: Any, val: Any, test: Any) -> dict[str, Any]:
         num_nodes = int(train.num_nodes)
@@ -144,17 +158,20 @@ class PartitionedDPGNN:
             train, max_degree=self.config.max_degree, seed=self.config.seed + 1)
         adjacency = build_adjacency(
             edge_index[:, edge_index[0] != edge_index[1]], num_nodes, direction="out")
-        label_dtype = (torch.float32
-                       if (self.config.multilabel or self.config.regression)
-                       else torch.long)
+        label_dtype = (
+            torch.float32
+            if (self.config.multilabel or self.config.regression or self.config.binary)
+            else torch.long
+        )
         x, labels = train.x.to(self.device), train.y.to(self.device, dtype=label_dtype)
+        outputs = 1 if (self.config.binary or self.config.regression) else self.config.num_classes
         if self.config.architecture == "graphsage":
             model = _OneHopGraphSAGE(
-                x.size(1), self.config.latent_size, self.config.num_classes).to(self.device)
+                x.size(1), self.config.latent_size, outputs).to(self.device)
             private_model = _PaddedOneHopGraphSAGE(model)
         else:
             model = _OneHopGCN(
-                x.size(1), self.config.latent_size, self.config.num_classes).to(self.device)
+                x.size(1), self.config.latent_size, outputs).to(self.device)
             private_model = _PaddedOneHopGCN(model)
         adam = torch.optim.Adam(model.parameters(), lr=self.config.learning_rate)
         private_module = GradSampleModule(
@@ -178,6 +195,7 @@ class PartitionedDPGNN:
         private_module.to_standard_module()
         delta = 1.0 / (10 * num_nodes)
         metric = ("mae" if self.config.regression
+                  else "auroc" if self.config.binary
                   else "micro_f1" if self.config.multilabel
                   else "accuracy")
         return {

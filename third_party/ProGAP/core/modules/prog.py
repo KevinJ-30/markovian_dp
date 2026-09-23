@@ -114,7 +114,11 @@ class ProgressiveModule(TrainableModule):
         y = data.y[data.batch_nodes]
 
         preds: Tensor = self(xs)[1]
-        if y.ndim == 2:
+        if getattr(self, 'binary', False):
+            scores = preds.detach().squeeze(-1)
+            score = binary_auroc(scores, y) * 100
+            metrics = {f'{phase}/auroc': score}
+        elif y.ndim == 2:
             positive, actual = preds.detach() >= 0, y.bool()
             numerator = 2 * (positive & actual).sum()
             denominator = positive.sum() + actual.sum()
@@ -126,7 +130,12 @@ class ProgressiveModule(TrainableModule):
 
         loss = None
         if phase != 'test':
-            loss = self.root_losses(preds, y).mean()
+            if getattr(self, 'binary', False):
+                loss = F.binary_cross_entropy_with_logits(
+                    preds.squeeze(-1), y.float(), reduction='mean'
+                )
+            else:
+                loss = self.root_losses(preds, y).mean()
             metrics[f'{phase}/loss'] = loss.detach()
 
         return loss, metrics
@@ -142,7 +151,11 @@ class ProgressiveModule(TrainableModule):
     def predict(self, data: Data) -> tuple[Tensor, Tensor]:
         xs = [data[f'x{i}'][data.batch_nodes] for i in range(self.current_stage + 1)]
         x, y = self(xs)
-        probabilities = torch.sigmoid(y) if getattr(self, 'multilabel', False) else torch.softmax(y, dim=-1)
+        probabilities = (
+            torch.sigmoid(y)
+            if getattr(self, 'binary', False) or getattr(self, 'multilabel', False)
+            else torch.softmax(y, dim=-1)
+        )
         return x, probabilities
         
     def reset_parameters(self):
@@ -163,4 +176,28 @@ class ProgressiveModule(TrainableModule):
         yield from self.base[self.current_stage].parameters(recurse=recurse)
         yield from self.jk[self.current_stage].parameters(recurse=recurse)
         yield from self.head[self.current_stage].parameters(recurse=recurse)
+
+
+def binary_auroc(scores: Tensor, target: Tensor) -> Tensor:
+    """Return rank AUROC with average ranks for tied scores."""
+    scores = scores.reshape(-1)
+    target = target.reshape(-1).bool()
+    positives = target.sum()
+    negatives = target.numel() - positives
+    if positives == 0 or negatives == 0:
+        return scores.new_tensor(float('nan'))
+
+    order = torch.argsort(scores)
+    sorted_scores = scores[order]
+    sorted_target = target[order]
+    _, counts = torch.unique_consecutive(sorted_scores, return_counts=True)
+    ends = counts.cumsum(0).to(dtype=scores.dtype)
+    average_ranks = ends - (counts.to(dtype=scores.dtype) - 1) / 2
+    ranks = torch.repeat_interleave(average_ranks, counts)
+    positive_rank_sum = ranks[sorted_target].sum()
+    positives = positives.to(dtype=scores.dtype)
+    negatives = negatives.to(dtype=scores.dtype)
+    return (
+        positive_rank_sum - positives * (positives + 1) / 2
+    ) / (positives * negatives)
         

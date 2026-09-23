@@ -6,7 +6,63 @@ import torch
 from torch import Tensor
 import torch.nn.functional as F
 
+
+def _binary_auroc(labels: Tensor, scores: Tensor) -> float:
+    """Tie-correct rank AUROC, or NaN when either class is absent."""
+    labels = torch.as_tensor(labels).detach().view(-1).cpu()
+    scores = torch.as_tensor(scores).detach().view(-1).to(
+        device="cpu", dtype=torch.float64)
+    if labels.numel() != scores.numel():
+        raise ValueError("binary AUROC labels and scores must have equal length")
+    positive = labels == 1
+    negative = labels == 0
+    num_positive = int(positive.sum())
+    num_negative = int(negative.sum())
+    if num_positive == 0 or num_negative == 0:
+        return float("nan")
+    order = torch.argsort(scores, stable=True)
+    ranks = torch.empty(scores.numel(), dtype=torch.float64)
+    ranks[order] = torch.arange(
+        1, scores.numel() + 1, dtype=torch.float64)
+    _, inverse, counts = torch.unique(
+        scores, return_inverse=True, return_counts=True)
+    rank_sums = torch.zeros(
+        counts.numel(), dtype=torch.float64).scatter_add_(0, inverse, ranks)
+    tied_ranks = (rank_sums / counts)[inverse]
+    return float(
+        (tied_ranks[positive].sum()
+         - num_positive * (num_positive + 1) / 2)
+        / (num_positive * num_negative)
+    )
+
+
+def _metric_rows(
+    logits: Tensor,
+    labels: Tensor,
+    *,
+    eval_mask: Tensor | None = None,
+    metric_ignore_label: int | None = None,
+) -> tuple[Tensor, Tensor]:
+    """Select scored rows without changing the graph used for the forward pass."""
+    if logits.size(0) != labels.size(0):
+        raise ValueError("metric logits and labels must have equal leading dimensions")
+    if eval_mask is None:
+        selected = torch.ones(labels.size(0), dtype=torch.bool, device=labels.device)
+    else:
+        selected = torch.as_tensor(eval_mask, device=labels.device)
+        if selected.dtype != torch.bool or selected.ndim != 1:
+            raise ValueError("eval_mask must be a one-dimensional boolean tensor")
+        if selected.numel() != labels.size(0):
+            raise ValueError("eval_mask length must match the partition")
+    if metric_ignore_label is not None:
+        if labels.ndim != 1:
+            raise ValueError("metric_ignore_label requires one-dimensional class labels")
+        selected = selected & (labels != metric_ignore_label)
+    return logits[selected], labels[selected]
+
 def _accuracy_and_macro_f1(logits: Tensor, labels: Tensor) -> tuple[float, float]:
+    if labels.numel() == 0:
+        return float("nan"), float("nan")
     predictions = logits.argmax(dim=-1)
     accuracy = float((predictions == labels).float().mean())
     f1s = []
@@ -47,30 +103,48 @@ def _regression_mae(preds: Tensor, target: Tensor) -> tuple[float, float]:
     return mae, mae
 
 
-def _task_loss(logits: Tensor, target: Tensor, multilabel: bool,
-               regression: bool = False) -> Tensor:
-    """The loss each config's label shape needs -- not a change to either
-    method's private mechanism.
-
-    DPAR's ISTA/PPR/propagation and the plain MLP/GraphSAGE clip-and-noise loop
-    both operate on whatever gradient this loss produces; neither looks at the
-    loss's type.  Swapping softmax cross-entropy for per-label BCE (or MSE)
-    changes what task is being fit, not what either method does with the
-    resulting gradient.
-    """
+def _task_loss(
+    logits: Tensor,
+    target: Tensor,
+    multilabel: bool,
+    regression: bool = False,
+    binary: bool = False,
+) -> Tensor:
+    """Return the loss for one resolved task."""
+    if sum((bool(multilabel), bool(regression), bool(binary))) > 1:
+        raise ValueError("binary, multilabel, and regression tasks are mutually exclusive")
     if regression:
         return F.mse_loss(logits.view(-1), target.view(-1).float())
+    if binary:
+        return F.binary_cross_entropy_with_logits(
+            logits.view(-1), target.view(-1).float())
     if multilabel:
         return F.binary_cross_entropy_with_logits(logits, target.float())
     return F.cross_entropy(logits, target)
 
 
-def _task_metric(logits: Tensor, labels: Tensor, multilabel: bool,
-                 regression: bool = False) -> tuple[float, float]:
+def _task_metric(
+    logits: Tensor,
+    labels: Tensor,
+    multilabel: bool,
+    regression: bool = False,
+    binary: bool = False,
+) -> tuple[float, float]:
+    if sum((bool(multilabel), bool(regression), bool(binary))) > 1:
+        raise ValueError("binary, multilabel, and regression tasks are mutually exclusive")
+    if binary:
+        scores = logits.view(-1)
+        targets = labels.view(-1)
+        auroc = _binary_auroc(targets, scores)
+        accuracy = (
+            float(((scores > 0).to(targets.dtype) == targets).float().mean())
+            if targets.numel() else float("nan")
+        )
+        return auroc, accuracy
     if regression:
         return _regression_mae(logits, labels)
     return (_multilabel_micro_f1(logits, labels) if multilabel
-           else _accuracy_and_macro_f1(logits, labels))
+            else _accuracy_and_macro_f1(logits, labels))
 
 
 def trivial_baseline(data, metric):

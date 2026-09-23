@@ -33,17 +33,79 @@ UPSTREAM_METHODS = {
     },
 }
 
+_PROGAP_TASK_ENVIRONMENT = frozenset({
+    "PROGAP_BINARY",
+    "PROGAP_PRIMARY_METRIC",
+    "PROGAP_METRIC_IGNORE_LABEL",
+})
+
+
+def _task_metadata(split: Any) -> dict[str, Any]:
+    """Return the resolved task contract carried by an inductive split."""
+    primary_metric = getattr(split, "primary_metric", "accuracy")
+    if not isinstance(primary_metric, str) or not primary_metric:
+        raise ValueError("split.primary_metric must be a nonempty string")
+    binary = getattr(split, "binary", False)
+    if not isinstance(binary, bool):
+        raise ValueError("split.binary must be boolean")
+    metric_ignore_label = getattr(split, "metric_ignore_label", None)
+    if (
+        metric_ignore_label is not None
+        and (isinstance(metric_ignore_label, bool) or not isinstance(metric_ignore_label, int))
+    ):
+        raise ValueError("split.metric_ignore_label must be an integer or null")
+    domain_split = getattr(split, "domain_split", None)
+    if domain_split is not None:
+        domain_split = dict(domain_split)
+    domain_split_id = getattr(split, "domain_split_id", None)
+    if domain_split_id is not None and not isinstance(domain_split_id, str):
+        raise ValueError("split.domain_split_id must be a string or null")
+    return {
+        "primary_metric": primary_metric,
+        "binary": binary,
+        "metric_ignore_label": metric_ignore_label,
+        "domain_split": domain_split,
+        "domain_split_id": domain_split_id,
+    }
+
+
+def _export_data(partition: Any) -> Any:
+    """Copy one partition to CPU and attach its local scoring mask."""
+    data = partition.data.clone().cpu()
+    eval_mask = getattr(partition, "eval_mask", getattr(data, "eval_mask", None))
+    if eval_mask is None:
+        eval_mask = torch.ones(int(data.num_nodes), dtype=torch.bool)
+    if (
+        not isinstance(eval_mask, torch.Tensor)
+        or eval_mask.dtype != torch.bool
+        or eval_mask.ndim != 1
+        or eval_mask.numel() != int(data.num_nodes)
+    ):
+        raise ValueError("partition eval_mask must be a local boolean node mask")
+    data.eval_mask = eval_mask.detach().cpu().clone()
+    return data
+
+
+
 
 def export_partitions(split: Any, destination: str | Path) -> Path:
-    """Export CPU PyG partitions for an upstream adapter without cross edges."""
+    """Export CPU PyG partitions and their resolved task contract."""
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=True)
-    manifest = {"format": 1, "num_classes": int(split.num_classes), "partitions": {}}
+    manifest = {
+        "format": 2,
+        "num_classes": int(split.num_classes),
+        **_task_metadata(split),
+        "partitions": {},
+    }
     for name in ("train", "val", "test"):
         partition = getattr(split, name)
         path = destination / f"{name}.pt"
-        torch.save({"data": partition.data.cpu(), "node_ids": partition.node_ids.cpu(),
-                    "statistics": dict(partition.stats)}, path)
+        torch.save({
+            "data": _export_data(partition),
+            "node_ids": partition.node_ids.detach().cpu(),
+            "statistics": dict(partition.stats),
+        }, path)
         manifest["partitions"][name] = path.name
     (destination / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return destination / "manifest.json"
@@ -59,8 +121,13 @@ def _finite_positive(value: Any, name: str) -> float:
     return value
 
 
-def _target_environment(method: str, config: dict[str, Any], configured_env: dict[str, Any]) -> dict[str, str]:
-    """Encode method-owned privacy controls without ambient-environment aliases."""
+def _target_environment(
+    method: str,
+    config: dict[str, Any],
+    configured_env: dict[str, Any],
+    task_metadata: dict[str, Any],
+) -> dict[str, str]:
+    """Encode method-owned controls without ambient-environment aliases."""
     if method not in {"progap", "heterpoisson"}:
         return {}
     prefix = method.upper()
@@ -73,6 +140,13 @@ def _target_environment(method: str, config: dict[str, Any], configured_env: dic
             f"{method} privacy targets must be configured in parameters, not environment: "
             f"{sorted(conflicting)}"
         )
+    if method == "progap":
+        conflicting_task = _PROGAP_TASK_ENVIRONMENT & set(configured_env)
+        if conflicting_task:
+            raise ValueError(
+                "progap task settings are resolved from the dataset, not environment: "
+                f"{sorted(conflicting_task)}"
+            )
     parameters = config.get("parameters", {})
     if not isinstance(parameters, dict):
         raise ValueError("parameters must be a configuration mapping")
@@ -96,6 +170,10 @@ def _target_environment(method: str, config: dict[str, Any], configured_env: dic
             if parameter in parameters:
                 encoded[environment] = str(parameters[parameter])
         encoded["PROGAP_MULTILABEL"] = "1" if parameters.get("multilabel", False) else "0"
+        encoded["PROGAP_BINARY"] = "1" if task_metadata["binary"] else "0"
+        encoded["PROGAP_PRIMARY_METRIC"] = task_metadata["primary_metric"]
+        if task_metadata["metric_ignore_label"] is not None:
+            encoded["PROGAP_METRIC_IGNORE_LABEL"] = str(task_metadata["metric_ignore_label"])
         return encoded
     if "degree_bound" in parameters:
         raise ValueError(
@@ -149,6 +227,7 @@ class UpstreamBaseline:
         source = Path(self.config.get("source_dir") or UPSTREAM_METHODS[self.method]["local_source"] or ".")
         if not source.exists():
             raise FileNotFoundError(f"upstream source directory not found: {source}")
+        task_metadata = _task_metadata(split)
         with tempfile.TemporaryDirectory(prefix=f"{self.method}-partitions-") as temporary:
             manifest = export_partitions(split, temporary)
             result_path = Path(temporary) / "result.json"
@@ -157,10 +236,19 @@ class UpstreamBaseline:
                     isinstance(key, str) and isinstance(value, (str, int, float))
                     for key, value in configured_env.items()):
                 raise ValueError("environment must be a string-keyed configuration mapping")
+            target_environment = _target_environment(
+                self.method, self.config, configured_env, task_metadata
+            )
+            inherited_environment = os.environ
+            if self.method == "progap":
+                inherited_environment = {
+                    key: value for key, value in os.environ.items()
+                    if key not in _PROGAP_TASK_ENVIRONMENT
+                }
             env = {
-                **os.environ,
+                **inherited_environment,
                 **{key: str(value) for key, value in configured_env.items()},
-                **_target_environment(self.method, self.config, configured_env),
+                **target_environment,
                 "PARTITION_MANIFEST": str(manifest.resolve()),
                 "RESULT_PATH": str(result_path.resolve()),
                 "PYTHON": sys.executable,
@@ -169,13 +257,39 @@ class UpstreamBaseline:
             if not result_path.exists():
                 raise RuntimeError(f"{self.method} adapter did not write {result_path}")
             result = json.loads(result_path.read_text())
-        required = {"validation_accuracy", "test_accuracy", "privacy"}
+        binary_result = self.method == "progap" and task_metadata["binary"]
+        if binary_result:
+            metric = task_metadata["primary_metric"]
+            required = {
+                "metric", f"validation_{metric}", f"test_{metric}", "privacy",
+            }
+            if result.get("metric") != metric:
+                raise ValueError(
+                    f"{self.method} binary result must report metric {metric!r}"
+                )
+            legacy_metric_fields = {"validation_accuracy", "test_accuracy"} & set(result)
+            if legacy_metric_fields:
+                raise ValueError(
+                    f"{self.method} binary result must not store {metric} in accuracy fields "
+                    f"{sorted(legacy_metric_fields)}"
+                )
+        else:
+            required = {"validation_accuracy", "test_accuracy", "privacy"}
         missing = required - set(result)
         if self.method in {"progap", "heterpoisson"}:
-            normalized = {
-                "validation_accuracy", "validation_macro_f1",
-                "test_accuracy", "test_macro_f1", "privacy", "calibration",
-            }
+            if binary_result:
+                normalized = {
+                    "metric",
+                    f"validation_{task_metadata['primary_metric']}",
+                    f"test_{task_metadata['primary_metric']}",
+                    "privacy",
+                    "calibration",
+                }
+            else:
+                normalized = {
+                    "validation_accuracy", "validation_macro_f1",
+                    "test_accuracy", "test_macro_f1", "privacy", "calibration",
+                }
             absent = normalized - set(result)
             if absent:
                 raise ValueError(f"{self.method} result omits normalized fields {sorted(absent)}")

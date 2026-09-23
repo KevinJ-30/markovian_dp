@@ -11,7 +11,7 @@ import torch
 from torch import Tensor, nn
 from torch.func import functional_call, grad, vmap
 
-from src.models.objectives import _task_loss, _task_metric
+from src.models.objectives import _metric_rows, _task_loss, _task_metric
 from src.privacy.accountants import DPMLPAccountant
 
 from src.models.baselines import MLP, GraphSAGE
@@ -32,6 +32,8 @@ class BaselineConfig:
     seed: int = 0
     multilabel: bool = False
     regression: bool = False
+    binary: bool = False
+    metric_ignore_label: int | None = None
 
 
 class BaselineTrainer:
@@ -40,12 +42,15 @@ class BaselineTrainer:
     def __init__(self, config: BaselineConfig, device: str | torch.device = "cpu"):
         if config.method not in {"mlp", "graphsage", "dp_mlp"}:
             raise ValueError(f"unsupported portable baseline {config.method!r}")
+        if sum((config.multilabel, config.regression, config.binary)) > 1:
+            raise ValueError("binary, multilabel, and regression tasks are mutually exclusive")
         self.config = config
         self.device = torch.device(device)
 
     def _model(self, train_data: Any, num_classes: int) -> nn.Module:
         factory = GraphSAGE if self.config.method == "graphsage" else MLP
-        return factory(train_data.x.size(1), num_classes, self.config.hidden_size,
+        outputs = 1 if (self.config.binary or self.config.regression) else num_classes
+        return factory(train_data.x.size(1), outputs, self.config.hidden_size,
                        self.config.layers, self.config.dropout).to(self.device)
 
     def _forward(self, model: nn.Module, data: Any) -> Tensor:
@@ -55,8 +60,16 @@ class BaselineTrainer:
     def _evaluate(self, model: nn.Module, partition: Any) -> tuple[float, float]:
         data = partition.data.to(self.device)
         model.eval()
-        return _task_metric(self._forward(model, data), data.y, self.config.multilabel,
-                           regression=self.config.regression)
+        logits = self._forward(model, data)
+        logits, labels = _metric_rows(
+            logits,
+            data.y,
+            eval_mask=getattr(partition, "eval_mask", None),
+            metric_ignore_label=self.config.metric_ignore_label,
+        )
+        return _task_metric(
+            logits, labels, self.config.multilabel,
+            regression=self.config.regression, binary=self.config.binary)
 
     def fit(self, split: Any) -> dict[str, Any]:
         torch.manual_seed(self.config.seed)
@@ -82,10 +95,22 @@ class BaselineTrainer:
                 for _ in range(steps_per_epoch):
                     self._step(model, optimizer, train, generator)
             validation, _ = self._evaluate(model, split.val)
-            improved = (validation < best_val) if lower_is_better else (validation > best_val)
-            if improved:
+            improved = (
+                validation < best_val if lower_is_better else validation > best_val
+            )
+            if not math.isnan(validation) and improved:
                 best_val = validation
-                best_state = {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
+                best_state = {
+                    name: value.detach().cpu().clone()
+                    for name, value in model.state_dict().items()
+                }
+            elif best_state is None:
+                # Preserve an explicit NaN metric for an unscorable validation
+                # partition while still returning a trained model.
+                best_state = {
+                    name: value.detach().cpu().clone()
+                    for name, value in model.state_dict().items()
+                }
         training_seconds = time.perf_counter() - started
         assert best_state is not None
         model.load_state_dict(best_state)
@@ -98,13 +123,25 @@ class BaselineTrainer:
                 sample_rate=min(self.config.batch_size / train.num_nodes, 1.0),
                 steps=self.config.epochs * steps_per_epoch, delta=self.config.delta,
             ).as_dict()
-        return {
+        result = {
             "method": self.config.method, "config": asdict(self.config),
-            "validation_accuracy": validation, "validation_macro_f1": val_f1,
-            "test_accuracy": test, "test_macro_f1": test_f1,
             "preprocessing_seconds": 0.0, "training_seconds": training_seconds,
             "privacy": privacy, "train_graph": split.train.stats,
         }
+        if self.config.binary:
+            result.update({
+                "metric": "auroc",
+                "validation_auroc": validation,
+                "validation_binary_accuracy": val_f1,
+                "test_auroc": test,
+                "test_binary_accuracy": test_f1,
+            })
+        else:
+            result.update({
+                "validation_accuracy": validation, "validation_macro_f1": val_f1,
+                "test_accuracy": test, "test_macro_f1": test_f1,
+            })
+        return result
 
     def _step(self, model: nn.Module, optimizer: torch.optim.Optimizer, data: Any,
               generator: torch.Generator) -> None:
@@ -120,8 +157,9 @@ class BaselineTrainer:
             out = self._forward(model, data)[selected]
         else:
             out = model(data.x[selected])
-        _task_loss(out, data.y[selected], self.config.multilabel,
-                   regression=self.config.regression).backward()
+        _task_loss(
+            out, data.y[selected], self.config.multilabel,
+            regression=self.config.regression, binary=self.config.binary).backward()
         optimizer.step()
 
     def _per_sample_grads(self, model: nn.Module, x: Tensor, y: Tensor) -> dict[str, Tensor]:
@@ -131,8 +169,9 @@ class BaselineTrainer:
 
         def loss_of_one(p, b, xi, yi):
             out = functional_call(model, (p, b), (xi.unsqueeze(0),))
-            return _task_loss(out, yi.unsqueeze(0), self.config.multilabel,
-                              regression=self.config.regression)
+            return _task_loss(
+                out, yi.unsqueeze(0), self.config.multilabel,
+                regression=self.config.regression, binary=self.config.binary)
 
         # Each example needs its own dropout mask.
         return vmap(grad(loss_of_one), in_dims=(None, None, 0, 0),

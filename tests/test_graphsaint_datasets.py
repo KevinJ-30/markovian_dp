@@ -1,10 +1,46 @@
 import json
 
 import numpy as np
+import pytest
 import scipy.sparse as sp
 
 from src.data import datasets
 
+
+
+@pytest.mark.parametrize(
+    ("public_name", "raw_name"),
+    [("saint-yelp", "yelp"), ("saint-amazon", "amazon")],
+)
+def test_graphsaint_public_aliases_dispatch_to_raw_names(
+        public_name, raw_name, monkeypatch):
+    calls = []
+    dataset = object()
+
+    class DataStub:
+        def to(self, device):
+            calls.append(("device", device))
+            return self
+
+    data = DataStub()
+
+    def fake_load(name, root=None):
+        calls.append(("load", name, root))
+        return dataset, data
+
+    monkeypatch.setattr(datasets, "_load_graphsaint", fake_load)
+    actual_dataset, actual_data = datasets.load_dataset(
+        public_name, device="cpu")
+
+    assert actual_dataset is dataset
+    assert actual_data is data
+    assert calls == [("load", raw_name, None), ("device", "cpu")]
+
+
+@pytest.mark.parametrize("legacy_name", ["yelp", "amazon"])
+def test_unprefixed_graphsaint_aliases_are_rejected(legacy_name):
+    with pytest.raises(ValueError, match="Unknown dataset"):
+        datasets.load_dataset(legacy_name)
 
 def test_graphsaint_loader_standardizes_from_training_adjacency(tmp_path, monkeypatch):
     folder = tmp_path / "fixture"

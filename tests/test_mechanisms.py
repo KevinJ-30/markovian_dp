@@ -75,6 +75,35 @@ def test_micro_f1_hand_checked():
     assert math.isclose(_micro_f1(target, target), 1.0)
 
 
+def test_multiclass_evaluation_excludes_ignored_metric_label():
+    data = Data(
+        x=torch.ones((3, 1)),
+        y=torch.tensor([0, 1, 19]),
+        edge_index=torch.empty((2, 0), dtype=torch.long),
+    )
+    data.train_mask = data.val_mask = data.test_mask = torch.ones(
+        3, dtype=torch.bool)
+
+    class FixedPredictions(torch.nn.Module):
+        def forward(self, x, edge_index):
+            logits = torch.zeros((3, 20))
+            logits[0, 0] = 1
+            logits[1, 1] = 1
+            logits[2, 0] = 1  # deliberately wrong, but class 19 is unscored
+            return logits
+
+    mechanism = GNNMechanism(
+        data, 1, 20, hidden=2, num_layers=1, dropout=0.0,
+        metric_ignore_label=19)
+    mechanism.module = FixedPredictions()
+
+    assert mechanism.evaluate(data) == {
+        "train": 1.0,
+        "val": 1.0,
+        "test": 1.0,
+    }
+
+
 # ── mechanisms plug into the engine ───────────────────────────────────────────
 
 @pytest.mark.parametrize("kind", ["binary", "multilabel"])

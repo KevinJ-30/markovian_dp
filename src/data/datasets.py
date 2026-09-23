@@ -31,6 +31,10 @@ SUPPORTED_DATASETS = {
     # to classes with >=1000 nodes.  For head-to-head comparison with those
     # papers on a dataset where the graph actually carries signal.
     'facebook': 'Facebook',
+    # Provenance-specific domain-disjoint node-classification benchmarks.
+    'twitch-explicit': 'Twitch-Explicit',
+    'facebook100': 'Facebook100',
+    'mag-countries': 'MAG-Countries',
     # GraphSAINT benchmark graphs (Zeng et al., ICLR 2020), loaded from the
     # authors' released files under their inductive protocol.  Shorthands for
     # the generic form `graphsaint:<name>`.  NOTE these are NOT the same graphs
@@ -39,8 +43,8 @@ SUPPORTED_DATASETS = {
     'ppi-large': 'graphsaint:ppi-large',
     'saint-flickr': 'graphsaint:flickr',
     'saint-reddit': 'graphsaint:reddit',
-    'yelp': 'graphsaint:yelp',
-    'amazon': 'graphsaint:amazon',
+    'saint-yelp': 'graphsaint:yelp',
+    'saint-amazon': 'graphsaint:amazon',
     # RelBench entity tasks (temporal, natively inductive).  Shorthands for the
     # generic form `relbench:<database>/<task>`, which accepts any RelBench pair.
     'relbench-f1-top3': 'relbench:rel-f1/driver-top3',
@@ -637,7 +641,7 @@ def _load_bluesky():
     dataset = _BlueskyDataset(data, num_features, num_classes)
     return dataset, data
 
-def load_dataset(name, device='cpu', **relbench_kwargs):
+def load_dataset(name, device='cpu', domain_split=None, **relbench_kwargs):
     """
     Load a dataset by name.
 
@@ -645,6 +649,8 @@ def load_dataset(name, device='cpu', **relbench_kwargs):
         name: One of the keys in SUPPORTED_DATASETS (case-insensitive), or a
             RelBench pair written as 'relbench:<database>/<task>'.
         device: Device to move data to.
+        domain_split: Optional train/validation/test domain selection for the
+            domain-disjoint datasets. Supplying any role requires all three.
         **relbench_kwargs: forwarded to src.data.relbench.load_relbench
             (root, label_agg, reverse_edges, max_categories) for RelBench names.
 
@@ -655,6 +661,19 @@ def load_dataset(name, device='cpu', **relbench_kwargs):
     # RelBench pairs may be named directly as relbench:<database>/<task>, or via
     # one of the shorthands in SUPPORTED_DATASETS.
     spec = SUPPORTED_DATASETS.get(key, name)
+    if key in ('twitch-explicit', 'facebook100', 'mag-countries'):
+        from src.data.domain_datasets import load_domain_dataset
+        unexpected = sorted(set(relbench_kwargs) - {'root'})
+        if unexpected:
+            raise TypeError(
+                f"Unexpected keyword arguments for {key}: {unexpected}")
+        data, metadata = load_domain_dataset(
+            key, domain_split=domain_split, root=relbench_kwargs.get('root'))
+        dataset = _SimpleDataset(data, **metadata)
+        return dataset, data.to(device)
+    if domain_split is not None:
+        raise ValueError(
+            f"domain_split is only supported for domain datasets, not '{name}'")
     # GraphSAINT graphs are named graphsaint:<name>.  Deliberately NOT folded
     # into the bare 'reddit'/'ppi' keys: those are the PyG versions, which are
     # different graphs with different splits (see _load_graphsaint).
