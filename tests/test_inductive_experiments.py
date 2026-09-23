@@ -11,6 +11,7 @@ from src.training.baselines import (
     _LayerwiseNeighborSampler,
 )
 import src.experiments.run as run_module
+import src.training.dpar as dpar_module
 from src.experiments.run import _resolve_task_metadata
 from src.models.objectives import _binary_auroc, _task_loss
 from src.models.baselines import GraphSAGE
@@ -95,9 +96,9 @@ def test_dpar_adjacency_replaces_diagonals_without_mutating_edges():
     assert torch.all(adjacency.values() == 1)
 
 
-def test_private_ista_limits_released_rows_and_appends_identity_rows():
+def test_private_ista_releases_only_selected_rows_with_full_feature_context():
     data = _graph()
-    roots = torch.tensor([1, 4, 7])
+    roots = torch.tensor([7, 1, 4])
     ppr = private_ista_ppr(
         data.edge_index,
         data.num_nodes,
@@ -105,14 +106,13 @@ def test_private_ista_limits_released_rows_and_appends_identity_rows():
         DPARConfig(topk=2),
         torch.device("cpu"),
     ).coalesce()
-    row_counts = torch.bincount(ppr.indices()[0], minlength=data.num_nodes)
-    assert torch.all(row_counts[roots] <= 2)
+    assert ppr.shape == (roots.numel(), data.num_nodes)
+    row_counts = torch.bincount(ppr.indices()[0], minlength=roots.numel())
+    assert torch.all(row_counts <= 2)
     nonreleased = torch.ones(data.num_nodes, dtype=torch.bool)
     nonreleased[roots] = False
-    assert torch.all(row_counts[nonreleased] == 1)
-    for row in torch.where(nonreleased)[0]:
-        columns = ppr.indices()[1, ppr.indices()[0] == row]
-        assert columns.tolist() == [int(row)]
+    neighbour_features = nonreleased.float().unsqueeze(1)
+    assert torch.any(torch.sparse.mm(ppr, neighbour_features) > 0)
     column_mass = torch.zeros(data.num_nodes)
     column_mass.scatter_add_(0, ppr.indices()[1], ppr.values().abs())
     assert torch.allclose(
@@ -129,8 +129,8 @@ def _literal_released_ista(edge_index, num_nodes, roots, config):
     adjacency.fill_diagonal_(1)
     out_degree = (adjacency > 0).sum(dim=1).to(torch.float64)
     inverse_degree = adjacency.sum(dim=1).clamp_min(1e-12).reciprocal()
-    dense = torch.zeros((num_nodes, num_nodes), dtype=torch.float64)
-    for root in roots.tolist():
+    dense = torch.zeros((roots.numel(), num_nodes), dtype=torch.float64)
+    for row, root in enumerate(roots.tolist()):
         p_old = torch.zeros(num_nodes, dtype=torch.float64)
         p_new = torch.zeros(num_nodes, dtype=torch.float64)
         residual_old = torch.zeros(num_nodes, dtype=torch.float64)
@@ -177,11 +177,7 @@ def _literal_released_ista(edge_index, num_nodes, roots, config):
             p_old = p_new
         nonzero = torch.where(p_old != 0)[0]
         chosen = nonzero[torch.argsort(p_old[nonzero])[-min(config.topk, nonzero.numel()):]]
-        dense[root, chosen] = p_old[chosen]
-    released = torch.zeros(num_nodes, dtype=torch.bool)
-    released[roots] = True
-    identity = torch.where(~released)[0]
-    dense[identity, identity] = 1
+        dense[row, chosen] = p_old[chosen]
     mass = dense.abs().sum(dim=0)
     dense[:, mass > 0] /= mass[mass > 0]
     return dense
@@ -191,8 +187,8 @@ def test_private_ista_matches_released_aliased_recurrence():
     edge_index = torch.tensor(
         [[0, 1, 1, 2, 2, 3, 3, 0], [1, 0, 2, 1, 3, 2, 0, 3]]
     )
-    roots = torch.tensor([2])
-    config = DPARConfig(topk=3, rho=0.02, ista_epsilon=1e-4)
+    roots = torch.tensor([3, 1])
+    config = DPARConfig(topk=4, rho=0.02, ista_epsilon=1e-4)
     actual = private_ista_ppr(
         edge_index, 4, roots, config, torch.device("cpu")
     ).to_dense()
@@ -206,7 +202,7 @@ def test_dpar_target_budget_samples_graph_and_composes_total(tmp_path):
         DPARConfig(
             epochs=1, hidden_size=4, topk=2,
             sampled_train_rate=None, sampled_train_nodes=8, ppr_num=2,
-            batch_size=8, dropout=0.0,
+            batch_size=3, dropout=0.0,
             target_epsilon=8.0, target_delta=5e-4,
         ), "cpu",
     ).fit(split)
@@ -216,7 +212,7 @@ def test_dpar_target_budget_samples_graph_and_composes_total(tmp_path):
     assert privacy["ppr"]["composition_count"] == 2
     assert privacy["training"]["accountant"] == "dpar.upstream_rdp_accountant"
     assert privacy["training"]["sampling_probability"] == 1.0
-    assert privacy["total"]["accountant"] == "dpar.paper_theorem2_composition"
+    assert privacy["training"]["composition_count"] == 1
     assert privacy["total"]["epsilon"] <= 8.0
     assert privacy["total"]["delta"] == 5e-4
     assert target["calibration"]["sampled_train_nodes"] == 8
@@ -228,14 +224,91 @@ def test_dpar_target_budget_samples_graph_and_composes_total(tmp_path):
         DPARConfig(
             epochs=1, hidden_size=4, topk=2,
             sampled_train_rate=None, sampled_train_nodes=8, ppr_num=2,
-            batch_size=8, dropout=0.0, dp_ppr=True, ppr_noise=0.7,
+            batch_size=3, dropout=0.0, dp_ppr=True, ppr_noise=0.7,
             ppr_delta=2e-5, dp_sgd=True, sgd_noise=1.2, sgd_delta=7e-4,
         ), "cpu",
     ).fit(split)
     assert fixed["config"]["ppr_noise"] == 0.7
     assert fixed["config"]["sgd_noise"] == 1.2
     assert fixed["privacy"]["training"]["delta"] == 7e-4
+    assert fixed["privacy"]["training"]["sampling_probability"] == 1.0
+    assert fixed["privacy"]["training"]["composition_count"] == 1
     assert "calibration" not in fixed
+
+
+@pytest.mark.parametrize("private", [False, True])
+@pytest.mark.parametrize("batch_size", [1, 8])
+def test_dpar_supervises_roots_only_but_uses_nonroot_features(monkeypatch, private, batch_size):
+    roots = torch.tensor([3, 1])
+    edge_index = torch.tensor([[0, 1, 1, 2, 2, 3], [1, 0, 2, 1, 3, 2]])
+    data = Data(
+        x=torch.tensor([[1.0, -1.0], [2.0, 1.0], [-1.0, 3.0], [1.0, 2.0]]),
+        y=torch.tensor([0, 1, 1, 0]),
+        edge_index=edge_index,
+    )
+    held_out = SimpleNamespace(data=data.clone())
+
+    def sample_roots(partition, config, generator, device):
+        sampled = partition.data.clone().to(device)
+        return sampled, roots.to(device), {"nodes": sampled.num_nodes}
+
+    monkeypatch.setattr(dpar_module, "_sample_train_partition", sample_roots)
+
+    class ObservedTrainer(DPARTrainer):
+        def _evaluate(self, model, partition):
+            result = super()._evaluate(model, partition)
+            self.state = {
+                name: value.detach().clone() for name, value in model.state_dict().items()
+            }
+            with torch.no_grad():
+                self.predictions = dpar_module.propagate_logits(
+                    model(partition.data.x), partition.data.edge_index,
+                    self.config.alpha, self.config.inference_steps,
+                ).clone()
+            return result
+
+    def train(train_data):
+        split = SimpleNamespace(
+            train=SimpleNamespace(data=train_data, stats={"nodes": train_data.num_nodes}),
+            val=held_out, test=held_out, num_classes=2,
+        )
+        trainer = ObservedTrainer(DPARConfig(
+            epochs=3, hidden_size=8, topk=4, sampled_train_rate=1.0,
+            ppr_num=2, batch_size=batch_size, dropout=0.0,
+            learning_rate=0.02, dp_sgd=private, sgd_noise=0.1, seed=7,
+        ))
+        trainer.fit(split)
+        return trainer
+
+    original = train(data)
+    changed_labels = data.clone()
+    changed_labels.y[torch.tensor([0, 2])] = 1 - changed_labels.y[torch.tensor([0, 2])]
+    relabeled = train(changed_labels)
+    assert all(torch.equal(value, relabeled.state[name]) for name, value in original.state.items())
+    assert torch.equal(original.predictions, relabeled.predictions)
+    if batch_size >= roots.numel():
+        roots = roots.flip(0)
+        reordered = train(data)
+        roots = roots.flip(0)
+        assert all(
+            torch.allclose(value, reordered.state[name])
+            for name, value in original.state.items()
+        )
+        assert torch.allclose(original.predictions, reordered.predictions)
+
+    changed_features = data.clone()
+    changed_features.x[2] = torch.tensor([5.0, -7.0])
+    new_context = train(changed_features)
+    assert any(
+        not torch.allclose(value, new_context.state[name])
+        for name, value in original.state.items()
+    )
+    assert not torch.allclose(original.predictions, new_context.predictions)
+
+    changed_root_labels = data.clone()
+    changed_root_labels.y[roots] = 1 - changed_root_labels.y[roots]
+    supervised = train(changed_root_labels)
+    assert not torch.allclose(original.predictions, supervised.predictions)
 
 
 def test_binary_objective_is_tie_correct_and_uses_one_logit():

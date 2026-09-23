@@ -251,3 +251,18 @@ def test_heterpoisson_rejects_ambient_degree_bound(adapter_source, tmp_path, mon
     monkeypatch.setenv("HETERPOISSON_DEGREE_BOUND", "8")
     with pytest.raises(ValueError, match="HETERPOISSON_DEGREE_BOUND"):
         UpstreamBaseline("heterpoisson", _config(adapter_source, "heterpoisson")).run(split)
+
+
+@pytest.mark.parametrize("parameter,value", [
+    ("hidden_dim", 3.5), ("eval_chunk_size", 0), ("learning_rate", float("nan")),
+    ("max_grad_norm", float("inf")), ("dropout", 1.0), ("weight_decay", -0.1),
+    ("optimizer", "rmsprop"), ("unknown_model_knob", 10),
+])
+def test_progap_rejects_invalid_or_ignored_constructor_controls(
+    adapter_source, tmp_path, parameter, value
+):
+    split = load_or_create_inductive_split(_graph(), "invalid-progap-knob", root=tmp_path, seed=0)
+    config = _config(adapter_source)
+    config["parameters"][parameter] = value
+    with pytest.raises(ValueError):
+        UpstreamBaseline("progap", config).run(split)

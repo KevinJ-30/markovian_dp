@@ -1,9 +1,9 @@
-"""PyTorch implementation of the released DPAR training structure.
+"""DPAR with APPR-root-only supervision and full sampled-graph feature context.
 
-DPAR's TensorFlow model is a decoupled MLP: private approximate PPR weights
-aggregate per-neighbour logits during training, followed by power-iteration
-propagation for inference.  This module ports that structure without requiring
-TensorFlow 1.x or changing the upstream privacy formulas.
+Private approximate PPR weights aggregate per-neighbour logits during training,
+followed by power-iteration propagation for inference. Unlike the released
+code's identity padding, only selected APPR roots supply training labels.
+The released privacy arithmetic is retained with an explicit qualification.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 import math
 import time
-from typing import Any
+from typing import Any, Callable
 
 import torch
 from torch import Tensor
@@ -115,8 +115,12 @@ def private_ista_ppr(
     config: DPARConfig,
     device: torch.device,
     generator: torch.Generator | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> Tensor:
-    """Release top-k PPR rows for selected roots and identity rows for the rest."""
+    """Release sparse M×N PPR weights in supplied root order, without padding.
+
+    Row r aggregates all N sampled nodes for the supervised node ppr_roots[r].
+    """
     if config.topk < 1:
         raise ValueError("topk must be positive")
     roots = ppr_roots.to(device=device, dtype=torch.long)
@@ -137,11 +141,24 @@ def private_ista_ppr(
     # The released stopping rule has no iteration cap. A high cap turns genuine
     # non-convergence into a clear error instead of silently releasing partial PPR.
     max_iterations = max(10_000, num_nodes * 10)
-    for root in roots.tolist():
+    progress_started = time.perf_counter()
+    last_progress = progress_started
+    for released_count, root in enumerate(roots.tolist()):
         p = torch.zeros(num_nodes, device=device)
         residual = torch.zeros(num_nodes, device=device)
         residual[root] = -config.alpha * inverse_degree[root]
         for _ in range(max_iterations):
+            if progress_callback is not None and _ % 100 == 0:
+                now = time.perf_counter()
+                if now - last_progress >= 5.0:
+                    progress_callback({
+                        "ppr_releases_completed": released_count,
+                        "ppr_releases_total": int(roots.numel()),
+                        "ppr_root": root,
+                        "ppr_iterations": _,
+                        "ppr_elapsed_seconds": now - progress_started,
+                    })
+                    last_progress = now
             if residual.abs().amax() <= (1.0 + config.ista_epsilon) * config.rho * config.alpha:
                 break
             active = p - residual >= config.rho * config.alpha
@@ -190,24 +207,24 @@ def private_ista_ppr(
             chosen = nonzero[
                 torch.topk(p[nonzero], k=min(config.topk, nonzero.numel())).indices
             ]
-            rows.append(torch.full_like(chosen, root))
+            rows.append(torch.full_like(chosen, released_count))
             cols.append(chosen)
             values.append(p[chosen])
-
-    released = torch.zeros(num_nodes, dtype=torch.bool, device=device)
-    released[roots] = True
-    identity_rows = torch.where(~released)[0]
-    if identity_rows.numel():
-        rows.append(identity_rows)
-        cols.append(identity_rows)
-        values.append(torch.ones(identity_rows.numel(), device=device))
+        if progress_callback is not None:
+            progress_callback({
+                "ppr_releases_completed": released_count + 1,
+                "ppr_releases_total": int(roots.numel()),
+                "ppr_root": root,
+                "ppr_iterations": _ + 1,
+                "ppr_elapsed_seconds": time.perf_counter() - progress_started,
+            })
 
     if not rows:
         raise RuntimeError("DPAR PPR preprocessing produced no entries")
     ppr = torch.sparse_coo_tensor(
         torch.stack((torch.cat(rows), torch.cat(cols))),
         torch.cat(values),
-        (num_nodes, num_nodes),
+        (roots.numel(), num_nodes),
         device=device,
         check_invariants=False,
     ).coalesce()
@@ -224,7 +241,7 @@ def private_ista_ppr(
 
 
 def _select_ppr_rows(ppr: Tensor, roots: Tensor) -> Tensor:
-    """Extract selected rows without materializing an N×N dense PPR matrix."""
+    """Extract PPR row indices without materializing the dense M×N matrix."""
     ppr = ppr.coalesce()
     global_to_local = torch.full((ppr.size(0),), -1, dtype=torch.long, device=roots.device)
     global_to_local[roots] = torch.arange(roots.numel(), device=roots.device)
@@ -322,13 +339,14 @@ class DPARTrainer:
         )
         sampled_nodes = int(train_data.num_nodes)
         ppr_releases = int(ppr_roots.numel())
+        root_labels = train_data.y[ppr_roots]
         target_mode = self.config.target_epsilon is not None or self.config.target_delta is not None
         if target_mode and (self.config.target_epsilon is None or self.config.target_delta is None):
             raise ValueError("target_epsilon and target_delta must be provided together")
         calibration = None
         effective_config = self.config
         if target_mode:
-            steps = self.config.epochs * math.ceil(sampled_nodes / self.config.batch_size)
+            steps = self.config.epochs * math.ceil(ppr_releases / self.config.batch_size)
             calibration = calibrate_dpar_noise(
                 target_epsilon=self.config.target_epsilon, target_delta=self.config.target_delta,
                 train_nodes=int(full_train_data.num_nodes), sampled_train_nodes=sampled_nodes,
@@ -356,16 +374,16 @@ class DPARTrainer:
         training_start = time.perf_counter()
         for _ in range(effective_config.epochs):
             model.train()
-            permutation = torch.randperm(sampled_nodes, device=self.device, generator=sampling_generator)
+            permutation = torch.randperm(ppr_releases, device=self.device, generator=sampling_generator)
             for root_indices in permutation.split(effective_config.batch_size):
                 if effective_config.dp_sgd:
-                    self._private_step(model, optimizer, train_data.x, train_data.y, ppr, root_indices,
+                    self._private_step(model, optimizer, train_data.x, root_labels, ppr, root_indices,
                                        sampling_generator, effective_config)
                 else:
                     optimizer.zero_grad(set_to_none=True)
                     logits = torch.sparse.mm(_select_ppr_rows(ppr, root_indices), model(train_data.x))
                     _task_loss(
-                        logits, train_data.y[root_indices],
+                        logits, root_labels[root_indices],
                         effective_config.multilabel,
                         regression=effective_config.regression,
                         binary=effective_config.binary).backward()
@@ -420,8 +438,12 @@ class DPARTrainer:
         return result
 
     def _private_step(self, model: DPARMLP, optimizer: torch.optim.Optimizer, x: Tensor, y: Tensor,
-                      ppr: Tensor, roots: Tensor, generator: torch.Generator, config: DPARConfig) -> None:
-        """Microbatch=example DP-Adam update matching upstream DPAR's setting."""
+                      ppr: Tensor, roots: Tensor, generator: torch.Generator, config: DPARConfig) -> Tensor:
+        """Exact per-root DP-Adam update; return detached pre-update mean loss.
+
+        x retains all N sampled nodes; y contains M root labels in PPR row
+        order. roots selects rows in [0, M), not sampled-graph node indices.
+        """
         parameters = tuple(parameter for parameter in model.parameters() if parameter.requires_grad)
         clipped = [torch.zeros_like(parameter) for parameter in parameters]
         logits = model(x)
@@ -444,6 +466,9 @@ class DPARTrainer:
                               generator=generator) * config.sgd_noise
             ) / len(roots)
         optimizer.step()
+        return _task_loss(
+            root_logits.detach(), y[roots], config.multilabel,
+            regression=config.regression, binary=config.binary).detach()
 
     def _privacy(
         self,
@@ -460,11 +485,11 @@ class DPARTrainer:
             ppr_noise=config.ppr_noise if config.dp_ppr else None, topk=config.topk,
         )
         if config.dp_sgd:
-            steps = config.epochs * math.ceil(sampled_train_nodes / config.batch_size)
-            effective_batch_size = min(config.batch_size, sampled_train_nodes)
+            steps = config.epochs * math.ceil(ppr_releases / config.batch_size)
+            effective_batch_size = min(config.batch_size, ppr_releases)
             sgd = accountant.account_training(
                 noise_multiplier=config.sgd_noise / config.sgd_clip,
-                sample_rate=effective_batch_size / sampled_train_nodes, steps=steps,
+                sample_rate=effective_batch_size / ppr_releases, steps=steps,
                 delta=config.sgd_delta, amplification_rate=amplification_rate,
             )
         else:
@@ -473,8 +498,14 @@ class DPARTrainer:
         if ppr.epsilon is not None and sgd is not None and sgd.epsilon is not None:
             total = PrivacyResult(
                 epsilon=ppr.epsilon + sgd.epsilon, delta=ppr.delta + sgd.delta,
-                accountant="dpar.paper_theorem2_composition",
-                parameters={"amplification_rate": amplification_rate},
+                accountant="dpar.repository_composition_not_certified_node_dp",
+                parameters={
+                    "amplification_rate": amplification_rate,
+                    "qualification": (
+                        "Repository composition of released accounting arithmetic; "
+                        "not independently certified node-DP."
+                    ),
+                },
             )
         return {
             "ppr": ppr.as_dict(), "training": None if sgd is None else sgd.as_dict(),

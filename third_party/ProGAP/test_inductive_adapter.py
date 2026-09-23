@@ -114,56 +114,52 @@ def test_manifest_adapter_uses_train_for_setup_and_validation_for_fit(monkeypatc
     assert result["calibration"]["noise_std"] == 1.25
 
 
-def test_progressive_fit_selects_every_stage_on_distinct_validation_graph():
+def test_progressive_fit_restores_global_stage_maxima_and_floor_schedule(monkeypatch, tmp_path):
     adapter = importlib.import_module("inductive_adapter")
-    train = adapter._prepare(Data(
-        x=torch.ones(3, 2),
-        y=torch.tensor([0, 1, 0]),
-        edge_index=torch.tensor([[0, 1], [1, 2]]),
-    ))
-    validation = adapter._prepare(Data(
-        x=torch.full((3, 2), 2.0),
-        y=torch.tensor([1, 0, 1]),
-        edge_index=torch.tensor([[0, 2], [2, 1]]),
-        eval_mask=torch.tensor([True, True, True]),
-    ))
-    fit_validation_markers = []
-
-    class Classifier:
-        def __init__(self):
-            self.stages = []
-
-        def set_stage(self, stage):
-            self.stages.append(stage)
-
-    class Trainer:
-        def predict(self, dataloader):
-            return dataloader.data.x, torch.zeros(dataloader.data.num_nodes, 2)
-
-        def fit(self, model, train_dataloader, val_dataloader):
-            assert train_dataloader == "train-loader"
-            assert val_dataloader.data.num_nodes == 3
-            assert val_dataloader.data.adj_t.values().numel() == 2
-            assert val_dataloader.node_indices.tolist() == [0, 2]
-            fit_validation_markers.append(float(val_dataloader.data.x[0, 0]))
-            return {"val/acc": torch.tensor(1.0)}
-
-    method = SimpleNamespace(
-        data=train,
-        validation=validation,
-        num_stages=2,
-        classifier=Classifier(),
-        trainer=Trainer(),
-        nap=lambda embeddings, adjacency: embeddings + 1,
-        metric_ignore_label=0,
-        configure_trainer=Trainer,
-        data_loader=lambda phase: "train-loader",
+    load = torch.load
+    monkeypatch.setattr(
+        torch, "load", lambda *args, **kwargs: load(*args, **{**kwargs, "weights_only": False}),
     )
-    metrics = adapter.InductiveNodeLevelProGAP.fit(method)
-    assert fit_validation_markers == [2.0, 2.0]
-    assert method.classifier.stages == [0, 1]
-    assert method.data.ready
-    assert metrics["val/acc"] == 1
+    torch.manual_seed(6)
+    nodes = torch.arange(17)
+    graph = Data(
+        x=torch.randn(17, 3), y=nodes % 2,
+        edge_index=torch.stack((nodes, (nodes + 1) % 17)),
+    )
+    validation = graph.clone()
+    validation.eval_mask = nodes % 3 != 0
+    method = adapter.InductiveNodeLevelProGAP(
+        num_classes=2, epsilon=8.0, delta=1 / 17, depth=2, batch_size=8,
+        epochs=10, hidden_dim=64, dropout=0.0, device="cpu", verbose=False,
+        eval_chunk_size=3, max_degree=2,
+    )
+    method.validation = adapter._prepare(validation)
+    method.checkpoint_dir = tmp_path
+    method.setup(adapter._prepare(graph))
+    method.fit()
+
+    assert method.updates_completed == 3 * 10 * (17 // 8)
+    assert method.epochs_completed == 30
+    assert method.composed_mechanism.get_approxDP(1 / 17) <= 8.0 + 1e-6
+    for stage, selected in enumerate(method.stage_states):
+        rows = [row for row in method.history if row["stage"] == stage]
+        first_max = max(rows, key=lambda row: row["validation_metric"])
+        assert selected["epoch"] == first_max["epoch"]
+        assert selected["step"] == first_max["step"]
+        checkpoint = torch.load(tmp_path / f"stage{stage}_best.pt")
+        assert checkpoint["validation"]["score"] == first_max["validation_metric"]
+        assert checkpoint["optimizer"]["state"]
+    restored = adapter.evaluate_stage(method.classifier, method.validation, chunk_size=17)
+    assert restored["score"] == method.best_validation["score"]
+    assert restored["loss"] == pytest.approx(method.best_validation["loss"], abs=1e-6)
+    final = torch.load(tmp_path / "checkpoint.pt")
+    assert final["updates_completed"] == method.updates_completed
+    assert len(final["stages"]) == 3
+    # Rebuild each held-out stage from the selected final classifier, matching
+    # the upstream pipeline while retaining every unscored context node.
+    heldout = method.evaluate_partition(validation)
+    assert heldout["scored_nodes"] == int(validation.eval_mask.sum())
+    assert 0 <= heldout["score"] <= 1
 
 
 class _ObjectiveModule(torch.nn.Module):
@@ -357,3 +353,104 @@ def test_manifest_adapter_rejects_multilabel_flag_rank_mismatch(monkeypatch, tmp
     monkeypatch.setenv("PROGAP_PRIMARY_METRIC", "accuracy")
     with pytest.raises(ValueError, match="label rank"):
         adapter.main()
+
+
+def test_environment_knobs_reach_real_constructor_and_adam(monkeypatch):
+    adapter = importlib.import_module("inductive_adapter")
+    from src.experiments.upstream import _target_environment
+
+    load = torch.load
+    monkeypatch.setattr(
+        torch, "load", lambda *args, **kwargs: load(*args, **{**kwargs, "weights_only": False}),
+    )
+    parameters = {
+        "target_epsilon": 8.0, "target_delta": 0.001, "hidden_dim": 7,
+        "dropout": 0.25, "optimizer": "adam", "learning_rate": 0.037,
+        "weight_decay": 0.12, "max_grad_norm": 0.3, "eval_chunk_size": 2,
+    }
+    encoded = _target_environment(
+        "progap", {"parameters": parameters}, {},
+        {"binary": False, "primary_metric": "accuracy", "metric_ignore_label": None},
+    )
+    for name, value in encoded.items():
+        monkeypatch.setenv(name, value)
+    method = adapter.InductiveNodeLevelProGAP(
+        num_classes=3, epsilon=8.0, delta=0.001, depth=1, device="cpu",
+        **adapter._constructor_options(),
+    )
+    model = method.classifier
+    model.eval()
+    embeddings, logits = model([torch.ones(5, 4)])
+    assert embeddings.shape == (5, 7)
+    assert logits.shape == (5, 3)
+    optimizer = model.configure_optimizers()
+    assert isinstance(optimizer, torch.optim.Adam)
+    assert optimizer.param_groups[0]["lr"] == 0.037
+    assert optimizer.param_groups[0]["weight_decay"] == 0.12
+    assert any(isinstance(module, torch.nn.Dropout) and module.p == 0.25
+               for module in model.modules())
+    assert method.max_grad_norm == 0.3
+    assert method.eval_chunk_size == 2
+
+
+@pytest.mark.parametrize("name,value", [
+    ("PROGAP_HIDDEN_DIM", "1.5"), ("PROGAP_EVAL_CHUNK_SIZE", "0"),
+    ("PROGAP_LEARNING_RATE", "nan"), ("PROGAP_MAX_GRAD_NORM", "inf"),
+    ("PROGAP_DROPOUT", "1"), ("PROGAP_WEIGHT_DECAY", "-1"),
+    ("PROGAP_OPTIMIZER", "rmsprop"),
+])
+def test_constructor_environment_rejects_invalid_numerics(monkeypatch, name, value):
+    adapter = importlib.import_module("inductive_adapter")
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError):
+        adapter._constructor_options()
+
+
+class _FixedStageLogits(torch.nn.Module):
+    root_losses = staticmethod(ProgressiveModule.root_losses)
+
+    def __init__(self, binary=False):
+        super().__init__()
+        self.anchor = torch.nn.Parameter(torch.zeros(()))
+        self.current_stage = 0
+        self.binary = binary
+
+    def forward(self, xs):
+        return xs[0], xs[0] + self.anchor * 0
+
+
+def test_chunked_binary_metric_is_global_tied_auroc_and_filters_rows():
+    adapter = importlib.import_module("inductive_adapter")
+    logits = torch.tensor([[0.0], [0.0], [2.0], [1.0], [20.0], [-20.0]])
+    graph = Data(
+        x=logits, x0=logits, y=torch.tensor([0, 1, 0, 1, 19, 1]),
+        eval_mask=torch.tensor([True, True, True, True, True, False]),
+    )
+    model = _FixedStageLogits(binary=True)
+    chunked = adapter.evaluate_stage(model, graph, 2, metric_ignore_label=19)
+    full = adapter.evaluate_stage(model, graph, 100, metric_ignore_label=19)
+    assert chunked["score"] == full["score"] == 0.375
+    assert chunked["loss"] == pytest.approx(full["loss"], abs=1e-7)
+    assert chunked["scored_nodes"] == 4
+    # A per-chunk AUROC average would be (0.5 + 0) / 2 = 0.25.
+    assert chunked["score"] != 0.25
+
+
+@pytest.mark.parametrize("multilabel", [False, True])
+def test_chunked_counts_loss_and_context_embeddings_match_full(multilabel):
+    adapter = importlib.import_module("inductive_adapter")
+    logits = torch.tensor([[3., -2.], [-1., 2.], [1., 2.], [-2., -1.], [4., 1.]])
+    labels = (torch.tensor([[1., 0.], [1., 1.], [0., 1.], [1., 1.], [0., 0.]])
+              if multilabel else torch.tensor([0, 1, 0, 1, 1]))
+    graph = Data(
+        x=logits, x0=logits, y=labels,
+        eval_mask=torch.tensor([True, True, False, True, False]),
+    )
+    model = _FixedStageLogits()
+    chunked = adapter.evaluate_stage(model, graph, 2)
+    full = adapter.evaluate_stage(model, graph, 100)
+    assert chunked["score"] == full["score"]
+    assert chunked["loss"] == pytest.approx(full["loss"], abs=1e-7)
+    assert chunked["scored_nodes"] == 3
+    embeddings = adapter.stage_embeddings(model, graph, 2)
+    assert torch.equal(embeddings, logits)  # Includes unscored context nodes.

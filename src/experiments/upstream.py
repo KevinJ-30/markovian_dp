@@ -7,6 +7,7 @@ and requires one normalized JSON result rather than scraping terminal output.
 
 from __future__ import annotations
 
+import math
 import json
 from pathlib import Path
 import os
@@ -116,7 +117,7 @@ def _finite_positive(value: Any, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{name} must be a finite positive number")
     value = float(value)
-    if not value > 0 or not torch.isfinite(torch.tensor(value)):
+    if not value > 0 or not math.isfinite(value):
         raise ValueError(f"{name} must be a finite positive number")
     return value
 
@@ -160,6 +161,14 @@ def _target_environment(
         f"{prefix}_SEED": str(int(config.get("seed", 0))),
     }
     if method == "progap":
+        supported = {
+            "target_epsilon", "target_delta", "epochs", "batch_size", "max_degree",
+            "depth", "multilabel", "hidden_dim", "dropout", "optimizer",
+            "learning_rate", "weight_decay", "max_grad_norm", "eval_chunk_size",
+        }
+        unknown = set(parameters) - supported
+        if unknown:
+            raise ValueError(f"Unsupported ProGAP parameters: {sorted(unknown)}")
         optional = {
             "epochs": "PROGAP_EPOCHS",
             "batch_size": "PROGAP_BATCH_SIZE",
@@ -169,6 +178,38 @@ def _target_environment(
         for parameter, environment in optional.items():
             if parameter in parameters:
                 encoded[environment] = str(parameters[parameter])
+        positive = {
+            "hidden_dim": "PROGAP_HIDDEN_DIM",
+            "learning_rate": "PROGAP_LEARNING_RATE",
+            "max_grad_norm": "PROGAP_MAX_GRAD_NORM",
+            "eval_chunk_size": "PROGAP_EVAL_CHUNK_SIZE",
+        }
+        for parameter, environment in positive.items():
+            if parameter in parameters:
+                value = _finite_positive(parameters[parameter], f"parameters.{parameter}")
+                if parameter in {"hidden_dim", "eval_chunk_size"}:
+                    if not value.is_integer():
+                        raise ValueError(f"parameters.{parameter} must be an integer")
+                    value = int(value)
+                encoded[environment] = str(value)
+        for parameter, environment in {
+            "dropout": "PROGAP_DROPOUT",
+            "weight_decay": "PROGAP_WEIGHT_DECAY",
+        }.items():
+            if parameter not in parameters:
+                continue
+            value = parameters[parameter]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"parameters.{parameter} must be a finite nonnegative number")
+            value = float(value)
+            if not math.isfinite(value) or value < 0 or (parameter == "dropout" and value >= 1):
+                raise ValueError(f"parameters.{parameter} is outside its supported range")
+            encoded[environment] = str(value)
+        if "optimizer" in parameters:
+            optimizer = parameters["optimizer"]
+            if not isinstance(optimizer, str) or optimizer not in {"adam", "sgd"}:
+                raise ValueError("parameters.optimizer must be 'adam' or 'sgd'")
+            encoded["PROGAP_OPTIMIZER"] = optimizer
         encoded["PROGAP_MULTILABEL"] = "1" if parameters.get("multilabel", False) else "0"
         encoded["PROGAP_BINARY"] = "1" if task_metadata["binary"] else "0"
         encoded["PROGAP_PRIMARY_METRIC"] = task_metadata["primary_metric"]

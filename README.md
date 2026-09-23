@@ -201,6 +201,15 @@ once per shuffled epoch, with a final partial batch. Validation and test use
 deterministic full-neighbor propagation over each complete held-out context
 graph and score only its `eval_mask`.
 
+The first-party DPAR trainer retains the sampled subgraph as feature context
+but supervises only its `M = min(ppr_num, sampled_nodes)` selected APPR roots.
+The APPR matrix is `M × sampled_nodes`; it has no identity rows for other
+nodes. Each epoch visits those `M` roots once, including a final partial batch,
+so it makes `ceil(M / batch_size)` updates. SGD calibration uses
+`min(batch_size, M) / M`, separately from outer graph sampling amplification.
+The released PPR/SGD accounting arithmetic remains a qualified repository
+convention, not an independently certified node-level DP guarantee.
+
 SparseGNN uses matching flags instead:
 
 ```bash
@@ -271,6 +280,21 @@ tracked run follows exactly the same trajectory as an untracked one.
 Higher-level drivers live in `scripts/`: `ladder_stage01.sh` (baselines and the
 sparsification sweep, no DP), `ladder_stage2.sh` (clip+noise, then epsilon), and
 `sweep.sh <axis>` for one-axis tuning.
+
+### Degree capping
+
+SparseGNN's default `--cap_mode auto` resolves to `directed`: after removing
+self-loops, symmetrizing, and deduplicating, it retains a random subset of up to
+`--K_out` outgoing arcs per node. Incoming degree is unrestricted, and reverse
+arcs are selected independently. The cap is applied once per seed, not per
+training step; `--cap_seed` shares a capped graph across seeds.
+
+`--K_out` can be supplied alone. If omitted, it defaults to `--K_in`.
+`--K_in` remains an accounting parameter but does not cap incoming arcs in
+directed mode; when omitted, its recorded value comes from the capped graph's
+observed maximum incoming degree. `--cap_mode undirected` is unchanged:
+it requires equal `K_in` and `K_out`, bounds both endpoints' degrees, and keeps
+both arcs of each retained edge. Evaluation graphs remain uncapped.
 
 ### Parameters that price epsilon, and parameters that do not
 

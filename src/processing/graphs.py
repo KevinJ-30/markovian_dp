@@ -50,30 +50,21 @@ def _make_bidirectional(edge_index: torch.Tensor, num_nodes: int) -> torch.Tenso
 def _cap_directed(
     edge_index: torch.Tensor,
     *,
-    max_in_degree: int | None,
     max_out_degree: int | None,
     generator: torch.Generator | None,
 ) -> torch.Tensor:
-    def cap_row(edges: torch.Tensor, row: int, bound: int) -> torch.Tensor:
-        count = edges.size(1)
-        if count == 0:
-            return edges
-        shuffle = torch.argsort(torch.rand(count, generator=generator))
-        order = shuffle[torch.argsort(edges[row, shuffle], stable=True)]
-        sorted_keys = edges[row, order]
-        change = torch.ones(count, dtype=torch.bool)
-        change[1:] = sorted_keys[1:] != sorted_keys[:-1]
-        index = torch.arange(count)
-        group_id = torch.cumsum(change.to(torch.long), dim=0) - 1
-        rank = index - index[change][group_id]
-        return edges[:, order[rank < bound]]
-
-    result = edge_index
-    if max_in_degree is not None:
-        result = cap_row(result, row=1, bound=max_in_degree)
-    if max_out_degree is not None:
-        result = cap_row(result, row=0, bound=max_out_degree)
-    return result
+    count = edge_index.size(1)
+    if max_out_degree is None or count == 0:
+        return edge_index
+    shuffle = torch.argsort(torch.rand(count, generator=generator))
+    order = shuffle[torch.argsort(edge_index[0, shuffle], stable=True)]
+    sorted_keys = edge_index[0, order]
+    change = torch.ones(count, dtype=torch.bool)
+    change[1:] = sorted_keys[1:] != sorted_keys[:-1]
+    index = torch.arange(count)
+    group_id = torch.cumsum(change.to(torch.long), dim=0) - 1
+    rank = index - index[change][group_id]
+    return edge_index[:, order[rank < max_out_degree]]
 
 
 def _cap_undirected(
@@ -122,7 +113,12 @@ def preprocess_edges(
     add_self_loops: bool = False,
     generator: torch.Generator | None = None,
 ) -> torch.Tensor:
-    """Remove loops, symmetrize and deduplicate arcs, cap, then add exact loops."""
+    """Remove loops, symmetrize and deduplicate arcs, cap, then add exact loops.
+
+    Directed mode caps only outgoing arcs at ``max_out_degree``; incoming
+    degree is unrestricted. ``max_in_degree`` is used only by undirected mode,
+    which requires equal bounds and preserves both arcs of each retained edge.
+    """
     if isinstance(num_nodes, bool) or not isinstance(num_nodes, Integral) or num_nodes < 0:
         raise ValueError("num_nodes must be a nonnegative integer")
     num_nodes = int(num_nodes)
@@ -157,7 +153,6 @@ def preprocess_edges(
     if degree_cap_mode == "directed":
         result = _cap_directed(
             result,
-            max_in_degree=max_in_degree,
             max_out_degree=max_out_degree,
             generator=generator,
         )

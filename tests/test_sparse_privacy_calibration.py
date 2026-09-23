@@ -10,8 +10,12 @@ from src.privacy.accounting import SparseGNNNoiseCalibration
 from src.experiments import sparse as sparse_run
 
 
+@pytest.mark.parametrize("degree_args", [
+    ["--K_in", "2", "--K_out", "2"],
+    ["--K_out", "2"],
+])
 def test_target_cli_calibrates_each_cell_once_and_records_metadata(
-        monkeypatch, tmp_path):
+        monkeypatch, tmp_path, degree_args):
     data = Data(
         x=torch.ones((3, 1)),
         edge_index=torch.tensor([[0, 1, 1, 2], [1, 0, 2, 1]]),
@@ -58,7 +62,7 @@ def test_target_cli_calibrates_each_cell_once_and_records_metadata(
     monkeypatch.setattr(sparse_run, "train_sparse_gnn", train)
     monkeypatch.setattr(sys, "argv", [
         "run", "--dataset", "tiny", "--dp", "--p1", "0.1", "--p2", "0.2", "0.4",
-        "--r", "1", "--T", "2", "--K_in", "2", "--K_out", "2", "--seeds", "2",
+        "--r", "1", "--T", "2", *degree_args, "--seeds", "2",
         "--target_epsilon", "1.0", "--target_delta", "1e-5", "--out_dir", str(tmp_path),
     ])
 

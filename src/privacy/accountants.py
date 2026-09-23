@@ -112,7 +112,7 @@ class DPMLPAccountant(PrivacyAccountant):
 
 @dataclass(frozen=True)
 class DPARNoiseCalibration:
-    """Paper-aligned DPAR noise parameters for one target privacy budget."""
+    """DPAR noise parameters calibrated with the released accounting arithmetic."""
 
     ppr_noise_std: float
     ppr_noise_variance: float
@@ -140,7 +140,9 @@ class DPARAccountant(PrivacyAccountant):
 
     This intentionally preserves the repository's stated amplification and
     composition convention, including its separate DP-PPR and DP-SGD reports.
-    It does not claim a joint composition theorem that upstream does not supply.
+    The DPAR paper supplies a privacy theorem; this port and the released
+    arithmetic have not been independently established to satisfy that theorem
+    or certify node-level DP.
     """
 
     @staticmethod
@@ -196,7 +198,11 @@ class DPARAccountant(PrivacyAccountant):
 
     def account_training(self, *, noise_multiplier: float, sample_rate: float, steps: int,
                          delta: float, amplification_rate: float) -> PrivacyResult:
-        """Use the vendored released DPAR RDP accountant without TensorFlow."""
+        """Use released DPAR RDP arithmetic with distinct sampling rates.
+
+        ``sample_rate`` is the selected fraction of APPR roots; the separate
+        ``amplification_rate`` is sampled graph nodes / original graph nodes.
+        """
         if not 0.0 < amplification_rate <= 1.0:
             raise ValueError("DPAR amplification_rate must lie in (0, 1]")
         source = Path(__file__).parents[2] / "third_party" / "DPAR" / "dpgnn" / "privacy_utils" / "rdp_accountant.py"
@@ -255,7 +261,13 @@ def calibrate_dpar_noise(
     sigma_rtol: float = 1e-3, sigma_atol: float = 1e-6,
     max_noise_multiplier: float = 1e6,
 ) -> DPARNoiseCalibration:
-    """Calibrate Gaussian DP-APPR and DP-SGD to equal final DPAR sub-budgets."""
+    """Calibrate equal final sub-budgets using released DPAR arithmetic.
+
+    SGD samples from ``ppr_releases`` supervised APPR roots, not all
+    ``sampled_train_nodes`` retained for feature context. Outer amplification
+    still uses ``sampled_train_nodes / train_nodes``. These reported budgets
+    are not an independently certified node-DP guarantee; see DPARAccountant.
+    """
     target_epsilon = _dpar_positive_finite("target_epsilon", target_epsilon)
     target_delta = float(target_delta)
     if not math.isfinite(target_delta) or not 0.0 < target_delta < 1.0:
@@ -294,13 +306,13 @@ def calibrate_dpar_noise(
     accountant = DPARAccountant()
     candidates: dict[float, PrivacyResult] = {}
 
-    effective_batch_size = min(batch_size, sampled_train_nodes)
+    effective_batch_size = min(batch_size, ppr_releases)
 
     def candidate(multiplier: float) -> PrivacyResult:
         if multiplier not in candidates:
             candidates[multiplier] = accountant.account_training(
                 noise_multiplier=multiplier,
-                sample_rate=effective_batch_size / sampled_train_nodes,
+                sample_rate=effective_batch_size / ppr_releases,
                 steps=steps, delta=sgd_delta, amplification_rate=amplification_rate,
             )
         return candidates[multiplier]

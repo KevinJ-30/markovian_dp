@@ -234,9 +234,9 @@ def parse_args():
     p.add_argument('--calibration_atol', type=float, default=1e-6,
                    help='absolute tolerance for calibrated noise multiplier')
     p.add_argument('--K_in', type=int, default=None,
-                   help='cap max in-degree before training (required for a '
-                        'valid Theorem 6.4 guarantee; recorded in the CSV for '
-                        'post-hoc accounting via src.experiments.compute_epsilon)')
+                   help='accounting parameter and default for K_out; does not '
+                        'cap incoming arcs in directed mode. Undirected mode '
+                        'requires K_in == K_out')
     p.add_argument('--K_out', type=int, default=None,
                    help='cap max out-degree before training (defaults to K_in)')
     p.add_argument('--cap_mode', choices=['auto', 'directed', 'undirected'],
@@ -244,9 +244,8 @@ def parse_args():
                    help="degree capping: 'auto' (default) = 'directed' for "
                         "every graph -- an undirected graph is treated as a "
                         "directed arc set, so dropping an arc does not drop "
-                        "its reverse, and in/out degree are capped "
-                        "independently (exactly the two bounds the accounting "
-                        "assumes); 'undirected' caps the undirected degree at "
+                        "its reverse; only outgoing degree is capped. "
+                        "'undirected' caps the undirected degree at "
                         "K_in (=K_out) and keeps both arcs of every surviving "
                         "edge, which preserves symmetry but is not required")
     p.add_argument('--cap_seed', type=int, default=None,
@@ -443,13 +442,8 @@ def main():
     n_nodes = int(train_data.num_nodes)
     K_in_req = args.K_in
     K_out_req = args.K_out if args.K_out is not None else args.K_in
-    if K_in_req is None and args.K_out is not None:
-        raise SystemExit(
-            "--K_out requires --K_in: capping is driven by K_in here, "
-            "so --K_out on its own silently applies no cap at all. "
-            f"Pass --K_in (e.g. --K_in {args.K_out} --K_out {args.K_out}).")
     cap_mode = "directed" if args.cap_mode == "auto" else args.cap_mode
-    if K_in_req is not None and cap_mode == "undirected" and K_in_req != K_out_req:
+    if K_out_req is not None and cap_mode == "undirected" and K_in_req != K_out_req:
         raise SystemExit("--cap_mode undirected needs K_in == K_out")
     raw_train_ei = edge_index
 
@@ -465,27 +459,28 @@ def main():
             n_nodes,
             max_in_degree=K_in_req,
             max_out_degree=K_out_req,
-            degree_cap_mode=cap_mode if K_in_req is not None else "directed",
+            degree_cap_mode=cap_mode if K_out_req is not None else "directed",
             add_self_loops=False,
             generator=cap_gen,
         )
-        applied_mode = cap_mode if K_in_req is not None else ""
+        applied_mode = cap_mode if K_out_req is not None else ""
         achieved = max_degrees(train_ei, n_nodes)
         if label:
             cap_description = (
-                f"K_in={K_in_req} K_out={K_out_req} mode={applied_mode} "
-                if K_in_req is not None else "no degree cap "
+                f"K_out={K_out_req} mode={applied_mode} "
+                if K_out_req is not None else "no degree cap "
             )
             print(f"  structural preprocessing [{label}]: {cap_description}"
                   f"cap_seed={cap_seed}; max (in,out) {before} -> {achieved}; "
                   f"edges {raw_train_ei.size(1)} -> {train_ei.size(1)}")
-        k_in, k_out = K_in_req, K_out_req
-        if k_in is None and args.dp:
+        k_in = K_in_req if K_in_req is not None else achieved[0]
+        k_out = K_out_req
+        if k_out is None and args.dp:
             if label:
-                print("  WARNING: --dp without --K_in — the degree-bound "
-                      "assumption (Assumption 5.2) is not enforced; post-hoc "
+                print("  WARNING: --dp without --K_out (or --K_in as its "
+                      "default) — no outgoing degree cap is enforced; post-hoc "
                       "epsilon will use the graph's preprocessed max degrees.")
-            k_in, k_out = achieved
+            k_out = achieved[1]
         return {'train_ei': train_ei, 'cap_mode': applied_mode,
                 'K_in': k_in, 'K_out': k_out, 'cap_seed': cap_seed,
                 'achieved': achieved,
@@ -561,7 +556,9 @@ def main():
                 calibration = calibrate_sparsegnn_noise(
                     target_epsilon=args.target_epsilon,
                     target_delta=args.target_delta, p1=p1, p2=p2, r=r,
-                    K_in=K_in_req, K_out=K_out_req, steps=args.T, clip=args.clip,
+                    K_in=(K_in_req if K_in_req is not None else
+                          max(graph['K_in'] for graph in graphs.values())),
+                    K_out=K_out_req, steps=args.T, clip=args.clip,
                     grid=args.accounting_grid,
                     sigma_rtol=args.calibration_rtol,
                     sigma_atol=args.calibration_atol,

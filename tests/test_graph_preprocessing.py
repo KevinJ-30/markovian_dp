@@ -110,32 +110,62 @@ def test_preprocess_edges_rejects_invalid_inputs(edge_index, num_nodes, kwargs, 
         preprocess_edges(edge_index, num_nodes, **kwargs)
 
 
-def test_directed_degree_capping_respects_both_bounds_and_seed():
+def test_directed_degree_capping_respects_outgoing_bound_and_seed():
     edge_index, num_nodes = _random_graph()
     first = preprocess_edges(
         edge_index,
         num_nodes,
-        max_in_degree=7,
         max_out_degree=9,
         generator=torch.Generator().manual_seed(3),
     )
     second = preprocess_edges(
         edge_index,
         num_nodes,
-        max_in_degree=7,
         max_out_degree=9,
         generator=torch.Generator().manual_seed(3),
     )
 
     assert torch.equal(first, second)
-    max_in, max_out = max_degrees(first, num_nodes)
-    assert max_in <= 7
-    assert max_out <= 9
+    uncapped = preprocess_edges(edge_index, num_nodes)
+    expected_out_degree = torch.bincount(uncapped[0], minlength=num_nodes).clamp(max=9)
+    assert torch.equal(
+        torch.bincount(first[0], minlength=num_nodes), expected_out_degree)
     input_off_diagonal = _edge_set(edge_index[:, edge_index[0] != edge_index[1]])
     bidirectional_input = input_off_diagonal | {
         (target, source) for source, target in input_off_diagonal
     }
     assert _edge_set(first) <= bidirectional_input
+
+
+@pytest.mark.parametrize("make_bidirectional", [False, True])
+def test_directed_cap_preserves_high_incoming_degree(make_bidirectional):
+    leaves = torch.arange(1, 7)
+    edge_index = torch.stack((leaves, torch.zeros_like(leaves)))
+
+    result = preprocess_edges(
+        edge_index,
+        7,
+        max_in_degree=1,
+        max_out_degree=2,
+        make_bidirectional=make_bidirectional,
+        generator=torch.Generator().manual_seed(0),
+    )
+
+    assert _edge_set(result[:, result[1] == 0]) == {
+        (leaf, 0) for leaf in leaves.tolist()
+    }
+    assert max_degrees(result, 7) == (6, 2 if make_bidirectional else 1)
+
+
+def test_directed_cap_without_outgoing_bound_keeps_all_arcs():
+    leaves = torch.arange(1, 7)
+    edge_index = torch.stack((leaves, torch.zeros_like(leaves)))
+
+    result = preprocess_edges(edge_index, 7, max_in_degree=1)
+
+    assert _edge_set(result) == {
+        edge for leaf in leaves.tolist() for edge in ((leaf, 0), (0, leaf))
+    }
 
 
 def test_undirected_degree_capping_is_symmetric_bounded_and_seeded():
@@ -177,7 +207,7 @@ def test_degree_caps_apply_before_exact_loop_insertion():
     )
 
     off_diagonal = result[:, result[0] != result[1]]
-    assert max_degrees(off_diagonal, 5) <= (1, 1)
+    assert torch.bincount(off_diagonal[0], minlength=5).tolist() == [1] * 5
     loops = result[:, result[0] == result[1]]
     assert loops.tolist() == [nodes.tolist(), nodes.tolist()]
 

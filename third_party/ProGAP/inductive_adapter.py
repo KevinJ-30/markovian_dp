@@ -1,22 +1,28 @@
-"""Run released ProGAP on graph-disjoint partitions.
+"""Graph-disjoint ProGAP boundary with exact, chunked global evaluation.
 
-Only the data boundary is new: core/methods/progap, NAP, NoisySGD, and their
-privacy calibration are imported unchanged from this checkout.
+The upstream classifier, NAP, private optimizer and composed calibration remain
+unchanged. Evaluation chunks only nodewise classifier work, never graph context.
 """
 import json
+from contextlib import nullcontext
+from copy import deepcopy
 import math
 import os
 from pathlib import Path
 import random
+import time
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch_geometric.data import Data
 from torch_geometric.transforms import ToSparseTensor
 
 from core import console
 from core.data.loader.node import NodeDataLoader
 from core.methods.progap.node import NodeLevelProGAP
+from core.data.transforms.bound_degree import BoundOutDegree
+from core.methods.progap.base import ProGAP
 from core.modules.prog import binary_auroc
 
 def _load(manifest_path, manifest, name):
@@ -53,42 +59,345 @@ def _score_mask(data, metric_ignore_label=None):
     return mask
 
 
+@torch.no_grad()
+def stage_embeddings(model, data, chunk_size):
+    """Retain every context embedding without an edge-by-feature expansion."""
+    model.eval()
+    device = next(model.parameters()).device
+    output = None
+    for start in range(0, data.num_nodes, chunk_size):
+        stop = min(start + chunk_size, data.num_nodes)
+        xs = [data[f"x{i}"][start:stop].to(device)
+              for i in range(model.current_stage + 1)]
+        embeddings, _ = model(xs)
+        if output is None:
+            output = torch.empty(
+                (data.num_nodes, embeddings.shape[1]),
+                dtype=embeddings.dtype, device=data.x.device,
+            )
+        output[start:stop].copy_(embeddings)
+    if output is None:
+        raise ValueError("ProGAP requires a nonempty context graph")
+    return output
+
+
+@torch.no_grad()
+def evaluate_stage(model, data, chunk_size=16384, metric_ignore_label=None):
+    """Reduce one global score; binary ranks are never averaged across chunks."""
+    model.eval()
+    device = next(model.parameters()).device
+    mask = _score_mask(data, metric_ignore_label)
+    binary = getattr(model, "binary", False)
+    multilabel = data.y.ndim == 2
+    totals = torch.zeros(5, dtype=torch.float64, device=device)
+    predicted_counts = actual_counts = true_counts = None
+    scores, targets = [], []
+    count = 0
+    for start in range(0, data.num_nodes, chunk_size):
+        stop = min(start + chunk_size, data.num_nodes)
+        selected = mask[start:stop]
+        if not bool(selected.any()):
+            continue
+        xs = [data[f"x{i}"][start:stop][selected].to(device)
+              for i in range(model.current_stage + 1)]
+        logits = model(xs)[1]
+        labels = data.y[start:stop][selected].to(device)
+        count += labels.shape[0]
+        if binary:
+            if logits.ndim != 2 or logits.shape[1] != 1:
+                raise ValueError("binary ProGAP requires exactly one logit")
+            logits = logits.squeeze(-1)
+            totals[0] += F.binary_cross_entropy_with_logits(
+                logits, labels.float(), reduction="sum"
+            ).double()
+            totals[1] += ((logits >= 0) == labels.bool()).sum()
+            scores.append(logits.sigmoid().cpu())
+            targets.append(labels.cpu())
+        elif multilabel:
+            totals[0] += model.root_losses(logits, labels).double().sum()
+            positive, actual = logits >= 0, labels.bool()
+            totals[1] += (positive & actual).sum()
+            totals[2] += positive.sum()
+            totals[3] += actual.sum()
+        else:
+            totals[0] += model.root_losses(logits, labels).double().sum()
+            prediction = logits.argmax(dim=-1)
+            correct = prediction == labels
+            totals[1] += correct.sum()
+            if predicted_counts is None:
+                predicted_counts = torch.zeros(logits.shape[1], dtype=torch.long, device=device)
+                actual_counts = torch.zeros_like(predicted_counts)
+                true_counts = torch.zeros_like(predicted_counts)
+            predicted_counts += torch.bincount(prediction, minlength=logits.shape[1])
+            actual_counts += torch.bincount(labels, minlength=logits.shape[1])
+            true_counts += torch.bincount(labels[correct], minlength=logits.shape[1])
+    values = totals.cpu().tolist()
+    result = {"loss": values[0] / count, "scored_nodes": count}
+    if binary:
+        result.update(metric="auroc", score=float(binary_auroc(torch.cat(scores), torch.cat(targets))),
+                      accuracy=values[1] / count)
+    elif multilabel:
+        denominator = values[2] + values[3]
+        result.update(metric="micro_f1", score=2 * values[1] / denominator if denominator else 0.0)
+    else:
+        present = actual_counts > 0
+        macro = (2 * true_counts[present].double()
+                 / (predicted_counts[present] + actual_counts[present])).mean()
+        result.update(metric="accuracy", score=values[1] / count, macro_f1=float(macro))
+    if not math.isfinite(result["score"]) or not math.isfinite(result["loss"]):
+        raise ValueError("ProGAP evaluation produced a nonfinite metric or loss")
+    return result
+
+def _cpu_copy(value):
+    if isinstance(value, (torch.nn.parameter.UninitializedParameter, torch.nn.parameter.UninitializedBuffer)):
+        return deepcopy(value)
+    if torch.is_tensor(value):
+        return value.detach().cpu().clone()
+    if isinstance(value, dict):
+        return {key: _cpu_copy(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_cpu_copy(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_cpu_copy(item) for item in value)
+    return deepcopy(value)
+
+
+def _load_selected_state(model, state):
+    # Earlier checkpoints contain genuinely unused lazy stages. Once those stages
+    # are initialized, loading an UninitializedParameter into them is invalid.
+    initialized = {
+        key: value for key, value in state.items()
+        if not isinstance(value, (torch.nn.parameter.UninitializedParameter,
+                                  torch.nn.parameter.UninitializedBuffer))
+    }
+    model.load_state_dict(initialized, strict=False)
+
+
+def _rng_state():
+    return {
+        "python": random.getstate(), "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
+    }
+
+
 class InductiveNodeLevelProGAP(NodeLevelProGAP):
-    """Select each progressive stage on a graph-disjoint validation partition."""
+    """Select each stage using one global held-out metric and first strict max."""
+
+    def __init__(self, *args, eval_chunk_size=16384, **kwargs):
+        if isinstance(eval_chunk_size, bool) or int(eval_chunk_size) != eval_chunk_size or eval_chunk_size <= 0:
+            raise ValueError("eval_chunk_size must be a positive integer")
+        self.eval_chunk_size = int(eval_chunk_size)
+        self.attempt = None
+        self.history = []
+        self.stage_states = []
+        self.updates_completed = 0
+        self.roots_total = 0
+        self.batch_min = None
+        self.batch_max = 0
+        self.empty_draws = 0
+        self.epochs_completed = 0
+        self.evaluations_completed = 0
+        self.timing = {name: 0.0 for name in (
+            "train_update_seconds", "validation_seconds", "checkpoint_io_seconds"
+        )}
+        super().__init__(*args, **kwargs)
+
+    def _phase(self, name):
+        return self.attempt.phase(name) if self.attempt is not None else nullcontext()
+
+
+    def setup(self, data):
+        with self._phase("preprocess"):
+            data = BoundOutDegree(self.max_degree)(data)
+            ProGAP.setup(self, data)
+            num_train_nodes = int(self.data.train_mask.sum())
+        if num_train_nodes != self.num_train_nodes:
+            self.num_train_nodes = num_train_nodes
+            self._progress("calibration")
+            with self._phase("calibration"):
+                self.calibrate()
+
+    def _sync(self):
+        if self.trainer.device.type == "cuda":
+            torch.cuda.synchronize(self.trainer.device)
+
+    def _progress(self, phase):
+        timing = dict(self.timing)
+        if phase == "train_update" and getattr(self, "_train_started", None) is not None:
+            timing["train_update_seconds"] += time.monotonic() - self._train_started
+        fields = {
+            "phase": phase, "updates_completed": self.updates_completed,
+            "total_updates": self.num_stages * self.trainer.epochs * (self.num_train_nodes // self.batch_size),
+            "epochs_completed": self.epochs_completed,
+            "evaluations_completed": self.evaluations_completed,
+            "total_evaluations": self.num_stages * self.trainer.epochs + 1,
+            "roots_total": self.roots_total, **timing,
+        }
+        if self.attempt is not None:
+            self.attempt.progress(**fields)
+
+    def _checkpoint(self, payload, filename):
+        if self.attempt is not None:
+            self.attempt.save_checkpoint(payload, filename=filename)
+        elif getattr(self, "checkpoint_dir", None) is not None:
+            destination = Path(self.checkpoint_dir) / filename
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_suffix(".pt.tmp")
+            torch.save(payload, temporary)
+            temporary.replace(destination)
 
     def fit(self):
         self.data.x0 = self.data.x
         self.validation.x0 = self.validation.x
-        metrics = {}
+        self.stage_states = []
         for stage in range(self.num_stages):
+            self._progress("stage_preprocess")
             if stage:
+                # NAP still receives every context row and the original adjacency.
+                # Validation can remain CPU-backed; only classifier chunks move.
                 for graph in (self.data, self.validation):
-                    embeddings, _ = self.trainer.predict(
-                        dataloader=NodeDataLoader(graph, batch_size="full", shuffle=False)
-                    )
-                    graph[f"x{stage}"] = self.nap(embeddings, graph.adj_t)
-
+                    with self._phase("preprocess"), torch.no_grad():
+                        embeddings = stage_embeddings(self.classifier, graph, self.eval_chunk_size)
+                        graph[f"x{stage}"] = self.nap(embeddings, graph.adj_t)
+                        del embeddings
             self.classifier.set_stage(stage)
             console.info(f"Fitting stage {stage + 1} of {self.num_stages}")
             self.trainer = self.configure_trainer()
-            metrics = self.trainer.fit(
-                model=self.classifier,
-                train_dataloader=self.data_loader("train"),
-                val_dataloader=NodeDataLoader(
-                    self.validation,
-                    subset=_score_mask(
-                        self.validation, getattr(self, "metric_ignore_label", None)
-                    ),
-                    batch_size="full",
-                    shuffle=False,
-                ),
-            )
-
+            model = self.classifier.to(self.trainer.device)
+            self.trainer.model = model
+            # Initialize this stage's lazy layers before optimizer/grad sampling.
+            with self._phase("preprocess"), torch.no_grad():
+                model.eval()
+                model([self.data[f"x{i}"][:2] for i in range(stage + 1)])
+            optimizer = model.configure_optimizers()
+            self.trainer.optimizer = optimizer
+            loader = self.data_loader("train")
+            if len(loader) == 0:
+                raise ValueError("ProGAP drop-last schedule has no updates")
+            best = None
+            for epoch in range(1, self.trainer.epochs + 1):
+                self._sync()
+                started = time.monotonic()
+                loss_sum = torch.zeros((), dtype=torch.float64, device=self.trainer.device)
+                epoch_roots = epoch_updates = 0
+                self._train_started = started
+                with self._phase("train_update"):
+                    model.train()
+                    for batch in loader:
+                        count = batch.batch_nodes.numel()
+                        optimizer.zero_grad(set_to_none=True)
+                        if count:
+                            xs = [batch[f"x{i}"][batch.batch_nodes] for i in range(stage + 1)]
+                            logits = model(xs)[1]
+                            labels = batch.y[batch.batch_nodes]
+                            if getattr(model, "binary", False):
+                                loss = F.binary_cross_entropy_with_logits(logits.squeeze(-1), labels.float())
+                            else:
+                                loss = model.root_losses(logits, labels).mean()
+                        else:
+                            # Exactly one private noise/Adam update, even on an empty draw.
+                            logits = model([self.data[f"x{i}"][:2] for i in range(stage + 1)])[1]
+                            loss = logits.sum() * 0
+                        loss.backward()
+                        optimizer.step()
+                        loss_sum += loss.detach().double() * count
+                        epoch_roots += count
+                        epoch_updates += 1
+                        self.updates_completed += 1
+                        self.roots_total += count
+                        self.empty_draws += int(count == 0)
+                        self.batch_min = count if self.batch_min is None else min(self.batch_min, count)
+                        self.batch_max = max(self.batch_max, count)
+                        if self.updates_completed % 20 == 0:
+                            # No device synchronization solely for per-update telemetry.
+                            self._progress("train_update")
+                self._sync()
+                self.timing["train_update_seconds"] += time.monotonic() - started
+                self._train_started = None
+                if epoch_updates != len(loader):
+                    raise RuntimeError("ProGAP executed an unexpected number of logical updates")
+                started = time.monotonic()
+                with self._phase("validation"):
+                    validation = evaluate_stage(
+                        model, self.validation, self.eval_chunk_size,
+                        getattr(self, "metric_ignore_label", None),
+                    )
+                self._sync()
+                self.timing["validation_seconds"] += time.monotonic() - started
+                self.evaluations_completed += 1
+                self.epochs_completed += 1
+                if best is None or validation["score"] > best["validation"]["score"]:
+                    started = time.monotonic()
+                    with self._phase("checkpoint_io"):
+                        best = {
+                            "model": _cpu_copy(model.state_dict()),
+                            "optimizer": _cpu_copy(optimizer.state_dict()),
+                            "rng": _rng_state(), "stage": stage, "epoch": epoch,
+                            "step": self.updates_completed, "stage_step": epoch * len(loader),
+                            "validation": validation,
+                        }
+                    self._checkpoint(best, f"stage{stage}_best.pt")
+                    self.timing["checkpoint_io_seconds"] += time.monotonic() - started
+                row = {
+                    "stage": stage, "epoch": epoch, "stage_epochs_completed": self.epochs_completed,
+                    "updates_completed": self.updates_completed, "epoch_updates": epoch_updates,
+                    "roots_total": self.roots_total, "epoch_roots": epoch_roots,
+                    "step": self.updates_completed,
+                    "training_loss": float(loss_sum) / epoch_roots if epoch_roots else 0.0,
+                    "loss": float(loss_sum) / epoch_roots if epoch_roots else 0.0,
+                    "validation_metric": validation["score"], "validation_loss": validation["loss"],
+                    "best_epoch": best["epoch"], **self.timing,
+                }
+                self.history.append(row)
+                if self.attempt is not None:
+                    self.attempt.save_json("history.json", self.history)
+                self._progress("epoch_complete")
+            _load_selected_state(model, best["model"])
+            self.stage_states.append(best)
         self.data.ready = True
-        return metrics
+        self.best_validation = self.stage_states[-1]["validation"]
+        self._checkpoint({
+            **self.stage_states[-1], "stages": self.stage_states,
+            "updates_completed": self.updates_completed,
+            "epochs_completed": self.epochs_completed,
+        }, "checkpoint.pt")
+        return {
+            self.trainer.monitor: self.best_validation["score"] * 100,
+            "epoch": self.stage_states[-1]["epoch"],
+        }
+
+    def evaluate_partition(self, data):
+        """Run the upstream final-classifier NAP pipeline with full CPU context."""
+        graph = _prepare(Data(**data.to_dict())).cpu()
+        graph.x0 = graph.x
+        model = self.classifier
+        final_state = self.stage_states[-1]["model"]
+        # As in ProGAP.pipeline(fit=False), the selected final classifier is
+        # shared by every prediction stage; archived stage checkpoints are not
+        # an ensemble and must not replace the upstream inference convention.
+        _load_selected_state(model, final_state)
+        try:
+            for stage in range(self.num_stages):
+                # Do not call the private set_stage wrapper again: this is inference,
+                # not another gradient-sampling registration or privacy calibration.
+                model.current_stage = stage
+                if stage + 1 < self.num_stages:
+                    embeddings = stage_embeddings(model, graph, self.eval_chunk_size)
+                    with torch.no_grad():
+                        graph[f"x{stage + 1}"] = self.nap(embeddings, graph.adj_t)
+                    del embeddings
+            return evaluate_stage(
+                model, graph, self.eval_chunk_size, getattr(self, "metric_ignore_label", None)
+            )
+        finally:
+            model.current_stage = self.num_stages - 1
 
 
 def _metrics(method, data):
+    if hasattr(method, "evaluate_partition"):
+        result = method.evaluate_partition(data)
+        return result["score"], result.get("macro_f1", result["score"])
     # Do not call NodeLevelProGAP.setup here: it would recalibrate the private
     # training mechanism from a held-out graph. Prediction stages reuse the
     # trained classifier and upstream NAP/pipeline implementation only.
@@ -148,6 +457,36 @@ def _positive_int(name, default):
     if value <= 0:
         raise ValueError(f"{name} must be positive")
     return value
+
+
+def _constructor_options():
+    """Validate optional controls while preserving upstream constructor defaults."""
+    options = {}
+    for key, environment in {
+        "hidden_dim": "PROGAP_HIDDEN_DIM",
+        "eval_chunk_size": "PROGAP_EVAL_CHUNK_SIZE",
+    }.items():
+        if environment in os.environ:
+            options[key] = _positive_int(environment, 1)
+    for key, environment in {
+        "learning_rate": "PROGAP_LEARNING_RATE",
+        "max_grad_norm": "PROGAP_MAX_GRAD_NORM",
+        "dropout": "PROGAP_DROPOUT",
+        "weight_decay": "PROGAP_WEIGHT_DECAY",
+    }.items():
+        if environment not in os.environ:
+            continue
+        value = float(os.environ[environment])
+        lower_valid = value > 0 if key in {"learning_rate", "max_grad_norm"} else value >= 0
+        if not math.isfinite(value) or not lower_valid or (key == "dropout" and value >= 1):
+            raise ValueError(f"{environment} is outside its supported finite range")
+        options[key] = value
+    if "PROGAP_OPTIMIZER" in os.environ:
+        optimizer = os.environ["PROGAP_OPTIMIZER"]
+        if optimizer not in {"sgd", "adam"}:
+            raise ValueError("PROGAP_OPTIMIZER must be 'sgd' or 'adam'")
+        options["optimizer"] = optimizer
+    return options
 
 
 def _multilabel():
@@ -241,23 +580,29 @@ def main():
                 if binary
                 else "val/micro_f1" if multilabel else "val/acc"
             ),
+            **_constructor_options(),
         )
     finally:
         torch.load = load
     method.classifier.multilabel = multilabel
     method.classifier.binary = binary
     method.metric_ignore_label = metric_ignore_label
-    method.validation = method.to_device(Data(**validation.to_dict()))
+    method.validation = Data(**validation.to_dict())
+    method.checkpoint_dir = result_path.parent
     method.setup(train)
     method.fit()
     achieved_epsilon = float(method.composed_mechanism.get_approxDP(method.effective_delta))
-    if achieved_epsilon > epsilon:
+    if not math.isfinite(achieved_epsilon) or achieved_epsilon > epsilon + 1e-6:
         raise RuntimeError(
             f"ProGAP calibration exceeded target epsilon: {achieved_epsilon} > {epsilon}"
         )
-    validation_primary, validation_macro_f1 = _metrics(
-        method, _load(manifest_path, manifest, "val")
-    )
+    if hasattr(method, "best_validation"):
+        validation_primary = method.best_validation["score"]
+        validation_macro_f1 = method.best_validation.get("macro_f1", validation_primary)
+    else:
+        validation_primary, validation_macro_f1 = _metrics(
+            method, _load(manifest_path, manifest, "val")
+        )
     test_primary, test_macro_f1 = _metrics(
         method, _load(manifest_path, manifest, "test")
     )

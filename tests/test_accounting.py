@@ -302,43 +302,56 @@ def test_dpar_ppr_calibration_reconstructs_equal_component_budget(ppr_releases):
     assert first.sampling_probability == 0.5
 
 
-def test_dpar_sgd_calibration_uses_outer_population_and_final_delta():
+def test_dpar_sgd_calibration_uses_root_population_and_final_delta():
     params = dict(
         target_epsilon=8.0, target_delta=5e-4, train_nodes=12,
-        sampled_train_nodes=6, ppr_releases=2, ppr_clip=2.0, sgd_clip=3.0,
+        sampled_train_nodes=6, ppr_releases=4, ppr_clip=2.0, sgd_clip=3.0,
         batch_size=3, steps=4,
     )
     calibration = calibrate_dpar_noise(**params)
+    root_fraction = min(params["batch_size"], params["ppr_releases"]) / params["ppr_releases"]
+    amplification = params["sampled_train_nodes"] / params["train_nodes"]
     accounted = DPARAccountant().account_training(
         noise_multiplier=calibration.sgd_noise_multiplier,
-        sample_rate=params["batch_size"] / params["sampled_train_nodes"],
+        sample_rate=root_fraction,
         steps=params["steps"], delta=calibration.sgd_delta,
-        amplification_rate=calibration.amplification_rate,
+        amplification_rate=amplification,
     )
     lower = DPARAccountant().account_training(
         noise_multiplier=calibration.sgd_noise_multiplier / 2.0,
-        sample_rate=params["batch_size"] / params["sampled_train_nodes"],
+        sample_rate=root_fraction,
         steps=params["steps"], delta=calibration.sgd_delta,
-        amplification_rate=calibration.amplification_rate,
+        amplification_rate=amplification,
     )
     assert calibration.amplification_rate == 0.5
-    assert calibration.ppr_releases == 2
+    assert calibration.ppr_releases == 4
     assert calibration.sampled_train_nodes == 6
-    assert accounted.sampling_probability == 0.5
-    assert accounted.epsilon <= calibration.sgd_epsilon <= params["target_epsilon"] / 2.0
+    assert accounted.sampling_probability == 0.75
+    assert math.isclose(accounted.epsilon, calibration.sgd_epsilon, rel_tol=1e-12)
+    assert accounted.epsilon <= params["target_epsilon"] / 2.0
     assert lower.epsilon > params["target_epsilon"] / 2.0
     assert calibration.sgd_noise_std == calibration.sgd_noise_multiplier * params["sgd_clip"]
     assert calibration.sgd_noise_variance == calibration.sgd_noise_std ** 2
     assert accounted.delta == calibration.sgd_delta == params["target_delta"] / 2.0
 
 
-def test_dpar_calibration_caps_batches_at_outer_population():
-    calibration = calibrate_dpar_noise(
+def test_dpar_calibration_caps_batches_at_root_population():
+    params = dict(
         target_epsilon=8.0, target_delta=5e-4, train_nodes=12,
         sampled_train_nodes=6, ppr_releases=2, ppr_clip=2.0, sgd_clip=3.0,
-        batch_size=7, steps=4,
+        steps=4,
     )
-    assert calibration.sampled_train_nodes == 6
+    calibration = calibrate_dpar_noise(**params, batch_size=3)
+    full_roots = calibrate_dpar_noise(**params, batch_size=params["ppr_releases"])
+    accounted = DPARAccountant().account_training(
+        noise_multiplier=calibration.sgd_noise_multiplier,
+        sample_rate=1.0, steps=params["steps"],
+        delta=params["target_delta"] / 2.0,
+        amplification_rate=params["sampled_train_nodes"] / params["train_nodes"],
+    )
+    assert calibration.sgd_noise_multiplier == full_roots.sgd_noise_multiplier
+    assert math.isclose(accounted.epsilon, calibration.sgd_epsilon, rel_tol=1e-12)
+    assert accounted.epsilon <= params["target_epsilon"] / 2.0
 
 
 @pytest.mark.parametrize(

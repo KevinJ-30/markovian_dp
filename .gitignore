@@ -68,3 +68,7 @@ sparsification_experiments/results/
 third_party/**/data_records/
 third_party/**/logs/
 
+# figures 
+*.pdf
+*.png
+
