@@ -160,6 +160,10 @@ def parse_args():
     p.add_argument('--relbench_reverse_edges', action='store_true',
                    help='RelBench only: also add parent->child arcs; enriches '
                         'neighbourhoods but raises K_out and hence epsilon')
+    p.add_argument('--relbench_hubs', choices=['keep', 'drop', 'replicate'],
+                   default='keep',
+                   help="RelBench only: 'drop' removes hub arcs; 'replicate' "
+                        "gives val/test their own hub copies")
     p.add_argument('--train_domains', nargs='+',
                    help='domain datasets: canonical training domain slugs')
     p.add_argument('--val_domains', nargs='+',
@@ -333,6 +337,7 @@ def main():
         load_kwargs.update(
             root=args.relbench_root,
             reverse_edges=args.relbench_reverse_edges,
+            hubs=args.relbench_hubs,
         )
     dataset, data = load_dataset(args.dataset, **load_kwargs)
     is_domain_dataset = bool(getattr(dataset, 'domain_dataset', False))

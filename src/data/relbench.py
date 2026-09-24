@@ -143,7 +143,8 @@ def load_relbench(dataset_name: str, task_name: str, *,
                   label_agg: str = 'last',
                   reverse_edges: bool = False,
                   max_categories: int = _MAX_CATEGORIES,
-                  n_hash: int = 0):
+                  n_hash: int = 0,
+                  hubs: str = 'keep'):
     """Build the homogeneous graph for a RelBench entity task.
 
     Args:
@@ -155,6 +156,9 @@ def load_relbench(dataset_name: str, task_name: str, *,
                        split) or 'any' (max over the split's rows).
         reverse_edges: also add PARENT -> CHILD arcs (raises K_out, and so eps).
         max_categories: one-hot width cap for categorical columns.
+        hubs:          'keep' | 'drop' | 'replicate'. Hub tables are non-entity
+                       tables with no foreign keys. 'drop' removes their arcs;
+                       'replicate' gives val/test their own copies.
 
     Returns:
         (dataset, data) where `dataset` exposes num_features / num_classes and
@@ -168,6 +172,8 @@ def load_relbench(dataset_name: str, task_name: str, *,
         raise ValueError(f"root must be 'row' or 'entity', got {root!r}")
     if label_agg not in ('last', 'any'):
         raise ValueError(f"label_agg must be 'last' or 'any', got {label_agg!r}")
+    if hubs not in ('keep', 'drop', 'replicate'):
+        raise ValueError(f"hubs must be 'keep', 'drop' or 'replicate', got {hubs!r}")
 
     ds = get_dataset(dataset_name, download=True)
     task = get_task(dataset_name, task_name, download=True)
@@ -204,6 +210,74 @@ def load_relbench(dataset_name: str, task_name: str, *,
     train_end = float(rows.loc[rows['_split'] == 0, time_col]
                       .astype('int64').max())
 
+    # ── hubs: split owning every row, plus hub copies ────────────────────────
+    entity_table = task.entity_table
+    entity_df = db.table_dict[entity_table].df
+    entity_pkey = db.table_dict[entity_table].pkey_col
+    entity_pos = pd.Series(np.arange(len(entity_df)), index=entity_df[entity_pkey])
+    row_entity_local = rows[entity_col].map(entity_pos).to_numpy()
+
+    hub_tables: set = set()
+    row_split = {}
+    copy_offsets = {}
+    if hubs != 'keep':
+        hub_tables = {name for name, tbl in tables
+                      if not tbl.fkey_col_to_pkey_table and name != entity_table}
+        labelled = ~pd.isna(row_entity_local)
+        ent_split = pd.DataFrame({
+            'e': row_entity_local[labelled].astype(np.int64),
+            's': rows['_split'].to_numpy()[labelled]}).drop_duplicates()
+        if ent_split['e'].duplicated().any():
+            raise ValueError(
+                f"hubs={hubs!r} needs every {entity_table} entity in one split, "
+                f"but {int(ent_split['e'].duplicated().sum())} appear in "
+                f"several; use an entity-disjoint split instead")
+        # Unlabelled entities join train.
+        entity_split = np.zeros(len(entity_df), dtype=np.int64)
+        entity_split[ent_split['e'].to_numpy()] = ent_split['s'].to_numpy()
+
+        # Owning entity of every row, via foreign keys.
+        owner = {entity_table: np.arange(len(entity_df))}
+        changed = True
+        while changed:
+            changed = False
+            for name, tbl in tables:
+                if name in owner or name in hub_tables:
+                    continue
+                fkeys = sorted(tbl.fkey_col_to_pkey_table.items(),
+                               key=lambda kv: kv[1] != entity_table)
+                for fkey_col, parent in fkeys:
+                    if parent not in owner:
+                        continue
+                    parent_df = db.table_dict[parent].df
+                    pos = pd.Series(np.arange(len(parent_df)),
+                                    index=parent_df[db.table_dict[parent].pkey_col])
+                    local = tbl.df[fkey_col].map(pos).to_numpy()
+                    ok = ~pd.isna(local)
+                    own = np.full(len(tbl.df), -1, dtype=np.int64)
+                    own[ok] = owner[parent][local[ok].astype(np.int64)]
+                    owner[name] = own
+                    changed = True
+                    break
+        for name, tbl in tables:
+            if name in hub_tables:
+                row_split[name] = np.zeros(len(tbl.df), dtype=np.int64)
+            elif name in owner:
+                own = owner[name]
+                row_split[name] = np.where(
+                    own >= 0, entity_split[np.clip(own, 0, None)], 0)
+            else:
+                raise ValueError(
+                    f"hubs={hubs!r}: table {name!r} reaches neither the entity "
+                    f"table {entity_table!r} nor a hub table; cannot assign a split")
+        if hubs == 'replicate':
+            for name in sorted(hub_tables):
+                copy_offsets[name] = [n_nodes, n_nodes + sizes[name]]
+                n_nodes += 2 * sizes[name]
+        print(f"  hubs={hubs}: hub tables {sorted(hub_tables)} "
+              f"({sum(sizes[h] for h in hub_tables)} rows"
+              f"{', x3 copies' if hubs == 'replicate' else ', arcs dropped'})")
+
     # ── features: block-diagonal per table, plus a node-type one-hot ──────────
     n_types = len(tables) + (1 if root == 'row' else 0)
     feat_blocks, widths = [], []
@@ -237,6 +311,10 @@ def load_relbench(dataset_name: str, task_name: str, *,
             x[start:start + n, col:col + block.shape[1]] = block
         col += block.shape[1]
         x[start:start + n, sum(widths) + t] = 1.0        # node-type one-hot
+    for name, (val_off, test_off) in copy_offsets.items():
+        block = x[offsets[name]:offsets[name] + sizes[name]]
+        x[val_off:val_off + sizes[name]] = block
+        x[test_off:test_off + sizes[name]] = block
 
     # ── node timestamps (NaT / static tables -> -inf, always available) ───────
     node_time = np.full(n_nodes, -np.inf, dtype=np.float64)
@@ -250,11 +328,17 @@ def load_relbench(dataset_name: str, task_name: str, *,
     if root == 'row':
         node_time[row_offset:row_offset + n_row_nodes] = (
             rows[time_col].astype('int64').to_numpy(dtype=np.float64))
+    for name, (val_off, test_off) in copy_offsets.items():
+        block = node_time[offsets[name]:offsets[name] + sizes[name]]
+        node_time[val_off:val_off + sizes[name]] = block
+        node_time[test_off:test_off + sizes[name]] = block
 
     # ── edges: foreign keys, oriented child -> parent ─────────────────────────
     src_list, dst_list = [], []
     for name, tbl in tables:
         for fkey_col, parent in tbl.fkey_col_to_pkey_table.items():
+            if hubs == 'drop' and parent in hub_tables:
+                continue
             parent_df = db.table_dict[parent].df
             pkey = db.table_dict[parent].pkey_col
             pos = pd.Series(np.arange(len(parent_df)), index=parent_df[pkey])
@@ -262,13 +346,12 @@ def load_relbench(dataset_name: str, task_name: str, *,
             parent_local = tbl.df[fkey_col].map(pos).to_numpy()
             ok = ~pd.isna(parent_local)
             src_list.append(child_local[ok] + offsets[name])
-            dst_list.append(parent_local[ok].astype(np.int64) + offsets[parent])
-
-    entity_table = task.entity_table
-    entity_df = db.table_dict[entity_table].df
-    entity_pkey = db.table_dict[entity_table].pkey_col
-    entity_pos = pd.Series(np.arange(len(entity_df)), index=entity_df[entity_pkey])
-    row_entity_local = rows[entity_col].map(entity_pos).to_numpy()
+            if hubs == 'replicate' and parent in hub_tables:
+                base = np.array([offsets[parent], *copy_offsets[parent]])
+                dst_list.append(parent_local[ok].astype(np.int64)
+                                + base[row_split[name][ok]])
+            else:
+                dst_list.append(parent_local[ok].astype(np.int64) + offsets[parent])
 
     if root == 'row':
         # entity -> row (parent -> child): the row node is a readout that its
@@ -333,6 +416,23 @@ def load_relbench(dataset_name: str, task_name: str, *,
 
     edge_ok_train = (node_time[src] <= train_end) & (node_time[dst] <= train_end)
 
+    # Disjointness check: no arc may join two splits.
+    node_split = np.zeros(n_nodes, dtype=np.int64)
+    if hubs != 'keep':
+        for name, _ in tables:
+            node_split[offsets[name]:offsets[name] + sizes[name]] = row_split[name]
+        for name, (val_off, test_off) in copy_offsets.items():
+            node_split[val_off:val_off + sizes[name]] = 1
+            node_split[test_off:test_off + sizes[name]] = 2
+        if root == 'row':
+            node_split[row_offset:row_offset + n_row_nodes] = rows['_split'].to_numpy()
+        crossing = int((node_split[src] != node_split[dst]).sum())
+        if crossing:
+            raise AssertionError(
+                f"hubs={hubs!r}: {crossing} arcs join different splits")
+    # Nodes of the training-time graph, for delta.
+    n_train_nodes = int(((node_split == 0) & (node_time <= train_end)).sum())
+
     # edge_index is unfiltered on purpose: get_db() defaults to
     # upto_test_timestamp=True, so no post-cutoff row exists to reach.
     # Filtering again would drop legitimate edges.  Checked by
@@ -345,6 +445,8 @@ def load_relbench(dataset_name: str, task_name: str, *,
     data.train_edge_index = torch.from_numpy(
         np.stack([src[edge_ok_train], dst[edge_ok_train]])).long()
     data.node_time = torch.from_numpy(node_time)
+    data.node_split = torch.from_numpy(node_split)
+    data.n_train_nodes = n_train_nodes
     if is_regression:
         data.target_std = target_std
     for split in ('train', 'val', 'test'):
@@ -354,7 +456,8 @@ def load_relbench(dataset_name: str, task_name: str, *,
                   int(y[masks['train'] | masks['val'] | masks['test']].max()) + 1)
     dataset = _RelBenchDataset(data, total_width, num_classes,
                                task=task, task_type=str(task.task_type),
-                               target_std=target_std)
+                               target_std=target_std, hubs=hubs,
+                               n_train_nodes=n_train_nodes)
     return dataset, data
 
 
