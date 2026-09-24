@@ -77,7 +77,7 @@ def _load_partitions(manifest: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 
 def run_partitioned(manifest: str | Path, result_path: str | Path, *, steps: int = 1,
                     batch_size: int = 32, noise_multiplier: float = 2.0,
-                    evaluate_every: int = 50, seed: int = 0,
+                    evaluate_every: int = 0, seed: int = 0,
                     clip: float = 1.0, regression: bool = False,
                     max_private_batch_nodes: int = 8192,
                     architecture: str = "graphsage", dropout: float = 0.5,

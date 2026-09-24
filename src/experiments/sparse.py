@@ -265,9 +265,9 @@ def parse_args():
     p.add_argument('--progress_every', type=int,
                    help='verbose progress interval; defaults to the validation '
                         'interval and does not change checkpoint selection')
-    p.add_argument('--eval_every', type=int, default=50,
+    p.add_argument('--eval_every', type=int, default=0,
                    help='validate/select every N updates and at the final update; '
-                        '0 uses one expected epoch (ceil(1/p1)); default: 50')
+                        '0 (default) uses one expected epoch (ceil(1/p1))')
     args = p.parse_args()
     if args.eval_every < 0:
         p.error("--eval_every must be nonnegative")

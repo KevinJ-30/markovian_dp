@@ -37,7 +37,7 @@ class DPGNNConfig:
     steps: int
     batch_size: int
     noise_multiplier: float
-    evaluate_every: int = 50
+    evaluate_every: int = 0
     seed: int = 0
     max_degree: int = 5
     latent_size: int = 100

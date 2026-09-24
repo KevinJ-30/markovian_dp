@@ -359,6 +359,7 @@ def test_small_population_fit_uses_effective_terms_for_release_and_accounting():
     held_out = SimpleNamespace(num_nodes=1, x=x[:1], y=y[:1], edge_index=edges)
     config = DPGNNConfig(
         num_classes=2, steps=2, batch_size=3, noise_multiplier=0.7, seed=0,
+        evaluate_every=2,  # Compare the final update, not an earlier selected model.
         max_degree=5, latent_size=5, clip=0.2, max_private_batch_nodes=2, dropout=0.0)
     torch.manual_seed(config.seed)
     reference = _OneHopGraphSAGE(inputs=3, hidden=5, classes=2, dropout=0.0)

@@ -403,10 +403,11 @@ Changing the architecture does not change calibration for fixed sampling,
 degree bounds, clipping, and update count.
 
 `--track_every N` evaluates every N steps and writes one CSV row per
-checkpoint. Since epsilon grows with the step count, a single run then yields a
-whole privacy–utility curve, and each checkpoint carries the guarantee for the
-model as released at that step. Evaluation consumes no sampling randomness, so a
-tracked run follows exactly the same trajectory as an untracked one.
+checkpoint. Intermediate rows describe the models at those actual updates.
+The final row keeps `step=T` for full-run privacy accounting but reports the
+validation-selected model, whose update is recorded in `selection.step`.
+Tracking consumes no sampling randomness and does not change the validation
+candidate schedule or training trajectory.
 
 Reusable setup, calibration, reporting, and plotting tools live in `scripts/`;
 see [scripts/README.md](scripts/README.md). Cluster launchers live in `sbatch/`.
@@ -419,13 +420,37 @@ the expected Poisson root count: set `p1 = batch_size / n_train`,
 fixed epoch budget changes both sampling probability and update count;
 recalibrate noise for the new schedule rather than reusing the old multiplier.
 
+### Validation checkpoint selection
+
+SparseGNN and DP-GNN train for the full requested schedule, then restore the
+checkpoint with the highest validation **primary metric** before final test
+evaluation and test bootstrapping. Accuracy, AUROC, micro-F1, and R² are all
+maximized; ties retain the earliest candidate. If every validation score is
+undefined, the first evaluated candidate is retained and its selection score
+is reported as null.
+
+SparseGNN validates every `--eval_every` updates (CLI default: 0), independently
+of verbosity, and always at the final update. The default zero uses `ceil(1/p1)`
+updates, one expected epoch; for zero root-sampling probability, it uses the
+final update. DP-GNN's `parameters.evaluate_every` also defaults to zero and
+uses `ceil(n_train/batch_size)` updates plus the final update. Explicit positive
+intervals override these defaults; negative intervals are rejected.
+`--progress_every` only controls SparseGNN logging, not selection.
+
+Both return `selection` metadata: metric, selected `step`, `validation_score`,
+and effective `evaluate_every`. SparseGNN stores it as JSON in its CSV.
+Ordinary training-time validation scores only validation nodes; explicitly
+requested SparseGNN tracking may still report intermediate test metrics.
+Neither validation nor tracking performs bootstrapping. Privacy accounting
+still charges **all** training updates, never just the selected update.
+
 ### Test confidence intervals
 
 Both maintained runners (`src.experiments.run` and `src.experiments.sparse`)
 calculate **95% node-wise percentile bootstrap intervals using 1,000 resamples**
-by default. Only the final test evaluation is bootstrapped: training, validation,
-checkpoint selection, and intermediate tracked rows are unchanged. The model
-runs its existing test inference once; resamples reuse those fixed predictions,
+by default. Only the final test evaluation is bootstrapped, after restoring the
+validation-selected model. Training, validation, and intermediate tracked rows
+are not bootstrapped. Resamples reuse the existing fixed test predictions,
 including the same sampled evaluation graph/noisy ProGAP aggregates.
 
 Both runners accept:
@@ -542,9 +567,10 @@ accountant is used. The former per-parameter percentile clipping and manual
 noise path have been removed.
 
 Graph-disjoint partitions, one-hop architecture, training-star truncation, and
-the existing sampled full-partition evaluation are unchanged. `evaluate_every`
-remains accepted but only final validation/test metrics are returned. Historical
-DP-GNN results predate this clipping/root-sampling change and are not rewritten.
+the sampled full-partition evaluation are unchanged. DP-GNN now uses
+`evaluate_every` for validation-best selection with a fixed validation graph
+seed, restores training mode after each validation, and evaluates/bootstraps
+test once from the restored model. Historical results are not rewritten.
 
 The direct trainer also accepts `DPGNNConfig(multilabel=True)` for multi-hot
 targets. It averages binary cross-entropy over labels within each root, retains
