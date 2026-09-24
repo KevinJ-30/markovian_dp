@@ -449,24 +449,16 @@ def test_dataset_task_metadata_is_authoritative():
         _resolve_task_metadata(dataset, {"binary": False})
 
 
-def test_domain_dataset_rejects_unsupported_heterpoisson(monkeypatch):
-    dataset = SimpleNamespace(
-        domain_dataset=True,
-        task_type="MULTICLASS",
-        primary_metric="accuracy",
-        metric_ignore_label=None,
-    )
-    data = Data(
-        x=torch.zeros((3, 2)),
-        y=torch.tensor([0, 1, 0]),
-        edge_index=torch.empty((2, 0), dtype=torch.long),
-    )
-    monkeypatch.setattr(
-        run_module, "load_dataset", lambda *args, **kwargs: (dataset, data))
-    with pytest.raises(ValueError, match="does not support domain datasets"):
+@pytest.mark.parametrize("method", ["heterpoisson", "unknown"])
+def test_unsupported_method_rejected_before_loading_dataset(monkeypatch, method):
+    def unexpected_load(*args, **kwargs):
+        pytest.fail("unsupported methods must not load datasets")
+
+    monkeypatch.setattr(run_module, "load_dataset", unexpected_load)
+    with pytest.raises(ValueError, match="unsupported method"):
         run_module.run({
             "dataset": "facebook100",
-            "method": "heterpoisson",
+            "method": method,
             "device": "cpu",
         })
 

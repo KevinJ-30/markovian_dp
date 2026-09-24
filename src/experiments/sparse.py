@@ -575,8 +575,8 @@ def main():
                 # Adam everywhere, DP or not.  Three reasons:
                 #   1. Every baseline we compare against is Adam -- DPAR is
                 #      literally DPAdamGaussianOptimizer upstream, ProGAP
-                #      defaults to it, HeterPoisson uses it -- so a same-
-                #      optimizer comparison is the defensible one.
+                #      defaults to it -- so a same-optimizer comparison is
+                #      the defensible one.
                 #   2. It lets us adopt GraphSAINT's published per-dataset
                 #      config (lr=0.01 and their dropout values) as a package;
                 #      those were grid-searched under Adam.

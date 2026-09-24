@@ -21,11 +21,10 @@ from src.processing.graphs import preprocess_inductive_split
 from src.processing.splits import load_or_create_inductive_split
 
 
-# Continuous targets change the task head/objective, not the clipped-gradient
-# or normalized-aggregation mechanisms. ProGAP's vendored task adaptation
-# retains its upstream NAP, DP-SGD, and composed accountant.
-_REGRESSION_METHODS = frozenset(
-    {"mlp", "dp_mlp", "graphsage", "dpar", "dp_gnn", "heterpoisson", "progap"})
+# Every supported method also accepts continuous targets through its task head
+# and objective; the privacy mechanisms and accountants remain method-owned.
+_SUPPORTED_METHODS = frozenset(
+    {"mlp", "dp_mlp", "graphsage", "dpar", "dp_gnn", "progap"})
 
 
 def _dataclass_config(cls: type, values: dict[str, Any]) -> Any:
@@ -130,6 +129,10 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     missing = required - set(config)
     if missing:
         raise ValueError(f"experiment config is missing {sorted(missing)}")
+    method = config["method"]
+    if method not in _SUPPORTED_METHODS:
+        raise ValueError(
+            f"unsupported method {method!r}; expected {sorted(_SUPPORTED_METHODS)}")
     seed = int(config.get("seed", 0))
     device = _device(str(config.get("device", "auto")))
 
@@ -144,19 +147,9 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     options = dict(raw_options)
     options.setdefault("seed", seed)
     _check_task_options(options, task)
-    method = config["method"]
-    if task["regression"] and method not in _REGRESSION_METHODS:
-        raise ValueError(
-            f"method {method!r} does not support regression; only "
-            f"{sorted(_REGRESSION_METHODS)} accept it.")
 
     domain_dataset = bool(
         getattr(dataset, "domain_dataset", getattr(data, "domain_dataset", False)))
-    if domain_dataset and method == "heterpoisson":
-        raise ValueError(
-            "heterpoisson does not support domain datasets; use SparseGNN, a "
-            "first-party method, DP-GNN, or ProGAP"
-        )
     requested_strategy = config.get("split_strategy")
     if domain_dataset:
         if requested_strategy not in {None, "domain"}:
@@ -205,7 +198,7 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
         options["multilabel"] = task["multilabel"]
         for name in ("seed", "binary", "regression", "metric_ignore_label"):
             options.pop(name, None)
-    if method in _REGRESSION_METHODS and method != "progap":
+    if method != "progap":
         options.setdefault("regression", task["regression"])
 
     if method == "dpar":
@@ -256,7 +249,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--dataset", help="override the configured dataset")
-    parser.add_argument("--method", help="override the configured method")
+    parser.add_argument(
+        "--method", choices=sorted(_SUPPORTED_METHODS),
+        help="override the configured method")
     parser.add_argument(
         "--out", type=Path,
         help="default: results/inductive/<dataset>/<method>[-<domain-split-id>].json")

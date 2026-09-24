@@ -1,23 +1,6 @@
 # Privacy Amplification by Composite Subsampling for GNNs
 
-Node-level differentially private GNN training, where the privacy amplification
-comes from *two* stages of subsampling rather than one: Poisson sampling of root
-nodes, followed by randomized sparsification of each root's neighbourhood.
-
-One training step:
-
-1. **Root sampling.** Each node is selected independently with probability `p1`.
-2. **SparseExpand.** Each selected root grows a rooted subgraph by walking
-   *incoming* edges for `r` levels, retaining at most **20 incoming arcs per
-   expanded node**. For degree `d`, draw `B ~ Binomial(d, p2)` and choose
-   `min(B, 20)` arcs uniformly without replacement.
-3. **Noisy update.** Each rooted subgraph contributes one gradient `g0`, clipped
-   to L2 norm `C`; the clipped gradients are summed and one draw of
-   `N(0, (sigma*C)^2 I)` is added. `sigma` is the Opacus noise multiplier.
-
-The composition of both sampling stages amplifies privacy beyond what
-Poisson subsampling alone gives, which is what the dominating pairs in
-`src/privacy/accounting.py` quantify. I'm making an edit here for no specific reason.
+This repository contains the code for the experiments in the paper [blank]. 
 
 ## Layout
 
@@ -64,13 +47,17 @@ paper/                     manuscript and figures
 ```
 
 The source packages are organized by responsibility; method-specific training
-loops and graph protocols remain separate. Import definitions from their owning
-modules rather than package-level facades.
+loops and graph protocols remain separate. 
 
 Entry points:
 - `python -m src.experiments.sparse` — SparseGNN sweeps.
 - `python -m src.experiments.compute_epsilon` — post-hoc privacy accounting.
 - `python -m src.experiments.run` — graph-disjoint baseline comparisons.
+
+The comparison runner supports `mlp`, `dp_mlp`, `graphsage`, `dpar`, `dp_gnn`,
+and `progap`. SparseGNN uses its separate CLI above. HeterPoisson support,
+presets, and vendored PNPiGNNs source have been removed; historical result
+artifacts are retained but are not supported launch configurations.
 
 Baseline dropout defaults to `0.5` for MLP, GraphSAGE, DP-MLP, DPAR, DP-GNN,
 and ProGAP. Shipped baseline presets and the non-private full-batch ceiling use
@@ -440,22 +427,6 @@ or nodes in a batch. Outgoing expansion, preprocessing degree limits, other
 models, and full-graph evaluation are unchanged. Accounting formulas are
 unchanged; this implementation change does not revalidate them for the cap.
 
-### Parameters that price epsilon, and parameters that do not
-
-Only `p1`, `p2`, `r`, `K_in`/`K_out`, `sigma`, and `T` enter the accounting.
-`sigma` is a noise multiplier, not an absolute noise scale: the clipping norm
-`C` bounds each rooted subgraph's gradient (`||g0|| <= C`), and the noise
-actually injected is `N(0, (sigma*C)^2 I)`. The dominating-pair reduction
-divides sensitivity and noise through by the same `C`, so only `sigma`
-survives in the privacy formula. Concretely, changing `C` while holding
-`sigma` fixed changes both the sensitivity bound and absolute noise by the same
-factor, leaving epsilon unchanged. Neither the learning rate, momentum,
-optimizer, nor model depth `L` enters the accountant.
-
-Note `L` and `r` are independent. `r` is the expansion depth and sets the
-privacy radius; `L` is the number of GNN layers. An `L`-layer model on an
-`r`-hop subgraph still reads only `r` hops, because the subgraph simply does not
-contain anything further out — the extra layers add depth, not reach.
 
 ## Accounting
 

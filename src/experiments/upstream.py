@@ -20,17 +20,10 @@ import torch
 
 
 UPSTREAM_METHODS = {
-
     "progap": {
         "repository": "https://github.com/sisaman/ProGAP",
         "revision": "3ccad59e29e49949b8f0984381a6e6e5d5257cdf",
         "local_source": "third_party/ProGAP",
-    },
-
-    "heterpoisson": {
-        "repository": "https://github.com/zihangxiang/PNPiGNNs",
-        "revision": "9a06332147532d0cd163b484c95d4e347ff1c285",
-        "local_source": "third_party/PNPiGNNs/Preserving_Node_level_Privacy_in_Graph_Neural_Networks",
     },
 }
 
@@ -123,31 +116,24 @@ def _finite_positive(value: Any, name: str) -> float:
 
 
 def _target_environment(
-    method: str,
     config: dict[str, Any],
     configured_env: dict[str, Any],
     task_metadata: dict[str, Any],
 ) -> dict[str, str]:
-    """Encode method-owned controls without ambient-environment aliases."""
-    if method not in {"progap", "heterpoisson"}:
-        return {}
-    prefix = method.upper()
-    prohibited = {f"{prefix}_TARGET_EPSILON", f"{prefix}_TARGET_DELTA"}
-    if method == "progap":
-        prohibited.add("PROGAP_EPSILON")
+    """Encode ProGAP controls without ambient-environment aliases."""
+    prohibited = {"PROGAP_TARGET_EPSILON", "PROGAP_TARGET_DELTA", "PROGAP_EPSILON"}
     conflicting = prohibited & set(configured_env)
     if conflicting:
         raise ValueError(
-            f"{method} privacy targets must be configured in parameters, not environment: "
+            "progap privacy targets must be configured in parameters, not environment: "
             f"{sorted(conflicting)}"
         )
-    if method == "progap":
-        conflicting_task = _PROGAP_TASK_ENVIRONMENT & set(configured_env)
-        if conflicting_task:
-            raise ValueError(
-                "progap task settings are resolved from the dataset, not environment: "
-                f"{sorted(conflicting_task)}"
-            )
+    conflicting_task = _PROGAP_TASK_ENVIRONMENT & set(configured_env)
+    if conflicting_task:
+        raise ValueError(
+            "progap task settings are resolved from the dataset, not environment: "
+            f"{sorted(conflicting_task)}"
+        )
     parameters = config.get("parameters", {})
     if not isinstance(parameters, dict):
         raise ValueError("parameters must be a configuration mapping")
@@ -156,89 +142,64 @@ def _target_environment(
     if delta >= 1:
         raise ValueError("parameters.target_delta must be less than one")
     encoded = {
-        f"{prefix}_TARGET_EPSILON": str(epsilon),
-        f"{prefix}_TARGET_DELTA": str(delta),
-        f"{prefix}_SEED": str(int(config.get("seed", 0))),
+        "PROGAP_TARGET_EPSILON": str(epsilon),
+        "PROGAP_TARGET_DELTA": str(delta),
+        "PROGAP_SEED": str(int(config.get("seed", 0))),
     }
-    if method == "progap":
-        supported = {
-            "target_epsilon", "target_delta", "epochs", "batch_size", "max_degree",
-            "depth", "multilabel", "hidden_dim", "dropout", "optimizer",
-            "learning_rate", "weight_decay", "max_grad_norm", "eval_chunk_size",
-        }
-        unknown = set(parameters) - supported
-        if unknown:
-            raise ValueError(f"Unsupported ProGAP parameters: {sorted(unknown)}")
-        optional = {
-            "epochs": "PROGAP_EPOCHS",
-            "batch_size": "PROGAP_BATCH_SIZE",
-            "max_degree": "PROGAP_MAX_DEGREE",
-            "depth": "PROGAP_DEPTH",
-        }
-        for parameter, environment in optional.items():
-            if parameter in parameters:
-                encoded[environment] = str(parameters[parameter])
-        positive = {
-            "hidden_dim": "PROGAP_HIDDEN_DIM",
-            "learning_rate": "PROGAP_LEARNING_RATE",
-            "max_grad_norm": "PROGAP_MAX_GRAD_NORM",
-            "eval_chunk_size": "PROGAP_EVAL_CHUNK_SIZE",
-        }
-        for parameter, environment in positive.items():
-            if parameter in parameters:
-                value = _finite_positive(parameters[parameter], f"parameters.{parameter}")
-                if parameter in {"hidden_dim", "eval_chunk_size"}:
-                    if not value.is_integer():
-                        raise ValueError(f"parameters.{parameter} must be an integer")
-                    value = int(value)
-                encoded[environment] = str(value)
-        for parameter, environment in {
-            "dropout": "PROGAP_DROPOUT",
-            "weight_decay": "PROGAP_WEIGHT_DECAY",
-        }.items():
-            if parameter not in parameters:
-                continue
-            value = parameters[parameter]
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ValueError(f"parameters.{parameter} must be a finite nonnegative number")
-            value = float(value)
-            if not math.isfinite(value) or value < 0 or (parameter == "dropout" and value >= 1):
-                raise ValueError(f"parameters.{parameter} is outside its supported range")
+    supported = {
+        "target_epsilon", "target_delta", "epochs", "batch_size", "max_degree",
+        "depth", "multilabel", "hidden_dim", "dropout", "optimizer",
+        "learning_rate", "weight_decay", "max_grad_norm", "eval_chunk_size",
+    }
+    unknown = set(parameters) - supported
+    if unknown:
+        raise ValueError(f"Unsupported ProGAP parameters: {sorted(unknown)}")
+    optional = {
+        "epochs": "PROGAP_EPOCHS",
+        "batch_size": "PROGAP_BATCH_SIZE",
+        "max_degree": "PROGAP_MAX_DEGREE",
+        "depth": "PROGAP_DEPTH",
+    }
+    for parameter, environment in optional.items():
+        if parameter in parameters:
+            encoded[environment] = str(parameters[parameter])
+    positive = {
+        "hidden_dim": "PROGAP_HIDDEN_DIM",
+        "learning_rate": "PROGAP_LEARNING_RATE",
+        "max_grad_norm": "PROGAP_MAX_GRAD_NORM",
+        "eval_chunk_size": "PROGAP_EVAL_CHUNK_SIZE",
+    }
+    for parameter, environment in positive.items():
+        if parameter in parameters:
+            value = _finite_positive(parameters[parameter], f"parameters.{parameter}")
+            if parameter in {"hidden_dim", "eval_chunk_size"}:
+                if not value.is_integer():
+                    raise ValueError(f"parameters.{parameter} must be an integer")
+                value = int(value)
             encoded[environment] = str(value)
-        if "optimizer" in parameters:
-            optimizer = parameters["optimizer"]
-            if not isinstance(optimizer, str) or optimizer not in {"adam", "sgd"}:
-                raise ValueError("parameters.optimizer must be 'adam' or 'sgd'")
-            encoded["PROGAP_OPTIMIZER"] = optimizer
-        encoded["PROGAP_MULTILABEL"] = "1" if parameters.get("multilabel", False) else "0"
-        encoded["PROGAP_BINARY"] = "1" if task_metadata["binary"] else "0"
-        encoded["PROGAP_PRIMARY_METRIC"] = task_metadata["primary_metric"]
-        if task_metadata["metric_ignore_label"] is not None:
-            encoded["PROGAP_METRIC_IGNORE_LABEL"] = str(task_metadata["metric_ignore_label"])
-        return encoded
-    if "degree_bound" in parameters:
-        raise ValueError(
-            "parameters.degree_bound is retired; the HeterPoisson bound is derived from the training population"
-        )
-    if "HETERPOISSON_DEGREE_BOUND" in configured_env or "HETERPOISSON_DEGREE_BOUND" in os.environ:
-        raise ValueError(
-            "HETERPOISSON_DEGREE_BOUND is retired; the bound is derived from the training population"
-        )
-    required = {
-        "epochs": "HETERPOISSON_EPOCHS",
-        "expected_batchsize": "HETERPOISSON_EXPECTED_BATCHSIZE",
-        "K": "HETERPOISSON_K",
-        "num_neighbors": "HETERPOISSON_NUM_NEIGHBORS",
-        "clip_norm": "HETERPOISSON_CLIP_NORM",
-        "learning_rate": "HETERPOISSON_LEARNING_RATE",
-    }
-    for parameter, environment in required.items():
+    for parameter, environment in {
+        "dropout": "PROGAP_DROPOUT",
+        "weight_decay": "PROGAP_WEIGHT_DECAY",
+    }.items():
         if parameter not in parameters:
-            raise ValueError(f"heterpoisson requires parameters.{parameter}")
-        encoded[environment] = str(parameters[parameter])
-    # Swaps criterion and head width only; not seen by get_std_node_dp.
-    if parameters.get("regression", False):
-        encoded["HETERPOISSON_REGRESSION"] = "1"
+            continue
+        value = parameters[parameter]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"parameters.{parameter} must be a finite nonnegative number")
+        value = float(value)
+        if not math.isfinite(value) or value < 0 or (parameter == "dropout" and value >= 1):
+            raise ValueError(f"parameters.{parameter} is outside its supported range")
+        encoded[environment] = str(value)
+    if "optimizer" in parameters:
+        optimizer = parameters["optimizer"]
+        if not isinstance(optimizer, str) or optimizer not in {"adam", "sgd"}:
+            raise ValueError("parameters.optimizer must be 'adam' or 'sgd'")
+        encoded["PROGAP_OPTIMIZER"] = optimizer
+    encoded["PROGAP_MULTILABEL"] = "1" if parameters.get("multilabel", False) else "0"
+    encoded["PROGAP_BINARY"] = "1" if task_metadata["binary"] else "0"
+    encoded["PROGAP_PRIMARY_METRIC"] = task_metadata["primary_metric"]
+    if task_metadata["metric_ignore_label"] is not None:
+        encoded["PROGAP_METRIC_IGNORE_LABEL"] = str(task_metadata["metric_ignore_label"])
     return encoded
 
 
@@ -278,14 +239,12 @@ class UpstreamBaseline:
                     for key, value in configured_env.items()):
                 raise ValueError("environment must be a string-keyed configuration mapping")
             target_environment = _target_environment(
-                self.method, self.config, configured_env, task_metadata
+                self.config, configured_env, task_metadata
             )
-            inherited_environment = os.environ
-            if self.method == "progap":
-                inherited_environment = {
-                    key: value for key, value in os.environ.items()
-                    if key not in _PROGAP_TASK_ENVIRONMENT
-                }
+            inherited_environment = {
+                key: value for key, value in os.environ.items()
+                if key not in _PROGAP_TASK_ENVIRONMENT
+            }
             env = {
                 **inherited_environment,
                 **{key: str(value) for key, value in configured_env.items()},
@@ -298,14 +257,15 @@ class UpstreamBaseline:
             if not result_path.exists():
                 raise RuntimeError(f"{self.method} adapter did not write {result_path}")
             result = json.loads(result_path.read_text())
-        if self.method == "progap" and task_metadata["primary_metric"] == "r2":
+        if task_metadata["primary_metric"] == "r2":
             if result.get("metric") != "r2":
                 raise ValueError("progap regression result must report metric 'r2'")
-        binary_result = self.method == "progap" and task_metadata["binary"]
+        binary_result = task_metadata["binary"]
         if binary_result:
             metric = task_metadata["primary_metric"]
             required = {
-                "metric", f"validation_{metric}", f"test_{metric}", "privacy",
+                "metric", f"validation_{metric}", f"test_{metric}",
+                "privacy", "calibration",
             }
             if result.get("metric") != metric:
                 raise ValueError(
@@ -318,37 +278,23 @@ class UpstreamBaseline:
                     f"{sorted(legacy_metric_fields)}"
                 )
         else:
-            required = {"validation_accuracy", "test_accuracy", "privacy"}
-        missing = required - set(result)
-        if self.method in {"progap", "heterpoisson"}:
-            if binary_result:
-                normalized = {
-                    "metric",
-                    f"validation_{task_metadata['primary_metric']}",
-                    f"test_{task_metadata['primary_metric']}",
-                    "privacy",
-                    "calibration",
-                }
-            else:
-                normalized = {
-                    "validation_accuracy", "validation_macro_f1",
-                    "test_accuracy", "test_macro_f1", "privacy", "calibration",
-                }
-            absent = normalized - set(result)
-            if absent:
-                raise ValueError(f"{self.method} result omits normalized fields {sorted(absent)}")
-            total = result["privacy"].get("total") if isinstance(result["privacy"], dict) else None
-            total_fields = {
-                "epsilon", "delta", "accountant", "noise_multiplier",
-                "sampling_probability", "composition_count", "parameters",
+            required = {
+                "validation_accuracy", "validation_macro_f1",
+                "test_accuracy", "test_macro_f1", "privacy", "calibration",
             }
-            if not isinstance(total, dict) or total_fields - set(total):
-                raise ValueError(f"{self.method} result omits normalized privacy.total fields")
-            calibration_fields = {"target_epsilon", "target_delta", "achieved_epsilon", "noise_std"}
-            if not isinstance(result["calibration"], dict) or calibration_fields - set(result["calibration"]):
-                raise ValueError(f"{self.method} result omits normalized calibration fields")
+        missing = required - set(result)
         if missing:
-            raise ValueError(f"{self.method} result omits standardized fields {sorted(missing)}")
+            raise ValueError(f"{self.method} result omits normalized fields {sorted(missing)}")
+        total = result["privacy"].get("total") if isinstance(result["privacy"], dict) else None
+        total_fields = {
+            "epsilon", "delta", "accountant", "noise_multiplier",
+            "sampling_probability", "composition_count", "parameters",
+        }
+        if not isinstance(total, dict) or total_fields - set(total):
+            raise ValueError(f"{self.method} result omits normalized privacy.total fields")
+        calibration_fields = {"target_epsilon", "target_delta", "achieved_epsilon", "noise_std"}
+        if not isinstance(result["calibration"], dict) or calibration_fields - set(result["calibration"]):
+            raise ValueError(f"{self.method} result omits normalized calibration fields")
         result["method"] = self.method
         result["upstream"] = UPSTREAM_METHODS[self.method]
         return result

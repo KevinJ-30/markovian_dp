@@ -147,8 +147,7 @@ DROPOUT=${DROPOUT:-0.0}
 # ADAM everywhere, DP and non-DP alike, at lr = 0.01 -- ONE value for every
 # dataset and both arms.  Three reasons for Adam over SGD:
 #   1. Every baseline is Adam (DPAR is DPAdamGaussianOptimizer upstream, ProGAP
-#      defaults to it, HeterPoisson uses it), so this is the same-optimizer
-#      comparison.
+#      defaults to it), so this is the same-optimizer comparison.
 #   2. It lets us take GraphSAINT's published config as a package: their
 #      lr=0.01 and per-dataset dropout were grid-searched together under Adam,
 #      so borrowing the dropout while running SGD would be incoherent.

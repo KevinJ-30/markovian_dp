@@ -1,9 +1,5 @@
-import importlib.util
 import json
-import math
-from pathlib import Path
-import sys
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -59,96 +55,6 @@ def test_negative_r2_selects_and_restores_best_checkpoint(monkeypatch, method):
     assert result["validation_accuracy"] == pytest.approx(-9.0)
     assert result["test_accuracy"] == pytest.approx(-9.0)
     assert model.bias.item() == 2.0
-
-
-@pytest.fixture
-def heterpoisson(monkeypatch):
-    # The adapter's scoring and checkpointing do not need upstream's optional
-    # training/accounting dependencies. Isolate those imports, not the scorer.
-    datasets = ModuleType("datasets")
-    datasets.model = ModuleType("datasets.model")
-    scheduler = ModuleType("train_scheduler")
-    scheduler.Phase = SimpleNamespace(TRAIN="train")
-    privacy = ModuleType("privacy")
-    privacy.sampling = ModuleType("privacy.sampling")
-    for name, module in {
-        "datasets": datasets, "datasets.model": datasets.model,
-        "train_scheduler": scheduler, "privacy": privacy,
-        "privacy.sampling": privacy.sampling,
-    }.items():
-        monkeypatch.setitem(sys.modules, name, module)
-    path = (
-        Path(__file__).resolve().parents[1] / "third_party/PNPiGNNs"
-        / "Preserving_Node_level_Privacy_in_Graph_Neural_Networks/inductive_adapter.py"
-    )
-    spec = importlib.util.spec_from_file_location("heterpoisson_regression_adapter", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _root_batch(predictions, truth):
-    predictions = torch.as_tensor(predictions, dtype=torch.float64)
-    truth = torch.as_tensor(truth, dtype=torch.float64)
-    # Deliberately wrong neighbor predictions must never affect root scoring.
-    x = torch.stack((predictions, torch.full_like(predictions, 1e6)), dim=1).unsqueeze(-1)
-    targets = torch.stack((truth, torch.full_like(truth, -1e6)), dim=1)
-    return x, targets
-
-
-def test_heterpoisson_scores_global_center_node_r2_across_batches(heterpoisson):
-    from sklearn.metrics import r2_score
-
-    truth = torch.tensor([0., 1., 4., 5., 9.], dtype=torch.float64) + 1e9
-    predictions = torch.tensor([-8., 2., 2., 8., 4.], dtype=torch.float64) + 1e9
-    scheduler = SimpleNamespace(model=torch.nn.Identity(), device="cpu")
-    batches = [None] + [
-        _root_batch(predictions[start:end], truth[start:end])
-        for start, end in [(0, 1), (1, 3), (3, 5)]
-    ]
-    expected = r2_score(truth.numpy(), predictions.numpy())
-    assert expected < 0
-    assert heterpoisson._r2_score(scheduler, batches) == pytest.approx(expected, abs=1e-7)
-    assert heterpoisson._r2_score(
-        scheduler, [_root_batch(predictions, truth)]
-    ) == pytest.approx(expected, abs=1e-7)
-
-
-@pytest.mark.parametrize("predictions,truth,expected", [
-    ([], [], float("nan")),
-    ([2.0], [2.0], float("nan")),
-    ([2.0, 2.0], [2.0, 2.0], 1.0),
-    ([2.0, 3.0], [2.0, 2.0], 0.0),
-])
-def test_heterpoisson_r2_small_and_constant_targets(heterpoisson, predictions, truth, expected):
-    scheduler = SimpleNamespace(model=torch.nn.Identity(), device="cpu")
-    actual = heterpoisson._r2_score(scheduler, [None, _root_batch(predictions, truth)])
-    if math.isnan(expected):
-        assert math.isnan(actual)
-    else:
-        assert actual == expected
-
-
-def test_heterpoisson_restores_best_negative_r2_and_worker_weights(heterpoisson):
-    model = _ConstantRegressor()
-    loader = [_root_batch([0.0, 0.0], [0.0, 1.0])]
-    scheduler = SimpleNamespace(
-        model=model, device="cpu", train_loader=object(),
-        val_loader=loader, test_loader=loader,
-        worker_param_func=[model.bias.detach().clone()],
-    )
-
-    @torch.no_grad()
-    def one_epoch(**kwargs):
-        model.bias.fill_([4.0, 2.0, 3.0][scheduler.epoch])
-        scheduler.worker_param_func[0].copy_(model.bias)
-
-    scheduler.one_epoch = one_epoch
-    validation, test = heterpoisson._train_regression(scheduler, 3)
-    assert validation == pytest.approx(-9.0)
-    assert test == pytest.approx(-9.0)
-    assert model.bias.item() == 2.0
-    assert scheduler.worker_param_func[0].item() == 2.0
 
 
 def test_dpgnn_rejects_retired_mae_manifest(tmp_path):

@@ -92,7 +92,9 @@ def parse_args():
     parser.add_argument("--epsilon-max", type=float, default=10.0)
     parser.add_argument("--points", type=int, default=600)
     parser.add_argument("--out-dir", type=Path, default=Path(__file__).resolve().parent / "figures")
+    
     args = parser.parse_args()
+    
     if not 0 < args.p1 <= 1 or any(not 0 <= p < 1 for p in args.p2):
         parser.error("require 0 < p1 <= 1 and 0 <= p2 < 1 (p2=1 is the group baseline)")
     if args.degree < 1 or args.population < sum(args.degree**ell for ell in range(4)):
@@ -113,10 +115,8 @@ def parse_args():
 
 
 def epsilon_for_delta(pld, delta):
-    """Invert the discretized PLD without forming exp(epsilon) or exp(-loss)."""
-    # dp-accounting's public inversion overflows near epsilon=710, and its
-    # forward evaluator also separates exponentials. Access the stored PMFs
-    # here so expm1 only sees nonpositive (epsilon - loss) differences.
+    """Invert discretized PLD."""
+
     pmfs = [pld._pmf_remove] if pld._symmetric else [pld._pmf_remove, pld._pmf_add]
     epsilons = []
     for pmf in pmfs:
@@ -139,7 +139,7 @@ def epsilon_for_delta(pld, delta):
 
 
 def composition_profiles(plds, base_rdp, iterations, delta):
-    """Evaluate each checkpoint directly; reuse the final PLDs on the right."""
+    """Evaluate checkpoints."""
     curves = np.zeros((len(plds) + 1, len(iterations)))
     for index, steps in enumerate(iterations):
         if steps == 0:
@@ -175,6 +175,7 @@ def draw_panel(ax, x, curves, radius, args, *, composition=False):
 
 
 def main():
+    
     args = parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     plt.rcParams.update({"font.family": "serif", "font.size": 18,

@@ -23,7 +23,6 @@
     "mlp": {"parameters": {"epochs": 100}},
     "graphsage": {"parameters": {"epochs": 100}},
     "dp_gnn": {"adapter": "src.experiments.upstream.UpstreamBaseline"},
-    "progap": {"adapter": "src.experiments.upstream.UpstreamBaseline"},
-    "heterpoisson": {"adapter": "src.experiments.upstream.UpstreamBaseline"}
+    "progap": {"adapter": "src.experiments.upstream.UpstreamBaseline"}
   }
 }
