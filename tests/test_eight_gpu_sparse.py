@@ -46,11 +46,12 @@ def cell(metadata):
 
 
 @pytest.mark.parametrize('kind', ['binary', 'multilabel', 'categorical'])
-def test_csr_row_chunks_preserve_logits_context_and_score_masks(kind):
+@pytest.mark.parametrize('aggregation', ['mean', 'gin'])
+def test_csr_row_chunks_preserve_logits_context_and_score_masks(kind, aggregation):
     metadata = task(kind)
     data = graph(metadata)
     torch.manual_seed(21)
-    mechanism = make_mechanism(data, cell(metadata), 'cpu')
+    mechanism = make_mechanism(data, dict(cell(metadata), aggregation=aggregation), 'cpu')
     mechanism.module.eval()
     with torch.no_grad():
         expected_logits = mechanism.module(data.x, data.edge_index)
@@ -142,8 +143,9 @@ def execute_private(config, folder, *, p1=1., learning_rate=.01):
     return mechanism, session, attempt
 
 
-def test_physical_chunks_do_not_change_fixed_noise_adam_updates(tmp_path):
-    config = cell(task('binary'))
+@pytest.mark.parametrize('aggregation', ['mean', 'gin'])
+def test_physical_chunks_do_not_change_fixed_noise_adam_updates(tmp_path, aggregation):
+    config = dict(cell(task('binary')), aggregation=aggregation)
     (tmp_path / 'chunked').mkdir()
     (tmp_path / 'whole').mkdir()
     chunked, observed, _ = execute_private(dict(config, max_private_batch_nodes=1), tmp_path / 'chunked')

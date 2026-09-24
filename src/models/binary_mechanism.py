@@ -5,9 +5,9 @@ Same shape as `GNNMechanism` — an L-layer GCN on each root's sparsified
 subgraph, read off at the root — but with a single output logit, BCE loss and
 AUROC as the reported metric.
 
-AUROC rather than accuracy because RelBench's binary entity tasks are heavily
-imbalanced (rel-f1/driver-top3 has a ~17-20% positive rate, so a constant
-predictor scores ~0.82 accuracy and tells you nothing).
+AUROC rather than accuracy measures ranking ability even on imbalanced tasks,
+where a constant majority-class predictor can score high accuracy without
+discriminating between classes.
 """
 
 from typing import Dict
@@ -90,8 +90,8 @@ class BinaryGNNMechanism(BaseMechanism):
     def evaluate(self, data=None) -> Dict[str, float]:
         data = data or self.data
         self.eval_mode()
-        # The caller supplies the test graph; for RelBench this is the graph at
-        # the test cutoff, so held-out rows keep their real neighbourhoods.
+        # The caller supplies the evaluation graph, preserving held-out nodes'
+        # neighbourhoods when training uses a separate inductive graph.
         scores = self.module(data.x, self.eval_edges(data)).cpu()
         y = data.y.cpu()
         metrics = {}
@@ -100,8 +100,8 @@ class BinaryGNNMechanism(BaseMechanism):
             metrics[split] = (_binary_auroc(y[mask], scores[mask])
                               if mask.any() else float("nan"))
             # Secondary metric, NOT the primary one -- see the module
-            # docstring: on an imbalanced split (e.g. rel-hm/user-churn's
-            # ~82% positive rate) a constant predictor scores ~0.82 accuracy
+            # docstring: on an imbalanced split (e.g. an 82% positive rate)
+            # a constant predictor scores ~0.82 accuracy
             # while having zero discriminative ability, so this number is
             # only meaningful read alongside AUROC, never in place of it.
             metrics[f"{split}_bin_acc"] = (

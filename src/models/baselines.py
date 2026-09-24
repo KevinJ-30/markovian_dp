@@ -123,11 +123,12 @@ class DPARMLP(nn.Module):
 class _OneHopGCN(nn.Module):
     """The DP-GNN one-hop GCN convention: receivers send to senders."""
 
-    def __init__(self, inputs: int, hidden: int, classes: int):
+    def __init__(self, inputs: int, hidden: int, classes: int, dropout: float = 0.5):
         super().__init__()
         self.encoder = nn.Linear(inputs, hidden)
         self.core = nn.Linear(hidden, hidden)
         self.decoder = nn.Linear(hidden, classes)
+        self.dropout = dropout
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor,
                 edge_weight: torch.Tensor) -> torch.Tensor:
@@ -137,6 +138,7 @@ class _OneHopGCN(nn.Module):
             senders, receivers = edge_index
             aggregated.index_add_(0, senders, x[receivers] * edge_weight[:, None])
         x = aggregated + torch.tanh(self.core(aggregated))
+        x = F.dropout(x, p=self.dropout, training=self.training)
         return self.decoder(x)
 
 
@@ -148,6 +150,7 @@ class _PaddedOneHopGCN(nn.Module):
         self.encoder = model.encoder
         self.core = model.core
         self.decoder = model.decoder
+        self.dropout = model.dropout
 
     def forward(
         self, features: torch.Tensor, node_mask: torch.Tensor,
@@ -155,17 +158,20 @@ class _PaddedOneHopGCN(nn.Module):
         encoded = torch.tanh(self.encoder(features))
         encoded = encoded.masked_fill(~node_mask.unsqueeze(-1), 0)
         averaged = encoded.sum(dim=1) / node_mask.sum(dim=1, keepdim=True)
-        return self.decoder(averaged + torch.tanh(self.core(averaged)))
+        hidden = averaged + torch.tanh(self.core(averaged))
+        hidden = F.dropout(hidden, p=self.dropout, training=self.training)
+        return self.decoder(hidden)
 
 
 class _OneHopGraphSAGE(nn.Module):
     """One-hop mean GraphSAGE with separate root and neighbour transforms."""
 
-    def __init__(self, inputs: int, hidden: int, classes: int):
+    def __init__(self, inputs: int, hidden: int, classes: int, dropout: float = 0.5):
         super().__init__()
         self.root_encoder = nn.Linear(inputs, hidden)
         self.neighbour_encoder = nn.Linear(inputs, hidden, bias=False)
         self.decoder = nn.Linear(hidden, classes)
+        self.dropout = dropout
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor,
                 edge_weight: torch.Tensor) -> torch.Tensor:
@@ -182,6 +188,7 @@ class _OneHopGraphSAGE(nn.Module):
                     0, senders, x[receivers] / degree[senders, None])
         hidden = torch.tanh(
             self.root_encoder(x) + self.neighbour_encoder(neighbours))
+        hidden = F.dropout(hidden, p=self.dropout, training=self.training)
         return self.decoder(hidden)
 
 
@@ -193,6 +200,7 @@ class _PaddedOneHopGraphSAGE(nn.Module):
         self.root_encoder = model.root_encoder
         self.neighbour_encoder = model.neighbour_encoder
         self.decoder = model.decoder
+        self.dropout = model.dropout
 
     def forward(
         self, features: torch.Tensor, node_mask: torch.Tensor,
@@ -206,4 +214,5 @@ class _PaddedOneHopGraphSAGE(nn.Module):
         hidden = torch.tanh(
             self.root_encoder(features[:, 0])
             + self.neighbour_encoder(neighbours))
+        hidden = F.dropout(hidden, p=self.dropout, training=self.training)
         return self.decoder(hidden)

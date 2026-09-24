@@ -50,6 +50,7 @@ class DPGNNConfig:
     binary: bool = False
     metric_ignore_label: int | None = None
     architecture: str = "graphsage"
+    dropout: float = 0.5
 
 
 def _inverse_degree_weights(edge_index: torch.Tensor, num_nodes: int,
@@ -72,6 +73,8 @@ class PartitionedDPGNN:
             raise ValueError("noise_multiplier must be positive and finite")
         if not isfinite(config.clip) or config.clip <= 0.0:
             raise ValueError("clip must be positive and finite")
+        if not isfinite(config.dropout) or not 0.0 <= config.dropout < 1.0:
+            raise ValueError("dropout must be finite and in [0, 1)")
         if config.max_degree < 1:
             raise ValueError("max_degree must be positive")
         if config.max_subgraph_nodes < 1:
@@ -167,11 +170,13 @@ class PartitionedDPGNN:
         outputs = 1 if (self.config.binary or self.config.regression) else self.config.num_classes
         if self.config.architecture == "graphsage":
             model = _OneHopGraphSAGE(
-                x.size(1), self.config.latent_size, outputs).to(self.device)
+                x.size(1), self.config.latent_size, outputs,
+                dropout=self.config.dropout).to(self.device)
             private_model = _PaddedOneHopGraphSAGE(model)
         else:
             model = _OneHopGCN(
-                x.size(1), self.config.latent_size, outputs).to(self.device)
+                x.size(1), self.config.latent_size, outputs,
+                dropout=self.config.dropout).to(self.device)
             private_model = _PaddedOneHopGCN(model)
         adam = torch.optim.Adam(model.parameters(), lr=self.config.learning_rate)
         private_module = GradSampleModule(
@@ -194,7 +199,7 @@ class PartitionedDPGNN:
             self._private_step(private_module, optimizer, batches)
         private_module.to_standard_module()
         delta = 1.0 / (10 * num_nodes)
-        metric = ("mae" if self.config.regression
+        metric = ("r2" if self.config.regression
                   else "auroc" if self.config.binary
                   else "micro_f1" if self.config.multilabel
                   else "accuracy")

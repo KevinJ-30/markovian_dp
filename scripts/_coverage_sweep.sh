@@ -3,7 +3,7 @@
 #
 #   DS=facebook SEEDS=2 bash scripts/_coverage_sweep.sh
 #   DS=flickr   SEEDS=2 bash scripts/_coverage_sweep.sh
-#   DS=ppi      SEEDS=2 T=1000 bash scripts/_coverage_sweep.sh
+#   DS=ppi-large SEEDS=2 T=1000 bash scripts/_coverage_sweep.sh
 #
 # This is deliberately NOT a target-epsilon calibration.  The union-graph degree
 # question (Assumption 5.2 bounds g v g', we cap only g) is unresolved and may

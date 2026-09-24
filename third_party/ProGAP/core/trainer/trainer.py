@@ -9,6 +9,7 @@ from core.loggers.dummy import DummyLogger
 from core.loggers.logger import Logger
 from core.trainer.progress import TrainerProgress
 from core.modules.base import Metrics, TrainableModule
+from core.modules.prog import ProgressiveModule, RegressionR2
 from core.typing import Phase
 
 
@@ -155,17 +156,28 @@ class Trainer:
         grad_state = torch.is_grad_enabled()
         torch.set_grad_enabled(phase == 'train')
         self.progress.update(phase, visible=len(dataloader) > 1, total=len(dataloader))
+        regression_r2 = (
+            RegressionR2()
+            if isinstance(self.model, ProgressiveModule) and self.model.regression
+            else None
+        )
 
         for batch in dataloader:
             batch = self.to_device(batch)
             metrics = self.step(batch, phase)
+            if regression_r2 is not None:
+                regression_r2.merge(self.model.regression_r2)
             for item in metrics:
-                self.update_metrics(item, metrics[item], batch_size=batch.batch_nodes.size(0))
+                if regression_r2 is None or item != f'{phase}/r2':
+                    self.update_metrics(item, metrics[item], batch_size=batch.batch_nodes.size(0))
             self.progress.update(phase, advance=1)
 
         self.progress.reset(phase, visible=False)
         torch.set_grad_enabled(grad_state)
-        return self.aggregate_metrics(phase)
+        metrics = self.aggregate_metrics(phase)
+        if regression_r2 is not None:
+            metrics[f'{phase}/r2'] = regression_r2.compute()
+        return metrics
 
     def step(self, batch, phase: Phase) -> Metrics:
         if phase == 'train':

@@ -90,10 +90,10 @@ def _num_classes(data: Any, multilabel: bool = False, regression: bool = False) 
     """Return the label space of the full source graph.
 
     Single-label (default): the categorical class count, from an integer
-    class-index target.  Multilabel (e.g. PPI's 121 binary functional labels
-    per node): the number of label columns, from a 2-D 0/1 target -- there is
-    no shared "class index" across nodes to take a max over.  Regression
-    (e.g. RelBench's item-ltv): a single continuous output, always 1.
+    class-index target.  Multilabel (e.g. PPI-large's 121 binary functional
+    labels per node): the number of label columns, from a 2-D 0/1 target --
+    there is no shared "class index" across nodes to take a max over.
+    Regression: a single continuous output, always 1.
     """
     if multilabel:
         if data.y.dim() != 2:

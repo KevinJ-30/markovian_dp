@@ -21,7 +21,7 @@ class ProGAP (NodeClassification):
                  head_layers:   Annotated[int,   ArgInfo(help='number of head MLP layers')] = 1,
                  jk:            Annotated[str,   ArgInfo(help='jumping knowledge combination scheme', choices=JK.supported_modes)] = 'cat',
                  activation:    Annotated[str,   ArgInfo(help='type of activation function', choices=['relu', 'selu', 'tanh'])] = 'selu',
-                 dropout:       Annotated[float, ArgInfo(help='dropout rate')] = 0.0,
+                 dropout:       Annotated[float, ArgInfo(help='dropout rate')] = 0.5,
                  batch_norm:    Annotated[bool,  ArgInfo(help='if true, then model uses batch normalization')] = True,
                  layerwise:     Annotated[bool,  ArgInfo(help='if true, then model uses layerwise training')] = False,
                  optimizer:     Annotated[str,   ArgInfo(help='optimization algorithm', choices=['sgd', 'adam'])] = 'adam',

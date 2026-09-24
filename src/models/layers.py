@@ -1,19 +1,12 @@
-"""
-Shared message-passing stack for the GNN base mechanisms.
+"""Sparse PyG and padded batch-first message passing for SparseGNN.
 
-The aggregator decides whether g0 on a rooted subgraph equals full-graph
-inference at the root, which is what makes "train sparsified, evaluate on the
-full graph" exact rather than approximate:
+Supported stacks are GraphSAGE-mean, normalized GCN, and GIN with a two-layer
+ReLU MLP and fixed epsilon=0. Padded adapters preserve the rooted-subgraph
+computation while exposing one sample per root to Opacus.
 
-    aggr='mean'  weights an arc by 1/|in-neighbours of the target|, which
-                 SparseExpand always materializes in full, so the rooted
-                 computation is EXACT.
-    aggr='gcn'   symmetric normalization needs the SOURCE degree, which is
-                 wrong for subgraph boundary nodes.  Error grows with density
-                 (~0.3% on capped ogbn-arxiv, 150-400% on uncapped PPI).
-
-Both are valid mechanisms for the privacy analysis, which only needs g0 to be
-a function of the rooted subgraph with ||g0||_2 <= C.
+Sampling or truncating neighborhoods can change full-graph predictions for any
+stack. Privacy accounting bounds clipped per-root gradients independently of
+the chosen architecture.
 """
 
 from typing import List
@@ -21,9 +14,9 @@ from typing import List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, SAGEConv
+from torch_geometric.nn import GCNConv, GINConv, SAGEConv
 
-VALID_AGGR = ("mean", "gcn")
+VALID_AGGR = ("mean", "gcn", "gin")
 
 
 def build_conv_stack(dims: List[int], aggr: str = "mean") -> nn.ModuleList:
@@ -33,6 +26,15 @@ def build_conv_stack(dims: List[int], aggr: str = "mean") -> nn.ModuleList:
     if aggr == "mean":
         return nn.ModuleList([
             SAGEConv(dims[i], dims[i + 1], aggr="mean")
+            for i in range(len(dims) - 1)
+        ])
+    if aggr == "gin":
+        return nn.ModuleList([
+            GINConv(nn.Sequential(
+                nn.Linear(dims[i], dims[i + 1]),
+                nn.ReLU(),
+                nn.Linear(dims[i + 1], dims[i + 1]),
+            ), eps=0.0, train_eps=False)
             for i in range(len(dims) - 1)
         ])
     return nn.ModuleList([
@@ -136,6 +138,24 @@ class PaddedGCNConv(nn.Module):
         return out * node_mask.unsqueeze(-1).to(out.dtype)
 
 
+class PaddedGINConv(nn.Module):
+    """Batch-first GIN sharing the source MLP parameters and fixed epsilon."""
+
+    def __init__(self, conv: GINConv):
+        super().__init__()
+        if conv.eps.requires_grad:
+            raise ValueError("Padded GIN requires a fixed epsilon")
+        self.first_linear = _linear_view(conv.nn[0].weight, conv.nn[0].bias)
+        self.second_linear = _linear_view(conv.nn[2].weight, conv.nn[2].bias)
+        self.register_buffer("eps", conv.eps)
+
+    def forward(self, x, edge_index, edge_mask, node_mask):
+        summed = _masked_aggregate(x, edge_index, edge_mask)
+        aggregate = (1 + self.eps) * x + summed
+        out = self.second_linear(F.relu(self.first_linear(aggregate)))
+        return out * node_mask.unsqueeze(-1).to(out.dtype)
+
+
 class PaddedGNNStack(nn.Module):
     """Private batch-first view of an existing PyG convolution stack."""
 
@@ -147,6 +167,8 @@ class PaddedGNNStack(nn.Module):
                 adapters.append(PaddedSAGEConv(conv))
             elif isinstance(conv, GCNConv):
                 adapters.append(PaddedGCNConv(conv))
+            elif isinstance(conv, GINConv):
+                adapters.append(PaddedGINConv(conv))
             else:
                 raise TypeError(f"unsupported convolution type {type(conv).__name__}")
         self.convs = nn.ModuleList(adapters)

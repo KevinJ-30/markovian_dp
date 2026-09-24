@@ -50,7 +50,7 @@ class DPARConfig:
     batch_size: int = 60
     hidden_size: int = 32
     layers: int = 2
-    dropout: float = 0.1
+    dropout: float = 0.5
     learning_rate: float = 5e-3
     weight_decay: float = 1e-4
     epochs: int = 100
@@ -131,7 +131,9 @@ def private_ista_ppr(
     if torch.unique(roots).numel() != roots.numel():
         raise ValueError("ppr_roots must be unique")
 
-    adjacency = _dpar_adjacency(edge_index, num_nodes, device)
+    # Float32 residuals can stall above the requested tolerance on high-degree
+    # graphs. Keep the recurrence in float64, then release float32 weights.
+    adjacency = _dpar_adjacency(edge_index, num_nodes, device).to(torch.float64)
     transpose = adjacency.transpose(0, 1).coalesce()
     out_degree = torch.sparse.sum(adjacency, dim=1).to_dense()
     inverse_degree = out_degree.clamp_min(1e-12).reciprocal()
@@ -144,8 +146,8 @@ def private_ista_ppr(
     progress_started = time.perf_counter()
     last_progress = progress_started
     for released_count, root in enumerate(roots.tolist()):
-        p = torch.zeros(num_nodes, device=device)
-        residual = torch.zeros(num_nodes, device=device)
+        p = torch.zeros(num_nodes, device=device, dtype=adjacency.dtype)
+        residual = torch.zeros_like(p)
         residual[root] = -config.alpha * inverse_degree[root]
         for _ in range(max_iterations):
             if progress_callback is not None and _ % 100 == 0:
@@ -181,7 +183,7 @@ def private_ista_ppr(
                 - 0.5 * (1.0 - config.alpha) * message[active] * inverse_degree[active]
             )
             outgoing = torch.sparse.mm(
-                transpose, active.to(torch.float32).unsqueeze(1)
+                transpose, active.to(adjacency.dtype).unsqueeze(1)
             ).squeeze(1) > 0
             neighbours = outgoing & ~active
             next_residual[neighbours] = (
@@ -197,6 +199,7 @@ def private_ista_ppr(
                 f"DPAR ISTA did not converge for root {root} "
                 f"after {max_iterations} iterations"
             )
+        p = p.to(torch.float32)
         if config.dp_ppr:
             p = p * min(1.0, config.ppr_clip / float(p.norm().clamp_min(1e-12)))
             p = p + torch.randn(
@@ -367,10 +370,8 @@ class DPARTrainer:
             self.device, sampling_generator,
         )
         preprocessing_seconds = time.perf_counter() - preprocessing_start
-        # MAE is lower-is-better; a bare `>` would keep the worst checkpoint.
-        lower_is_better = bool(effective_config.regression)
         best_state = None
-        best_val = float("inf") if lower_is_better else float("-inf")
+        best_val = float("-inf")
         training_start = time.perf_counter()
         for _ in range(effective_config.epochs):
             model.train()
@@ -389,10 +390,7 @@ class DPARTrainer:
                         binary=effective_config.binary).backward()
                     optimizer.step()
             val_metric, _ = self._evaluate(model, split.val)
-            improved = (
-                val_metric < best_val if lower_is_better else val_metric > best_val
-            )
-            if not math.isnan(val_metric) and improved:
+            if not math.isnan(val_metric) and val_metric > best_val:
                 best_val = val_metric
                 best_state = {
                     name: value.detach().cpu().clone()
@@ -433,6 +431,8 @@ class DPARTrainer:
                 "test_accuracy": test,
                 "test_macro_f1": test_secondary,
             })
+        if effective_config.regression:
+            result["metric"] = "r2"
         if calibration is not None:
             result["calibration"] = calibration.as_dict()
         return result

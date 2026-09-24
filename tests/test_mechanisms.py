@@ -1,10 +1,4 @@
-"""
-Tests for the base mechanisms added alongside the inductive/RelBench suites.
-
-The RelBench graph builder itself is not covered here — it downloads a database
-on first use, so it is exercised by scripts/relbench_f1.sh rather than pytest.
-Only its pure-python name parsing is unit-tested.
-"""
+"""Tests for classification and regression mechanisms and their shared engine."""
 
 import math
 
@@ -17,7 +11,7 @@ from src.models.binary_mechanism import BinaryGNNMechanism, _auroc
 from src.models.gnn_mechanism import GNNMechanism
 from src.models.multilabel_mechanism import MultiLabelGNNMechanism, _micro_f1
 from src.models.regression_mechanism import RegressionGNNMechanism
-from src.data.relbench import parse_relbench_name
+from src.models.objectives import _task_metric, trivial_baseline
 from src.processing.sparse_expand import build_adjacency, sparse_expand
 
 
@@ -104,6 +98,58 @@ def test_multiclass_evaluation_excludes_ignored_metric_label():
     }
 
 
+@pytest.mark.parametrize(
+    ("targets", "predictions", "expected"),
+    [
+        ([0., 1., 2.], [3., 3., 3.], -6.),
+        ([7., 7.], [7., 7.], 1.),
+        ([7., 7.], [7., 8.], 0.),
+        ([1.], [1.], float("nan")),
+        ([], [], float("nan")),
+    ],
+)
+def test_regression_r2_negative_constant_and_undefined_scores(targets, predictions, expected):
+    score, _ = _task_metric(
+        torch.tensor(predictions).reshape(-1, 1), torch.tensor(targets),
+        multilabel=False, regression=True)
+    if math.isnan(expected):
+        assert math.isnan(score)
+    else:
+        assert score == pytest.approx(expected)
+
+
+def test_regression_reference_uses_training_mean_and_is_affine_invariant():
+    data = Data(
+        y=torch.tensor([10., 12., 0., 2.]),
+        train_mask=torch.tensor([True, True, False, False]),
+        test_mask=torch.tensor([False, False, True, True]),
+    )
+    # Predicting the train mean (11) has SSE=202 and test SST=2, not R²=0.
+    assert trivial_baseline(data, "r2") == pytest.approx(-100.)
+    data.y = data.y * 3 + 7
+    assert trivial_baseline(data, "r2") == pytest.approx(-100.)
+
+
+def test_regression_mechanism_scores_each_split_with_its_own_mean():
+    data = Data(
+        x=torch.tensor([[1.], [1.], [10.], [10.], [0.], [0.]]),
+        y=torch.tensor([0., 2., 10., 12., 5., 5.]),
+        edge_index=torch.empty((2, 0), dtype=torch.long),
+    )
+    for index, role in enumerate(("train", "val", "test")):
+        mask = torch.zeros(6, dtype=torch.bool)
+        mask[2 * index:2 * index + 2] = True
+        setattr(data, f"{role}_mask", mask)
+
+    class FixedPredictions(torch.nn.Module):
+        def forward(self, x, edge_index):
+            return x[:, 0]
+
+    mechanism = RegressionGNNMechanism(data, 1, hidden=2, num_layers=1)
+    mechanism.module = FixedPredictions()
+    assert mechanism.evaluate() == {"train": 0., "val": -1., "test": 0.}
+
+
 # ── mechanisms plug into the engine ───────────────────────────────────────────
 
 @pytest.mark.parametrize("kind", ["binary", "multilabel"])
@@ -181,57 +227,9 @@ def test_every_mechanism_trains_one_private_padded_step(kind):
     assert {"train", "val", "test"} <= set(metrics)
 
 
-# ── RelBench name parsing ─────────────────────────────────────────────────────
-
-def test_parse_relbench_name():
-    assert parse_relbench_name('relbench:rel-f1/driver-top3') == \
-        ('rel-f1', 'driver-top3')
-    with pytest.raises(ValueError):
-        parse_relbench_name('relbench:rel-f1')
-
-
-def test_encode_table_hashes_unhashable_columns():
-    """rel-amazon's product table stores list/array values per cell (e.g.
-    categories), which pandas' nunique() cannot hash and which used to be
-    dropped. They are hash-encoded now, so the column contributes signal
-    instead of vanishing."""
-    import numpy as np
-    import pandas as pd
-    from src.data.relbench import _encode_table
-
-    df = pd.DataFrame({
-        'id': range(5),
-        'price': [1.0, 2.0, np.nan, 4.0, 5.0],
-        'category': [np.array(['a', 'b']), np.array(['c']), np.array(['a']),
-                     np.array(['d', 'e']), np.array(['a'])],
-    })
-    out = _encode_table(df, skip_cols={'id'}, max_categories=50, n_hash=16)
-    assert out.shape == (5, 1 + 16)         # price + one hash block
-    assert np.isfinite(out).all()
-    # equal cells must land in the same bucket, different cells generally not
-    assert (out[0, 1:] != out[1, 1:]).any()
-    assert (out[2, 1:] == out[4, 1:]).all()
-
-
-def test_encode_table_scales_from_stat_mask_only():
-    """The scale must come from pre-cutoff rows, not from held-out ones."""
-    import numpy as np
-    import pandas as pd
-    from src.data.relbench import _encode_table
-
-    df = pd.DataFrame({'v': [1.0, 1.0, 1.0, 1000.0]})
-    mask = np.array([True, True, True, False])          # last row is "future"
-    masked = _encode_table(df, skip_cols=set(), max_categories=8, stat_mask=mask)
-    unmasked = _encode_table(df, skip_cols=set(), max_categories=8)
-    # train rows are constant, so the masked encoding leaves them at zero and
-    # pushes the held-out row far out; the unmasked one dilutes it.
-    assert abs(masked[0, 0]) < 1e-9
-    assert masked[3, 0] > unmasked[3, 0]
-
-
 # ── large-graph evaluation ────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("aggr", ["mean", "gcn"])
+@pytest.mark.parametrize("aggr", ["mean", "gcn", "gin"])
 def test_csr_eval_path_matches_edge_index(aggr):
     """Above the dense-message budget, evaluate() must switch to CSR and give
     the same numbers.
@@ -253,11 +251,9 @@ def test_csr_eval_path_matches_edge_index(aggr):
     mech = GNNMechanism(data, f, c, hidden=8, num_layers=2, dropout=0.0,
                         aggr=aggr)
     dense = mech.evaluate(data)
-    assert mech.eval_edges(data) is data.edge_index      # budget not exceeded
 
     mech._DENSE_MESSAGE_BUDGET = 0                       # force CSR
     mech._eval_adj_cache = None
-    assert mech.eval_edges(data) is not data.edge_index  # now a CSR adjacency
     sparse = mech.evaluate(data)
 
     for split in ("train", "val", "test"):

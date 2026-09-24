@@ -23,8 +23,8 @@ those are genuinely different mechanisms, not just a different batching of the
 same one.
 
 Usage:
-  python scripts/ceiling_fullbatch.py --dataset ppi --model multilabel_gnn \
-      --num_layers 2 --epochs 300 --seeds 3 --out_dir results/inductive_ceiling_ppi
+  python scripts/ceiling_fullbatch.py --dataset ppi-large --model multilabel_gnn \
+      --num_layers 2 --epochs 300 --seeds 3 --out_dir results/inductive_ceiling_ppi-large
 """
 
 import argparse
@@ -41,6 +41,7 @@ from src.data.datasets import load_dataset                              # noqa: 
 from src.models.binary_mechanism import BinaryGNNMechanism         # noqa: E402
 from src.models.gnn_mechanism import GNNMechanism                  # noqa: E402
 from src.models.multilabel_mechanism import MultiLabelGNNMechanism  # noqa: E402
+from src.models.layers import VALID_AGGR                           # noqa: E402
 from src.processing.graphs import make_training_graph             # noqa: E402
 from src.models.objectives import trivial_baseline                # noqa: E402
 
@@ -65,10 +66,10 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--dataset', required=True)
     ap.add_argument('--model', default='gnn', choices=sorted(MECHANISMS))
-    ap.add_argument('--aggr', default='mean', choices=['mean', 'gcn'])
+    ap.add_argument('--aggr', default='mean', choices=VALID_AGGR)
     ap.add_argument('--num_layers', type=int, default=2)
     ap.add_argument('--hidden', type=int, default=64)
-    ap.add_argument('--dropout', type=float, default=0.0)
+    ap.add_argument('--dropout', type=float, default=0.5)
     ap.add_argument('--weight_decay', type=float, default=0.0)
     ap.add_argument('--lr', type=float, default=0.01)
     ap.add_argument('--epochs', type=int, default=300)

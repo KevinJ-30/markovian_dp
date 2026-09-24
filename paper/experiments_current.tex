@@ -33,6 +33,11 @@ gradient $g_0$ (two-layer SAGE-mean or GCN), clipped to $\|g_0\|_2 \le C$;
 clipped gradients are summed and $\mathcal N(0, (\sigma C)^2 I)$ is added.
 $\sigma$ is the noise multiplier.
 
+Implementation update: incoming expansion now caps retained arcs at 20 per
+expanded node by uniformly selecting $\min(B,20)$ arcs for
+$B\sim\operatorname{Binomial}(d,p_2)$. The results below predate this sampler
+change and have not been rerun; the accounting formulas remain unchanged.
+
 $K_{\mathrm{in}}, K_{\mathrm{out}}$ capped on both the training graph and the
 union graph. $\delta = n^{-1.01}$, full node count. Training uses the
 degree-capped graph; evaluation defaults to the full graph.

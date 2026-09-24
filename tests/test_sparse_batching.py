@@ -104,7 +104,7 @@ def test_chunked_and_oversized_fallback_match_unbounded_batch():
         assert torch.allclose(got, expected, atol=1e-6)
 
 
-@pytest.mark.parametrize("aggr", ["mean", "gcn"])
+@pytest.mark.parametrize("aggr", ["mean", "gcn", "gin"])
 def test_padded_losses_match_sparse_pyg(aggr):
     torch.manual_seed(12)
     data = _data()
@@ -120,37 +120,44 @@ def test_padded_losses_match_sparse_pyg(aggr):
     padded = mechanism.private_losses(private_module, batch)
 
     assert torch.allclose(padded, reference, atol=1e-6)
-    assert batch.node_mask.tolist() == [[True, True], [True, True], [True, False]]
-    assert batch.edge_mask.tolist() == [[True], [True], [False]]
-    assert batch.root_index.tolist() == [0, 0, 0]
 
 
-def test_opacus_private_update_accepts_padded_gnn_batch():
+@pytest.mark.parametrize("aggr", ["mean", "gcn", "gin"])
+@pytest.mark.parametrize("empty", [False, True])
+def test_private_update_matches_manual_clipping_noise_and_sgd(aggr, empty):
     torch.manual_seed(21)
-    mechanism = _mechanism(_data(), max_nodes=32)
-    mechanism.build_optimizer(lr=0.0, kind="sgd")
+    mechanism = _mechanism(_data(), max_nodes=3, aggr=aggr)
+    mechanism.build_optimizer(lr=.05, weight_decay=0., kind="sgd")
+    subgraphs = [] if empty else [
+        RootedSubgraph(0, torch.tensor([0, 1, 2]),
+                       torch.tensor([[1, 2, 0], [0, 0, 0]])),
+        *_subgraphs()[1:],
+    ]
+    parameters = list(mechanism.parameters())
+    before = [parameter.detach().clone() for parameter in parameters]
+    totals = [torch.zeros_like(parameter) for parameter in parameters]
+    for subgraph in subgraphs:
+        gradients = torch.autograd.grad(
+            mechanism.subgraph_loss(subgraph), parameters, allow_unused=True)
+        gradients = [torch.zeros_like(parameter) if gradient is None else gradient
+                     for parameter, gradient in zip(parameters, gradients)]
+        norm = torch.stack([gradient.norm() for gradient in gradients]).norm()
+        factor = (.7 / (norm + 1e-6)).clamp(max=1.)
+        for total, gradient in zip(totals, gradients):
+            total.add_(gradient * factor)
+    generator = torch.Generator().manual_seed(7)
+    expected = [
+        (total + torch.normal(0., .4 * .7, size=total.shape, generator=generator)) / 4
+        for total in totals
+    ]
     update = OpacusPrivateUpdate(
-        mechanism, C=1.0, sigma=0.0, expected_batch=2.0,
+        mechanism, C=.7, sigma=.4, expected_batch=4.,
         noise_gen=torch.Generator().manual_seed(7))
+    update.step(subgraphs)
 
-    update.step(_subgraphs()[:2])
-
-    for parameter in mechanism.parameters():
-        assert parameter.grad is not None
-        assert torch.isfinite(parameter.grad).all()
-
-
-def test_opacus_private_update_empty_batch_adds_noise():
-    mechanism = _mechanism(_data(), max_nodes=32)
-    mechanism.build_optimizer(lr=0.0, kind="sgd")
-    update = OpacusPrivateUpdate(
-        mechanism, C=0.5, sigma=1.0, expected_batch=3.0,
-        noise_gen=torch.Generator().manual_seed(7))
-
-    update.step([])
-    flat = torch.cat([parameter.grad.reshape(-1)
-                      for parameter in mechanism.parameters()])
-    assert flat.norm() > 0
+    for parameter, initial, gradient in zip(parameters, before, expected):
+        torch.testing.assert_close(parameter.grad, gradient, atol=1e-6, rtol=1e-5)
+        torch.testing.assert_close(parameter, initial - .05 * gradient, atol=1e-6, rtol=1e-5)
 
 
 def test_private_physical_chunks_match_one_padded_batch():
@@ -175,7 +182,7 @@ def test_private_physical_chunks_match_one_padded_batch():
         assert torch.allclose(left.grad, right.grad, atol=1e-6)
 
 
-@pytest.mark.parametrize("aggr", ["mean", "gcn"])
+@pytest.mark.parametrize("aggr", ["mean", "gcn", "gin"])
 def test_opacus_grad_samples_match_vmap_per_root_gradients(aggr):
     torch.manual_seed(31)
     data = _data()

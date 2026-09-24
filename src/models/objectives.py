@@ -94,13 +94,22 @@ def _multilabel_micro_f1(logits: Tensor, labels: Tensor) -> tuple[float, float]:
     return micro_f1, micro_f1
 
 
-def _regression_mae(preds: Tensor, target: Tensor) -> tuple[float, float]:
-    """MAE, returned in both slots of the (metric, secondary) tuple every
-    trainer already unpacks -- matches src.models.regression_mechanism's
-    metric, so a baseline and the SparseGNN mechanism are judged the same way.
+def _regression_r2(preds: Tensor, target: Tensor) -> float:
+    """Whole-split R², with sklearn's default finite constant-target scores.
+
+    Fewer than two observations have no defined R². A constant target scores
+    1 for perfect predictions and 0 otherwise; nonconstant scores may be negative.
+    Double-precision reductions avoid cancellation for large-offset targets.
     """
-    mae = float((preds.view(-1) - target.view(-1).float()).abs().mean())
-    return mae, mae
+    if target.numel() < 2:
+        return float("nan")
+    target = target.detach().reshape(-1).double()
+    residual = preds.detach().reshape(-1).double() - target
+    ss_res = residual.square().sum()
+    ss_tot = (target - target.mean()).square().sum()
+    if ss_tot == 0:
+        return float(ss_res == 0) if torch.isfinite(ss_res) else float("nan")
+    return float(1.0 - ss_res / ss_tot)
 
 
 def _task_loss(
@@ -142,35 +151,23 @@ def _task_metric(
         )
         return auroc, accuracy
     if regression:
-        return _regression_mae(logits, labels)
+        score = _regression_r2(logits, labels)
+        return score, score
     return (_multilabel_micro_f1(logits, labels) if multilabel
             else _accuracy_and_macro_f1(logits, labels))
 
 
 def trivial_baseline(data, metric):
-    """Score of the best label-only predictor under the dataset's own metric.
+    """Score of a label-only reference predictor under the dataset's metric.
 
       accuracy  -> most frequent training class, evaluated on test
       micro_f1  -> predict every label positive: 2p/(1+p) at positive rate p
       auroc     -> 0.5 by definition
-      mae       -> MAE of "always predict the train mean" on test, i.e.
-                   mean(|y_test - mean(y_train)|), in the SCALED space the
-                   targets are stored in -- train-std units, matching
-                   _regression_mae and RegressionGNNMechanism.evaluate.
-                   Multiply by data.target_std for the label's own units.
+      r2        -> predict the training mean for every test node
 
-                   NOTE: targets are scaled but NOT centred
-                   (data.relbench.load_relbench divides by the train std and
-                   leaves the mean alone), so the train mean is NOT 0 here.
-                   An earlier version computed mean(|y_test|), the MAE of the
-                   ALL-ZERO predictor -- a much weaker bar on the non-negative
-                   heavy-tailed targets RelBench regression uses (LTV, sales),
-                   so "beats trivial" was too easy to clear.
-
-    Recorded in the CSV as the floor every result must clear (for mae, the
-    ceiling every result must undercut -- see experiments.sparse._HIGHER_IS_BETTER).  Note
-    micro_f1's floor is high but has no ranking ability (its AUROC is 0.5), so
-    a model below it may still be learning — compare AUROC too.
+    The R² reference can be negative: its predictor uses the training mean,
+    while R²'s denominator uses the evaluated split's own mean. All reported
+    task metrics are higher-is-better.
     """
     import torch as _t
     if metric == "auroc":
@@ -179,9 +176,10 @@ def trivial_baseline(data, metric):
     if metric == "micro_f1":
         p = float(y[te].float().mean())
         return 2 * p / (1 + p) if p > 0 else float("nan")
-    if metric == "mae":
-        train_mean = float(y[data.train_mask].view(-1).float().mean())
-        return float((y[te].view(-1).float() - train_mean).abs().mean())
+    if metric == "r2":
+        train_mean = y[data.train_mask].double().mean()
+        targets = y[te].reshape(-1).double()
+        return _regression_r2(train_mean.expand_as(targets), targets)
     tr_counts = _t.bincount(y[data.train_mask].view(-1))
     majority = int(tr_counts.argmax())
     return float((y[te].view(-1) == majority).float().mean())

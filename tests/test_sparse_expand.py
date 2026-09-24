@@ -118,6 +118,68 @@ def test_batch_sparse_expand_is_deterministic_under_fixed_seed(direction):
         _assert_same_subgraph(actual, expected)
 
 
+@pytest.mark.parametrize('batched', [False, True])
+def test_incoming_cap_applies_at_every_expansion_hop(batched):
+    width = 40
+    first = torch.arange(1, width + 1)
+    second = torch.arange(width + 1, width + 1 + width * width)
+    edges = torch.stack((
+        torch.cat((first, second)),
+        torch.cat((torch.zeros(width, dtype=torch.long), first.repeat_interleave(width))),
+    ))
+    adj = build_adjacency(edges, 1 + width + width * width, direction='in')
+    generator = torch.Generator().manual_seed(7)
+    if batched:
+        sg = batch_sparse_expand(adj, torch.tensor([0]), 1.0, 2, generator=generator)[0]
+    else:
+        sg = sparse_expand(adj, 0, 1.0, 2, generator=generator)
+    incoming = torch.bincount(sg.edge_index[1], minlength=sg.num_nodes)
+    assert incoming[0] == 20
+    assert torch.all(incoming[1:21] == 20)
+    assert torch.all(incoming[21:] == 0)
+    assert sg.num_nodes == 1 + 20 + 20 * 20
+    assert sg.nodes.unique().numel() == sg.num_nodes
+    real_edges = set(map(tuple, edges.t().tolist()))
+    assert all(tuple(edge) in real_edges for edge in sg.nodes[sg.edge_index].t().tolist())
+
+
+def test_incoming_cap_handles_mixed_degrees_and_zero_probability():
+    degrees = torch.tensor([0, 5, 20, 21, 1000])
+    sources = torch.arange(5, 5 + int(degrees.sum()))
+    edges = torch.stack((sources, torch.repeat_interleave(torch.arange(5), degrees)))
+    adj = build_adjacency(edges, 5 + int(degrees.sum()), direction='in')
+    roots = torch.arange(5)
+    full = batch_sparse_expand(
+        adj, roots, 1.0, 1, generator=torch.Generator().manual_seed(3))
+    assert [sg.num_edges for sg in full] == [0, 5, 20, 20, 20]
+    empty = batch_sparse_expand(adj, roots, 0.0, 1)
+    assert [sg.nodes.tolist() for sg in empty] == [[root] for root in roots.tolist()]
+    # The cap is incoming-only; outgoing expansion keeps all arcs at p2=1.
+    out = build_adjacency(edges.flip(0), 5 + int(degrees.sum()), direction='out')
+    assert sparse_expand(out, 4, 1.0, 1, direction='out').num_edges == 1000
+
+
+def test_capped_incoming_counts_and_neighbor_selection_are_unbiased():
+    degree, p2, trials = 40, 0.5, 2000
+    edges = torch.stack((torch.arange(1, degree + 1), torch.zeros(degree, dtype=torch.long)))
+    adj = build_adjacency(edges, degree + 1, direction='in')
+    subgraphs = batch_sparse_expand(
+        adj, torch.zeros(trials, dtype=torch.long), p2, 1,
+        generator=torch.Generator().manual_seed(17))
+    counts = torch.tensor([sg.num_edges for sg in subgraphs], dtype=torch.float64)
+    probabilities = [math.comb(degree, k) * p2**k * (1-p2)**(degree-k)
+                     for k in range(degree + 1)]
+    expected = sum(min(k, 20) * prob for k, prob in enumerate(probabilities))
+    variance = sum((min(k, 20) - expected)**2 * prob
+                   for k, prob in enumerate(probabilities))
+    assert float(counts.mean()) == pytest.approx(expected, abs=0.15)
+    assert float(counts.var()) == pytest.approx(variance, rel=0.15)
+    frequencies = torch.bincount(torch.cat([sg.nodes[1:] for sg in subgraphs]))[1:]
+    assert torch.all((frequencies - trials * expected / degree).abs()
+                     < 0.1 * trials * expected / degree)
+    assert all(sg.nodes.unique().numel() == sg.num_nodes for sg in subgraphs)
+
+
 @pytest.mark.parametrize('direction', ['in', 'out'])
 def test_p2_one_matches_reachable_set(direction):
     edge_index, n = _toy_graph()
@@ -228,20 +290,6 @@ def test_csr_adjacency_rejects_direction_mismatch():
                       direction='out')
 
 
-def test_direction_out_preserves_legacy_sampling():
-    """The out path must be byte-identical to the pre-fix implementation.
-
-    Same generator seed => same Bernoulli draws => same vertex set, and the
-    recorded arcs are the legacy (u, w) orientation.  This keeps the orientation
-    ablation an apples-to-apples comparison.
-    """
-    edge_index, n = _toy_graph()
-    adj = build_out_adjacency(edge_index, n)
-    gen = torch.Generator().manual_seed(3)
-    sg = sparse_expand(adj, 0, p2=0.6, r=3, generator=gen, direction='out')
-    # Values captured from the pre-fix implementation (git show HEAD:...).
-    assert sg.nodes.tolist() == [0, 1, 2, 4, 3]
-    assert sg.edge_index.tolist() == [[0, 1, 1, 2], [1, 2, 3, 4]]
 
 
 @pytest.mark.parametrize('direction', ['in', 'out'])

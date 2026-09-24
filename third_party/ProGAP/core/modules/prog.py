@@ -22,12 +22,14 @@ class ProgressiveModule(TrainableModule):
                  activation_fn: Callable[[Tensor], Tensor] = torch.relu_, 
                  batch_norm: bool = True,
                  layerwise: bool = False,
+                 regression: bool = False,
                  **kwargs,
                  ):
 
         super().__init__(**kwargs)
 
         self.num_classes = num_classes
+        self.regression = regression
         self.num_stages = num_stages
         self.hidden_dim = hidden_dim
         self.base_layers = base_layers
@@ -75,6 +77,16 @@ class ProgressiveModule(TrainableModule):
             ) for _ in range(num_stages)
         )
 
+    @property
+    def regression(self) -> bool:
+        return self._regression
+
+    @regression.setter
+    def regression(self, value: bool) -> None:
+        if value and self.num_classes != 1:
+            raise ValueError('Regression requires a scalar head (num_classes=1)')
+        self._regression = value
+
     def set_stage(self, stage: int):
         self.current_stage = stage
         if self.layerwise:
@@ -114,7 +126,11 @@ class ProgressiveModule(TrainableModule):
         y = data.y[data.batch_nodes]
 
         preds: Tensor = self(xs)[1]
-        if getattr(self, 'binary', False):
+        if self.regression:
+            self.regression_r2 = RegressionR2()
+            self.regression_r2.update(preds, y)
+            metrics = {f'{phase}/r2': self.regression_r2.compute()}
+        elif getattr(self, 'binary', False):
             scores = preds.detach().squeeze(-1)
             score = binary_auroc(scores, y) * 100
             metrics = {f'{phase}/auroc': score}
@@ -130,18 +146,26 @@ class ProgressiveModule(TrainableModule):
 
         loss = None
         if phase != 'test':
-            if getattr(self, 'binary', False):
+            if getattr(self, 'binary', False) and not self.regression:
                 loss = F.binary_cross_entropy_with_logits(
                     preds.squeeze(-1), y.float(), reduction='mean'
                 )
             else:
-                loss = self.root_losses(preds, y).mean()
+                loss = self.root_losses(preds, y, regression=self.regression).mean()
             metrics[f'{phase}/loss'] = loss.detach()
 
         return loss, metrics
 
     @staticmethod
-    def root_losses(preds: Tensor, y: Tensor) -> Tensor:
+    def root_losses(preds: Tensor, y: Tensor, *, regression: bool = False) -> Tensor:
+        if regression:
+            if (
+                preds.ndim not in (1, 2) or (preds.ndim == 2 and preds.shape[1] != 1)
+                or y.ndim not in (1, 2) or (y.ndim == 2 and y.shape[1] != 1)
+                or preds.shape[0] != y.shape[0]
+            ):
+                raise ValueError('Regression requires one scalar prediction and target per root')
+            return (preds.reshape(-1) - y.reshape(-1).to(preds.dtype)).square()
         if y.ndim == 2:
             return F.binary_cross_entropy_with_logits(
                 preds, y.float(), reduction='none'
@@ -151,6 +175,8 @@ class ProgressiveModule(TrainableModule):
     def predict(self, data: Data) -> tuple[Tensor, Tensor]:
         xs = [data[f'x{i}'][data.batch_nodes] for i in range(self.current_stage + 1)]
         x, y = self(xs)
+        if self.regression:
+            return x, y
         probabilities = (
             torch.sigmoid(y)
             if getattr(self, 'binary', False) or getattr(self, 'multilabel', False)
@@ -176,6 +202,63 @@ class ProgressiveModule(TrainableModule):
         yield from self.base[self.current_stage].parameters(recurse=recurse)
         yield from self.jk[self.current_stage].parameters(recurse=recurse)
         yield from self.head[self.current_stage].parameters(recurse=recurse)
+
+
+class RegressionR2:
+    """Merge centered float64 statistics without retaining predictions or targets."""
+
+    def __init__(self):
+        self.count = 0
+        self.mean = None
+        self.centered_sum = None
+        self.residual_sum = None
+
+    def update(self, preds: Tensor, target: Tensor) -> None:
+        batch = RegressionR2()
+        target = target.detach().reshape(-1).double()
+        preds = preds.detach().reshape(-1).double()
+        batch.count = target.numel()
+        if batch.count:
+            batch.mean = target.mean()
+            batch.centered_sum = (target - batch.mean).square().sum()
+            batch.residual_sum = (target - preds).square().sum()
+            self.merge(batch)
+
+    def merge(self, other: 'RegressionR2') -> None:
+        if not other.count:
+            return
+        if not self.count:
+            self.count = other.count
+            self.mean = other.mean
+            self.centered_sum = other.centered_sum
+            self.residual_sum = other.residual_sum
+            return
+        count = self.count + other.count
+        delta = other.mean - self.mean
+        self.centered_sum = (
+            self.centered_sum + other.centered_sum
+            + delta.square() * (self.count * other.count / count)
+        )
+        self.mean = self.mean + delta * (other.count / count)
+        self.residual_sum = self.residual_sum + other.residual_sum
+        self.count = count
+
+    def compute(self) -> Tensor:
+        if not self.count:
+            return torch.tensor(float('nan'), dtype=torch.float64)
+        if self.count < 2:
+            return self.mean.new_tensor(float('nan'))
+        # Match sklearn's force_finite=True convention for constant targets.
+        score = torch.where(
+            self.centered_sum == 0,
+            (self.residual_sum == 0).to(self.mean.dtype),
+            1 - self.residual_sum / self.centered_sum,
+        )
+        return torch.where(
+            torch.isfinite(self.residual_sum) & torch.isfinite(self.centered_sum),
+            score,
+            self.mean.new_tensor(float('nan')),
+        )
 
 
 def binary_auroc(scores: Tensor, target: Tensor) -> Tensor:

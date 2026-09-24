@@ -24,7 +24,7 @@ class GAP (NodeClassification):
                  head_layers:     Annotated[int,   ArgInfo(help='number of head MLP layers')] = 1,
                  combine:         Annotated[str,   ArgInfo(help='combination type of transformed hops', choices=MultiMLP.supported_combinations)] = 'cat',
                  activation:      Annotated[str,   ArgInfo(help='type of activation function', choices=['relu', 'selu', 'tanh'])] = 'selu',
-                 dropout:         Annotated[float, ArgInfo(help='dropout rate')] = 0.0,
+                 dropout:         Annotated[float, ArgInfo(help='dropout rate')] = 0.5,
                  batch_norm:      Annotated[bool,  ArgInfo(help='if true, then model uses batch normalization')] = True,
                  optimizer:       Annotated[str,   ArgInfo(help='optimization algorithm', choices=['sgd', 'adam'])] = 'adam',
                  learning_rate:   Annotated[float, ArgInfo(help='learning rate', option='--lr')] = 0.01,

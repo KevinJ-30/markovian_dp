@@ -2,10 +2,10 @@
 
     python scripts/summarize_matched_eps.py results/yelp_matched_eps
 
-`summarize_sweep.py` reports one metric per cell.  This reports the pair that
-matters for a private multilabel model -- the primary metric AND AUROC -- and
-the margin over the blind arm at the same epsilon, which is the quantity the
-paper actually claims.
+`summarize_sweep.py` reports one metric per cell.  For classification, this
+reports the primary metric AND AUROC, plus the margin over the blind arm at
+the same epsilon.  Regression reports only R², with margins in R² units
+rather than percentage points.
 
 Why both metrics.  micro-F1 reads a fixed logit>0 threshold, and DP noise
 decalibrates that threshold far more than it damages the ranking, so micro-F1
@@ -53,9 +53,7 @@ def _cell(directory):
         return None
 
     head = rows[0]
-    lower_better = head.get('metric') in ('mae', 'rmse')
-    pick = min if lower_better else max
-    best = pick(curve, key=lambda s: curve[s][0])
+    best = max(curve, key=lambda s: curve[s][0])
     return {
         'sigma': float(head['sigma']) if head.get('sigma') else float('nan'),
         'eps_target': head.get('target_epsilon') or '',
@@ -89,32 +87,41 @@ def main():
 
     blind = {eps_of(n): c for n, c in cells.items() if n.startswith('dpmlp')}
     metric = next(iter(cells.values()))['metric']
+    show_auroc = metric != 'r2'
     trivial = next((c['trivial'] for c in cells.values() if c['trivial'] == c['trivial']),
                    float('nan'))
 
     print(f"\n{args.root}   primary metric: {metric}")
-    print(f"{'cell':<28}{'sigma':>9}{'step':>7}{metric:>11}{'AUROC':>9}"
-          f"{'  vs blind (' + metric + ' / AUROC)':>28}")
+    auroc_header = f"{'AUROC':>9}" if show_auroc else ''
+    margin_metric = f'{metric} / AUROC' if show_auroc else metric
+    print(f"{'cell':<28}{'sigma':>9}{'step':>7}{metric:>11}{auroc_header}"
+          f"{'  vs blind (' + margin_metric + ')':>28}")
     print('-' * 92)
 
     for name in sorted(cells, key=lambda n: (eps_of(n) or '', n)):
         c = cells[name]
         b = blind.get(eps_of(name))
         if b and not name.startswith('dpmlp'):
-            margin = (f"{100*(c['test']-b['test']):+7.2f} / "
-                      f"{100*(c['auroc']-b['auroc']):+7.2f}")
+            scale = 100 if show_auroc else 1
+            margin = f"{scale*(c['test']-b['test']):+7.2f}"
+            if show_auroc:
+                margin += f" / {100*(c['auroc']-b['auroc']):+7.2f}"
         else:
             margin = '' if not name.startswith('dpmlp') else '  (this is the blind arm)'
         sig = f"{c['sigma']:.3f}" if c['dp'] else '--'
+        auroc_value = f"{c['auroc']:>9.4f}" if show_auroc else ''
         print(f"{name:<28}{sig:>9}{c['step']:>7}{c['test']:>11.4f}"
-              f"{c['auroc']:>9.4f}{margin:>28}")
+              f"{auroc_value}{margin:>28}")
 
     print('-' * 92)
-    print(f"{'trivial baseline':<28}{'--':>9}{'--':>7}{trivial:>11.4f}{0.5:>9.4f}")
-    print("\nmargins are in percentage points, GNN minus blind at the same epsilon.")
-    print("AUROC is threshold-free; the trivial predictor's AUROC is 0.5 by "
-          "construction, so\nAUROC > 0.5 means the model ranks, even when "
-          f"{metric} sits below the trivial bar.")
+    auroc_baseline = f"{0.5:>9.4f}" if show_auroc else ''
+    print(f"{'trivial baseline':<28}{'--':>9}{'--':>7}{trivial:>11.4f}{auroc_baseline}")
+    units = 'percentage points' if show_auroc else 'R² units'
+    print(f"\nmargins are in {units}, GNN minus blind at the same epsilon.")
+    if show_auroc:
+        print("AUROC is threshold-free; the trivial predictor's AUROC is 0.5 by "
+              "construction, so\nAUROC > 0.5 means the model ranks, even when "
+              f"{metric} sits below the trivial bar.")
 
 
 if __name__ == '__main__':

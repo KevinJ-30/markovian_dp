@@ -2,7 +2,7 @@
 # Stage 2 (clip + noise) and Stage 3 (post-hoc epsilon).
 #
 #   ./scripts/ladder_stage2.sh                       # arxiv + flickr
-#   DATASETS="ppi" ./scripts/ladder_stage2.sh        # PPI only
+#   DATASETS="ppi-large" ./scripts/ladder_stage2.sh   # PPI-large only
 #
 #   nohup caffeinate -i ./scripts/ladder_stage2.sh > results/logs/ladder_stage2.log 2>&1 &
 #

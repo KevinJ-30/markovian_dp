@@ -22,8 +22,7 @@ from .layers import PaddedGNNStack, build_conv_stack
 
 
 class _NodeGNN(nn.Module):
-    """L-layer message-passing stack; see layers.build_conv_stack for the
-    aggregator choice (SAGE-mean by default, GCN with aggr='gcn')."""
+    """L-layer message passing with GraphSAGE-mean, GCN, or GIN aggregation."""
 
     def __init__(self, in_channels, hidden_channels, out_channels,
                  dropout=0.5, num_layers=2, aggr='mean'):

@@ -50,12 +50,6 @@ case $DS in
                  : "${GNN_MODEL:=multilabel_gnn}" ;;
   ppi-large)     : "${NTRAIN:=44904}";   : "${HIDDEN:=512}"; : "${DROPOUT:=0.0}"
                  : "${GNN_MODEL:=multilabel_gnn}" ;;
-  # PyG's PPI (24 graphs, 20/2/2), NOT GraphSAINT's ppi-large -- the same
-  # 56,944 nodes packaged differently, and the only one present on ICE.  Its
-  # 44,906 training nodes land within 2 of ppi-large's 44,904, which is the
-  # cross-check that they really are the same source.
-  ppi)           : "${NTRAIN:=44906}";   : "${HIDDEN:=256}"; : "${DROPOUT:=0.0}"
-                 : "${GNN_MODEL:=multilabel_gnn}" ;;
   saint-reddit)  : "${NTRAIN:=153932}";  : "${HIDDEN:=128}"; : "${DROPOUT:=0.1}"
                  : "${GNN_MODEL:=gnn}" ;;          # single-label, 41 communities
   saint-flickr)  : "${NTRAIN:=44625}";   : "${HIDDEN:=256}"; : "${DROPOUT:=0.2}"

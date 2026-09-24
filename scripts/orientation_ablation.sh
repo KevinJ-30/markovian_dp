@@ -22,7 +22,7 @@
 #     ogbn-arxiv        0.0145   strongly directed
 #     relbench rel-f1   0.0000   purely directed (foreign-key arcs)
 #
-# So the ablation runs on arxiv and RelBench only; adding Flickr/PPI/Reddit would
+# The active ablation runs on arxiv only; adding undirected graphs would
 # just reproduce each run twice.
 #
 # Read the mean rooted-subgraph size and compare the two orientations directly.
@@ -35,7 +35,7 @@
 set -e
 cd "$(dirname "$0")/.."
 PY=(/Users/kevinjacob/anaconda3/envs/PytorchEnv/bin/python -u)
-DATASETS=(${=DATASETS:-ogbn-arxiv relbench-f1-top3})
+DATASETS=(${=DATASETS:-ogbn-arxiv})
 DELTA=${DELTA:-1e-6}
 
 for DS in $DATASETS; do

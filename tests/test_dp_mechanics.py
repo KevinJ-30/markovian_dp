@@ -197,8 +197,8 @@ def test_root_sampling_is_independent_across_steps():
     assert len(first & second) / max(len(first), 1) < 0.35
 
 
-def test_edge_retention_matches_p2():
-    degree, p2 = 4000, 0.3
+def test_edge_retention_matches_p2_below_incoming_cap():
+    degree, p2, trials = 10, 0.3, 400
     edges = torch.stack([
         torch.arange(1, degree + 1), torch.zeros(degree, dtype=torch.long)])
     adjacency = build_adjacency(edges, degree + 1, direction="in")
@@ -206,8 +206,8 @@ def test_edge_retention_matches_p2():
     retained = sum(
         sparse_expand(adjacency, 0, p2, 1, generator=generator,
                       direction="in").num_edges
-        for _ in range(20))
-    assert retained / (20 * degree) == pytest.approx(p2, rel=0.05)
+        for _ in range(trials))
+    assert retained / (trials * degree) == pytest.approx(p2, rel=0.05)
 
 
 @pytest.mark.parametrize("radius,reads_two_hop", [(1, False), (2, True)])

@@ -192,10 +192,8 @@ class BaselineTrainer:
             if self.config.method == "graphsage"
             else None
         )
-        # MAE is lower-is-better; a bare `>` would keep the worst checkpoint.
-        lower_is_better = bool(self.config.regression)
         best_state = None
-        best_val = float("inf") if lower_is_better else float("-inf")
+        best_val = float("-inf")
         started = time.perf_counter()
         for _ in range(self.config.epochs):
             model.train()
@@ -211,10 +209,7 @@ class BaselineTrainer:
                 for _ in range(steps_per_epoch):
                     self._step(model, optimizer, train, generator)
             validation, _ = self._evaluate(model, split.val)
-            improved = (
-                validation < best_val if lower_is_better else validation > best_val
-            )
-            if not math.isnan(validation) and improved:
+            if not math.isnan(validation) and validation > best_val:
                 best_val = validation
                 best_state = {
                     name: value.detach().cpu().clone()
@@ -257,6 +252,8 @@ class BaselineTrainer:
                 "validation_accuracy": validation, "validation_macro_f1": val_f1,
                 "test_accuracy": test, "test_macro_f1": test_f1,
             })
+        if self.config.regression:
+            result["metric"] = "r2"
         return result
 
     def _graphsage_epoch(

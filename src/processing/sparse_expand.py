@@ -3,19 +3,20 @@ SparseExpand: randomized breadth-first expansion from a root vertex.
 
     SparseExpand(G, v, p2, r) -> rooted sparsified subgraph (V_v, E_v, F|_{V_v})
 
-From frontier Q_0 = {v}, each of r levels retains every examined arc
-independently with probability p2.  Following the paper's pseudocode, an arc
-joins E_v before the "already visited" test, so E_v may contain arcs into
+From frontier Q_0 = {v}, each of r levels samples arcs with probability p2.
+Incoming expansion retains at most 20 arcs per expanded node: draw the
+Bernoulli count, cap it, then choose that many arcs uniformly without replacement.
+An arc joins E_v before the "already visited" test, so E_v may contain arcs into
 already-discovered vertices.
 
-`direction='in'` (default) is Algorithm 5: traverse incoming arcs (w, u) but
+`direction='in'` (default) uses capped Algorithm 5: traverse incoming arcs (w, u) but
 keep their original orientation, so messages flow toward the root — what a
 message-passing GNN needs.  `direction='out'` is the legacy Algorithm 2/4,
 retained for the orientation ablation.  The direction also selects the
 accounting shell size: n_d = K_out^d for 'in' (Eq. 44), K_in^d for 'out'.
 
-In- and out-expansion coincide on undirected graphs, which store both arcs;
-they differ on directed ones (ogbn-arxiv, RelBench foreign-key graphs).
+On symmetric graphs the two orientations traverse the same candidate neighbors,
+but only incoming expansion applies the sampling cap.
 """
 
 import math
@@ -23,6 +24,8 @@ from dataclasses import dataclass
 from typing import List
 
 import torch
+
+MAX_INCOMING_EDGES = 20
 
 
 @dataclass(frozen=True)
@@ -103,6 +106,42 @@ def _bernoulli_keep(n: int, p2: float, generator) -> torch.Tensor:
     return u < p2
 
 
+def _capped_incoming_positions(
+    degrees: torch.Tensor, p2: float, generator: torch.Generator | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sample capped Bernoulli subsets using O(frontier size * cap) storage."""
+    if p2 <= 0.0:
+        counts = torch.zeros_like(degrees)
+    elif p2 >= 1.0:
+        counts = degrees.clamp(max=MAX_INCOMING_EDGES)
+    else:
+        populations = degrees.to(torch.float64)
+        counts = torch.binomial(
+            populations, torch.full_like(populations, p2), generator=generator,
+        ).to(torch.long).clamp(max=MAX_INCOMING_EDGES)
+    width = int(counts.max())
+    slots = torch.arange(width)
+    positions = slots.expand(*degrees.shape, width).clone()
+    partial = (counts > 0) & (counts < degrees)
+    # Floyd's algorithm: a uniform subset without a degree-sized permutation.
+    for slot in range(width):
+        active = partial & (counts > slot)
+        active_count = int(active.sum())
+        if not active_count:
+            break
+        upper = degrees[active] - counts[active] + slot
+        candidate = (
+            torch.rand(active_count, dtype=torch.float64, generator=generator)
+            * (upper + 1)
+        ).to(torch.long)
+        duplicate = (positions[active][:, :slot] == candidate[:, None]).any(dim=1)
+        positions[..., slot][active] = torch.where(duplicate, upper, candidate)
+    retained = slots < counts.unsqueeze(-1)
+    # Keep CSR order, with inactive slots sorted after every real position.
+    positions = torch.where(retained, positions, degrees.unsqueeze(-1)).sort(dim=-1).values
+    return positions, retained
+
+
 def sparse_expand(
     adj: SparseAdjacency,
     root: int,
@@ -117,7 +156,7 @@ def sparse_expand(
         adj:       neighbour lists from `build_adjacency(..., direction)` — must
                    have been built with the SAME `direction` passed here.
         root:      root vertex v (original node id).
-        p2:        edge-sampling probability (Bernoulli per examined arc).
+        p2:        Bernoulli edge probability before the incoming cap of 20.
         r:         maximum distance / number of expansion levels.
         generator: optional torch.Generator for reproducible sampling.
         direction: 'in'  -> Algorithm 5: traverse incoming arcs (w, u) and record
@@ -145,10 +184,13 @@ def sparse_expand(
         next_frontier: List[int] = []
         for u in frontier:
             out = adj.neighbors(u)
-            keep = _bernoulli_keep(int(out.numel()), p2, generator)
-            if not bool(keep.any()):
-                continue
-            kept_dst = out[keep].tolist()
+            if expand_in and out.numel() > MAX_INCOMING_EDGES:
+                positions, retained = _capped_incoming_positions(
+                    torch.tensor([out.numel()]), p2, generator)
+                kept_dst = out[positions[retained]].tolist()
+            else:
+                keep = _bernoulli_keep(int(out.numel()), p2, generator)
+                kept_dst = out[keep].tolist()
             u_local = visited[u]
             for w in kept_dst:
                 # Add the edge regardless of whether w is new (Alg 5 line 8
@@ -184,9 +226,10 @@ def batch_sparse_expand(
 ) -> List[RootedSubgraph]:
     """Vectorized SparseExpand for an ordered batch of CPU roots.
 
-    Expansion is level-synchronous across roots. Candidate arcs are gathered
-    from the compact CSR in Torch, while segmented composite keys preserve
-    first-discovery order and map repeated discoveries to one local node.
+    Expansion is level-synchronous across roots. Incoming neighborhoods retain
+    at most 20 arcs per expanded node without allocating degree-sized candidates.
+    Segmented composite keys preserve first-discovery order and map repeated
+    discoveries to one local node.
     """
     if direction not in ('in', 'out'):
         raise ValueError(f"direction must be 'in' or 'out', got {direction!r}")
@@ -230,28 +273,37 @@ def batch_sparse_expand(
         if max_degree == 0:
             break
 
-        neighbor_slots = torch.arange(max_degree, dtype=torch.long)
-        candidate_mask = (
-            neighbor_slots.view(1, 1, -1) < degrees.unsqueeze(-1))
-        safe_offsets = (
-            starts.unsqueeze(-1) + neighbor_slots.view(1, 1, -1)
-        ).masked_fill(~candidate_mask, 0)
-        candidate_nodes = adj.col[safe_offsets].reshape(batch_size, -1)
-        parent_local = frontier_local.unsqueeze(-1).expand(
-            -1, -1, max_degree).reshape(batch_size, -1)
-        candidate_mask = candidate_mask.reshape(batch_size, -1)
-
-        if p2 >= 1.0:
-            retained = candidate_mask
-        elif p2 <= 0.0:
-            break
+        if direction == 'in' and max_degree > MAX_INCOMING_EDGES:
+            neighbor_positions, retained = _capped_incoming_positions(
+                degrees, p2, generator)
+            width = neighbor_positions.size(-1)
+            safe_offsets = (
+                starts.unsqueeze(-1) + neighbor_positions
+            ).masked_fill(~retained, 0)
+            retained = retained.reshape(batch_size, -1)
         else:
-            retained = torch.zeros_like(candidate_mask)
-            draws = torch.rand(
-                int(candidate_mask.sum()), generator=generator)
-            retained[candidate_mask] = draws < p2
+            width = max_degree
+            neighbor_slots = torch.arange(width, dtype=torch.long)
+            candidate_mask = (
+                neighbor_slots.view(1, 1, -1) < degrees.unsqueeze(-1))
+            safe_offsets = (
+                starts.unsqueeze(-1) + neighbor_slots.view(1, 1, -1)
+            ).masked_fill(~candidate_mask, 0)
+            candidate_mask = candidate_mask.reshape(batch_size, -1)
+            if p2 >= 1.0:
+                retained = candidate_mask
+            elif p2 <= 0.0:
+                break
+            else:
+                retained = torch.zeros_like(candidate_mask)
+                draws = torch.rand(
+                    int(candidate_mask.sum()), generator=generator)
+                retained[candidate_mask] = draws < p2
         if not bool(retained.any()):
             break
+        candidate_nodes = adj.col[safe_offsets].reshape(batch_size, -1)
+        parent_local = frontier_local.unsqueeze(-1).expand(
+            -1, -1, width).reshape(batch_size, -1)
 
         candidate_width = candidate_nodes.size(1)
         candidate_rows = root_rows.expand(-1, candidate_width)

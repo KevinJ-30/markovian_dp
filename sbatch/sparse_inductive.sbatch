@@ -2,18 +2,18 @@
 #SBATCH -Jsparse_ind                      # Job name
 #SBATCH -N1 --ntasks-per-node=1           # 1 node, 1 task
 #SBATCH --gres=gpu:H200:1                 # 1x H200 GPU
-#SBATCH --mem-per-gpu=128G                # Reddit + PPI are large
+#SBATCH --mem-per-gpu=128G                # Reddit is large
 #SBATCH -t8:00:00                         # 8 hours walltime
 #SBATCH -oReport-sparse-ind-%j.out        # Output file
 #SBATCH --mail-type=BEGIN,END,FAIL        # Mail notifications
 
-# ── SparseGNN inductive ladder on the big homogeneous graphs ──
+# ── SparseGNN inductive ladder on Reddit ──
 #
 # Non-private ceiling -> sparsification-only -> clip+noise -> post-hoc epsilon.
 # All private runs use --direction in.
 #
-# Reddit (232k nodes) and PPI (57k nodes, 1.6M edges, 121-way multilabel) are the
-# reason this lives on the cluster; ogbn-arxiv and Flickr run fine on a laptop
+# Reddit (232k nodes) is the reason this lives on the cluster;
+# ogbn-arxiv and Flickr run fine on a laptop
 # via scripts/ladder_stage01.sh.
 #
 # IMPORTANT: --direction in is the corrected orientation (manuscript v35 §5-6).
@@ -25,7 +25,6 @@ cd $SLURM_SUBMIT_DIR
 export OGB_DATA_ROOT=${SCRATCH:-$HOME/scratch}/data/ogbn-arxiv
 export REDDIT_DATA_ROOT=${SCRATCH:-$HOME/scratch}/data/Reddit
 export FLICKR_DATA_ROOT=${SCRATCH:-$HOME/scratch}/data/Flickr
-export PPI_DATA_ROOT=${SCRATCH:-$HOME/scratch}/data/PPI
 
 DELTA=1e-6
 
@@ -53,31 +52,6 @@ srun python -u -m src.experiments.sparse \
 echo "=== Reddit Stage 3: post-hoc epsilon ==="
 srun python -u -m src.experiments.compute_epsilon \
     --csv results/arxiv/reddit_stage2/sparse_gnn_reddit_dp_results.csv \
-    --delta $DELTA
-
-# ── PPI: 24 disjoint graphs, 20/2/2 inductive split, 121-way multilabel ───────
-# The training graph automatically retains only the training components.
-echo "=== PPI Stage 0-1 ==="
-
-srun python -u -m src.experiments.sparse \
-    --dataset ppi --direction in --model multilabel_gnn \
-    --p2 1.0 --r 2 --p1 0.01 --T 1000 --lr 0.01 --seeds 3 \
-    --out_dir results/ppi/ceiling_ppi
-
-srun python -u -m src.experiments.sparse \
-    --dataset ppi --direction in --model multilabel_gnn --K_in 5 \
-    --p2 1.0 0.5 0.25 0.1 --r 2 --p1 0.01 --T 1000 --lr 0.01 --seeds 3 \
-    --out_dir results/ppi/stage1_ppi
-
-echo "=== PPI Stage 2-3: DP + epsilon ==="
-srun python -u -m src.experiments.sparse \
-    --dataset ppi --direction in --model multilabel_gnn --dp --K_in 5 \
-    --p2 1.0 0.5 0.25 0.1 --r 2 --sigma 2.0 5.0 10.0 20.0 \
-    --clip 1.0 --lr 1.0 --p1 0.01 --T 1000 --seeds 3 \
-    --out_dir results/ppi/stage2_ppi
-
-srun python -u -m src.experiments.compute_epsilon \
-    --csv results/ppi/stage2_ppi/sparse_gnn_ppi_dp_results.csv \
     --delta $DELTA
 
 echo "=== Done ==="

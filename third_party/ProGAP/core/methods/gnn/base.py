@@ -17,7 +17,7 @@ class StandardGNN (NodeClassification):
                  mp_layers:             Annotated[int,   ArgInfo(help='number of message passing layers')] = 2,
                  head_layers:           Annotated[int,   ArgInfo(help='number of head MLP layers')] = 1,
                  activation:            Annotated[str,   ArgInfo(help='type of activation function', choices=['relu', 'selu', 'tanh'])] = 'selu',
-                 dropout:               Annotated[float, ArgInfo(help='dropout rate')] = 0.0,
+                 dropout:               Annotated[float, ArgInfo(help='dropout rate')] = 0.5,
                  batch_norm:            Annotated[bool,  ArgInfo(help='if true, then model uses batch normalization')] = True,
                  jk:                    Annotated[str,   ArgInfo(help='the jumping knowledge mode.', choices=["last", "cat", "max", "lstm"])] = 'cat',
                  # sage args

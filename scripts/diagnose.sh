@@ -6,7 +6,7 @@ set -e
 cd "$(dirname "$0")/.."
 PY=${PYTHON:-python}
 WHAT=${1:?usage: diagnose.sh metrics [dataset]}
-DS=${2:-ppi}
+DS=${2:-ppi-large}
 
 case $WHAT in
 metrics)

@@ -69,8 +69,8 @@ class _MeanSquaredError(torch.nn.Module):
 
 
 @torch.no_grad()
-def _mean_absolute_error(scheduler, loader):
-    """MAE over a loader, matching upstream's center-node convention.
+def _r2_score(scheduler, loader):
+    """Global R² over a loader, matching upstream's center-node convention.
 
     train_scheduler.one_epoch scores the ROOT only -- ``out[:, 0, :]`` against
     ``targets[:, 0]`` -- so evaluation has to do the same, or the sampled
@@ -83,21 +83,36 @@ def _mean_absolute_error(scheduler, loader):
     """
     model = scheduler.model
     model.eval()
-    absolute_error, count = 0.0, 0
+    squared_error, count, mean, centered_sum = 0.0, 0, 0.0, 0.0
     for batch in loader:
         if batch is None:
             continue
         x, targets = batch
         x, targets = x.to(scheduler.device), targets.to(scheduler.device)
-        predictions = torch.stack([model(sample) for sample in x])[:, 0, 0]
-        truth = targets[:, 0].reshape(-1).to(predictions.dtype)
-        absolute_error += float((predictions - truth).abs().sum())
-        count += int(truth.numel())
-    return absolute_error / max(count, 1)
+        truth = targets[:, 0].reshape(-1).to(torch.float64)
+        batch_count = int(truth.numel())
+        if batch_count == 0:
+            continue
+        predictions = torch.stack([model(sample) for sample in x])[:, 0, 0].to(torch.float64)
+        squared_error += float((predictions - truth).square().sum())
+        batch_mean = float(truth.mean())
+        batch_centered_sum = float((truth - batch_mean).square().sum())
+        # Merge centered moments rather than subtracting sum(y)^2 / n:
+        # the latter loses variance when targets have a large offset.
+        total = count + batch_count
+        difference = batch_mean - mean
+        centered_sum += batch_centered_sum + difference ** 2 * count * batch_count / total
+        mean += difference * batch_count / total
+        count = total
+    if count < 2:
+        return float("nan")
+    if centered_sum == 0.0:
+        return float(squared_error == 0.0) if math.isfinite(squared_error) else float("nan")
+    return 1.0 - squared_error / centered_sum
 
 
 def _train_regression(scheduler, epochs):
-    """Train for `epochs` and select the checkpoint on validation MAE.
+    """Train for `epochs` and select the checkpoint on validation R².
 
     Upstream's trainer.run() selects on ``hit_accuracy``, which a one-output
     regressor cannot produce: argmax over a [B, 1] logit is identically 0, so
@@ -110,13 +125,16 @@ def _train_regression(scheduler, epochs):
     the same args.epoch epochs over the same train_loader, so the composition
     count is identical to the classification path.
     """
-    best_state, best_validation = None, float("inf")
+    best_state, best_validation = None, float("-inf")
     for epoch in range(epochs):
         scheduler.epoch = epoch
         scheduler.one_epoch(train_or_val=train_scheduler.Phase.TRAIN,
                             loader=scheduler.train_loader)
-        validation = _mean_absolute_error(scheduler, scheduler.val_loader)
-        if validation < best_validation:
+        validation = _r2_score(scheduler, scheduler.val_loader)
+        if best_state is None or (
+            not math.isnan(validation)
+            and (math.isnan(best_validation) or validation > best_validation)
+        ):
             best_validation = validation
             best_state = deepcopy(scheduler.model.state_dict())
     if best_state is not None:
@@ -126,7 +144,7 @@ def _train_regression(scheduler, epochs):
         for p_model, p_worker in zip(scheduler.model.parameters(),
                                      scheduler.worker_param_func):
             p_worker.copy_(p_model.data)
-    return best_validation, _mean_absolute_error(scheduler, scheduler.test_loader)
+    return best_validation, _r2_score(scheduler, scheduler.test_loader)
 
 
 def _normalize(train, *held_out):
@@ -230,8 +248,8 @@ def main():
         steps=steps,
     )
     if regression:
-        # MAE in both slots, matching _regression_mae; there is no second
-        # metric for a continuous target.
+        # R² occupies both shared score slots; continuous targets have no
+        # secondary metric.
         validation_score, test_score = _train_regression(scheduler, epochs)
         validation_secondary, test_secondary = validation_score, test_score
     else:
@@ -244,9 +262,9 @@ def main():
     if achieved_epsilon > epsilon:
         raise RuntimeError(f"HeterPoisson calibration exceeded target epsilon: {achieved_epsilon} > {epsilon}")
     # The accuracy/macro_f1 slots carry whatever metric the task defines;
-    # `metric` names it.  MAE is lower-is-better.
+    # `metric` names it.
     result = {
-        "metric": "mae" if regression else "accuracy",
+        "metric": "r2" if regression else "accuracy",
         "validation_accuracy": validation_score,
         "validation_macro_f1": validation_secondary,
         "test_accuracy": test_score,

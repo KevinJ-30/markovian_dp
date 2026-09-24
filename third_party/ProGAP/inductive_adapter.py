@@ -1,7 +1,8 @@
 """Graph-disjoint ProGAP boundary with exact, chunked global evaluation.
 
-The upstream classifier, NAP, private optimizer and composed calibration remain
-unchanged. Evaluation chunks only nodewise classifier work, never graph context.
+The classifier objective and predictions adapt to categorical, binary, multilabel,
+or scalar regression tasks. NAP, private optimization and composed calibration
+remain unchanged. Evaluation chunks only nodewise work, never graph context.
 """
 import json
 from contextlib import nullcontext
@@ -23,7 +24,7 @@ from core.data.loader.node import NodeDataLoader
 from core.methods.progap.node import NodeLevelProGAP
 from core.data.transforms.bound_degree import BoundOutDegree
 from core.methods.progap.base import ProGAP
-from core.modules.prog import binary_auroc
+from core.modules.prog import RegressionR2, binary_auroc
 
 def _load(manifest_path, manifest, name):
     file = manifest["partitions"][name]
@@ -83,16 +84,20 @@ def stage_embeddings(model, data, chunk_size):
 
 @torch.no_grad()
 def evaluate_stage(model, data, chunk_size=16384, metric_ignore_label=None):
-    """Reduce one global score; binary ranks are never averaged across chunks."""
+    """Reduce a whole-split score, never an average of chunk-level metrics."""
     model.eval()
     device = next(model.parameters()).device
     mask = _score_mask(data, metric_ignore_label)
     binary = getattr(model, "binary", False)
+    regression = getattr(model, "regression", False)
     multilabel = data.y.ndim == 2
     totals = torch.zeros(5, dtype=torch.float64, device=device)
     predicted_counts = actual_counts = true_counts = None
     scores, targets = [], []
     count = 0
+    regression_metric = RegressionR2() if regression else None
+    if regression and data.y.ndim != 1:
+        raise ValueError("regression ProGAP requires one-dimensional targets")
     for start in range(0, data.num_nodes, chunk_size):
         stop = min(start + chunk_size, data.num_nodes)
         selected = mask[start:stop]
@@ -103,7 +108,11 @@ def evaluate_stage(model, data, chunk_size=16384, metric_ignore_label=None):
         logits = model(xs)[1]
         labels = data.y[start:stop][selected].to(device)
         count += labels.shape[0]
-        if binary:
+        if regression:
+            if logits.ndim != 2 or logits.shape[1] != 1:
+                raise ValueError("regression ProGAP requires exactly one output")
+            regression_metric.update(logits, labels)
+        elif binary:
             if logits.ndim != 2 or logits.shape[1] != 1:
                 raise ValueError("binary ProGAP requires exactly one logit")
             logits = logits.squeeze(-1)
@@ -114,13 +123,13 @@ def evaluate_stage(model, data, chunk_size=16384, metric_ignore_label=None):
             scores.append(logits.sigmoid().cpu())
             targets.append(labels.cpu())
         elif multilabel:
-            totals[0] += model.root_losses(logits, labels).double().sum()
+            totals[0] += model.root_losses(logits, labels, regression=regression).double().sum()
             positive, actual = logits >= 0, labels.bool()
             totals[1] += (positive & actual).sum()
             totals[2] += positive.sum()
             totals[3] += actual.sum()
         else:
-            totals[0] += model.root_losses(logits, labels).double().sum()
+            totals[0] += model.root_losses(logits, labels, regression=regression).double().sum()
             prediction = logits.argmax(dim=-1)
             correct = prediction == labels
             totals[1] += correct.sum()
@@ -131,9 +140,13 @@ def evaluate_stage(model, data, chunk_size=16384, metric_ignore_label=None):
             predicted_counts += torch.bincount(prediction, minlength=logits.shape[1])
             actual_counts += torch.bincount(labels, minlength=logits.shape[1])
             true_counts += torch.bincount(labels[correct], minlength=logits.shape[1])
+    if regression:
+        totals[0] = regression_metric.residual_sum
     values = totals.cpu().tolist()
     result = {"loss": values[0] / count, "scored_nodes": count}
-    if binary:
+    if regression:
+        result.update(metric="r2", score=float(regression_metric.compute()))
+    elif binary:
         result.update(metric="auroc", score=float(binary_auroc(torch.cat(scores), torch.cat(targets))),
                       accuracy=values[1] / count)
     elif multilabel:
@@ -279,7 +292,6 @@ class InductiveNodeLevelProGAP(NodeLevelProGAP):
             for epoch in range(1, self.trainer.epochs + 1):
                 self._sync()
                 started = time.monotonic()
-                loss_sum = torch.zeros((), dtype=torch.float64, device=self.trainer.device)
                 epoch_roots = epoch_updates = 0
                 self._train_started = started
                 with self._phase("train_update"):
@@ -294,14 +306,15 @@ class InductiveNodeLevelProGAP(NodeLevelProGAP):
                             if getattr(model, "binary", False):
                                 loss = F.binary_cross_entropy_with_logits(logits.squeeze(-1), labels.float())
                             else:
-                                loss = model.root_losses(logits, labels).mean()
+                                loss = model.root_losses(
+                                    logits, labels, regression=model.regression
+                                ).mean()
                         else:
                             # Exactly one private noise/Adam update, even on an empty draw.
                             logits = model([self.data[f"x{i}"][:2] for i in range(stage + 1)])[1]
                             loss = logits.sum() * 0
                         loss.backward()
                         optimizer.step()
-                        loss_sum += loss.detach().double() * count
                         epoch_roots += count
                         epoch_updates += 1
                         self.updates_completed += 1
@@ -344,8 +357,6 @@ class InductiveNodeLevelProGAP(NodeLevelProGAP):
                     "updates_completed": self.updates_completed, "epoch_updates": epoch_updates,
                     "roots_total": self.roots_total, "epoch_roots": epoch_roots,
                     "step": self.updates_completed,
-                    "training_loss": float(loss_sum) / epoch_roots if epoch_roots else 0.0,
-                    "loss": float(loss_sum) / epoch_roots if epoch_roots else 0.0,
                     "validation_metric": validation["score"], "validation_loss": validation["loss"],
                     "best_epoch": best["epoch"], **self.timing,
                 }
@@ -363,7 +374,9 @@ class InductiveNodeLevelProGAP(NodeLevelProGAP):
             "epochs_completed": self.epochs_completed,
         }, "checkpoint.pt")
         return {
-            self.trainer.monitor: self.best_validation["score"] * 100,
+            self.trainer.monitor: self.best_validation["score"] * (
+                1 if self.classifier.regression else 100
+            ),
             "epoch": self.stage_states[-1]["epoch"],
         }
 
@@ -409,6 +422,13 @@ def _metrics(method, data):
     mask = _score_mask(data, getattr(method, "metric_ignore_label", None)).cpu()
     probabilities = probabilities[mask]
     target = target[mask]
+    if getattr(method.classifier, "regression", False):
+        metric = RegressionR2()
+        metric.update(probabilities, target)
+        score = float(metric.compute())
+        if not math.isfinite(score):
+            raise ValueError("ProGAP evaluation produced a nonfinite regression metric")
+        return score, score
     if getattr(method.classifier, "binary", False):
         scores = probabilities.squeeze(-1)
         if scores.ndim != 1:
@@ -522,6 +542,8 @@ def _task_metadata(manifest):
         primary_metric = "auroc" if binary else "accuracy"
     if manifest_metric is not None and primary_metric != manifest_metric:
         raise ValueError("PROGAP_PRIMARY_METRIC does not match the partition manifest")
+    if primary_metric not in {"accuracy", "micro_f1", "auroc", "r2"}:
+        raise ValueError(f"unsupported ProGAP primary metric: {primary_metric!r}")
     if binary and primary_metric != "auroc":
         raise ValueError("binary ProGAP requires primary metric 'auroc'")
 
@@ -542,6 +564,9 @@ def main():
     epsilon, delta = _target_pair()
     multilabel = _multilabel()
     binary, primary_metric, metric_ignore_label = _task_metadata(manifest)
+    regression = primary_metric == "r2"
+    if regression and (binary or multilabel):
+        raise ValueError("regression ProGAP cannot be binary or multilabel")
     if binary and multilabel:
         raise ValueError("PROGAP_BINARY and PROGAP_MULTILABEL cannot both be enabled")
     _seed()
@@ -566,7 +591,7 @@ def main():
     torch.load = lambda *args, **kwargs: load(*args, **{**kwargs, "weights_only": False})
     try:
         method = InductiveNodeLevelProGAP(
-            num_classes=1 if binary else int(manifest["num_classes"]),
+            num_classes=1 if binary or regression else int(manifest["num_classes"]),
             epsilon=epsilon,
             delta=delta,
             batch_size=batch_size,
@@ -576,8 +601,7 @@ def main():
             max_degree=max_degree,
             depth=depth,
             monitor=(
-                "val/auroc"
-                if binary
+                "val/r2" if regression else "val/auroc" if binary
                 else "val/micro_f1" if multilabel else "val/acc"
             ),
             **_constructor_options(),
@@ -586,6 +610,7 @@ def main():
         torch.load = load
     method.classifier.multilabel = multilabel
     method.classifier.binary = binary
+    method.classifier.regression = regression
     method.metric_ignore_label = metric_ignore_label
     method.validation = Data(**validation.to_dict())
     method.checkpoint_dir = result_path.parent
@@ -646,6 +671,8 @@ def main():
             "test_accuracy": test_primary,
             "test_macro_f1": test_macro_f1,
         })
+    if regression:
+        result["metric"] = "r2"
     result_path.write_text(json.dumps(result, indent=2) + "\n")
 
 

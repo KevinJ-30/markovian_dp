@@ -298,6 +298,9 @@ class UpstreamBaseline:
             if not result_path.exists():
                 raise RuntimeError(f"{self.method} adapter did not write {result_path}")
             result = json.loads(result_path.read_text())
+        if self.method == "progap" and task_metadata["primary_metric"] == "r2":
+            if result.get("metric") != "r2":
+                raise ValueError("progap regression result must report metric 'r2'")
         binary_result = self.method == "progap" and task_metadata["binary"]
         if binary_result:
             metric = task_metadata["primary_metric"]

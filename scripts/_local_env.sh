@@ -1,13 +1,10 @@
 # Local (non-cluster) environment setup, mirroring scripts/_ice_env.sh's
 # preflight but pointed at whatever conda env on THIS machine actually has
-# relbench + torch + torch_geometric together (checked 2026-09-09: PytorchEnv).
+# torch + torch_geometric together (checked 2026-09-09: PytorchEnv).
 #
 #   source scripts/_local_env.sh
 #
-# Override PY to point at a different interpreter; RelBench's own default
-# cache dir (~/Library/Caches/relbench on macOS) is left alone deliberately —
-# that is where the already-downloaded rel-f1/rel-hm databases live, and this
-# script exists specifically to avoid triggering any new downloads.
+# Override PY to point at a different interpreter.
 
 PY=${PY:-/Users/kevinjacob/anaconda3/envs/PytorchEnv/bin/python3}
 
@@ -17,7 +14,7 @@ echo "  PY = $PY  ($($PY --version 2>&1))"
 $PY -u - <<'PREFLIGHT' || { echo "FATAL: preflight failed (see above)" >&2; exit 1; }
 import importlib, sys, time
 missing = []
-for mod in ('numpy', 'scipy', 'dp_accounting', 'torch', 'torch_geometric', 'relbench'):
+for mod in ('numpy', 'scipy', 'dp_accounting', 'torch', 'torch_geometric'):
     t0 = time.time()
     print(f"  importing {mod:<16}", end='', flush=True)
     try:

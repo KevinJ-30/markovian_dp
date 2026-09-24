@@ -6,10 +6,8 @@ sparsified subgraph, reading off the root's output — but the label of a root i
 a 0/1 vector rather than a class index, so the per-root loss is
 `binary_cross_entropy_with_logits` and the reported metric is micro-F1.
 
-This is what PPI needs (121 binary labels per node).  PPI is also the cleanest
-inductive setting in the suite: its 24 graphs are disconnected and already
-partitioned 20/2/2, so a training root's expansion can never reach a val/test
-node regardless of r.
+Use this mechanism for multilabel datasets such as GraphSAINT PPI-large
+(121 binary labels per node).
 """
 
 from typing import Dict

@@ -2,7 +2,7 @@
 SparseGNN experiment CLI: root sampling (p1) + SparseExpand (p2, r) with a GNN
 base mechanism, swept over (p1, p2, r, sigma) and written to a results CSV.
 
-  python -m src.experiments.sparse --dataset ppi --model multilabel_gnn --direction in \
+  python -m src.experiments.sparse --dataset ppi-large --model multilabel_gnn --direction in \
       --p1 0.01 --p2 0.1 --r 1 --num_layers 2 --T 2000 --K_in 5 --K_out 5
 
 Add --dp for the clip+noise path; epsilon is attached afterwards by
@@ -26,6 +26,7 @@ from src.models.gnn_mechanism import GNNMechanism           # noqa: E402
 from src.models.multilabel_mechanism import MultiLabelGNNMechanism  # noqa: E402
 from src.models.binary_mechanism import BinaryGNNMechanism  # noqa: E402
 from src.models.regression_mechanism import RegressionGNNMechanism  # noqa: E402
+from src.models.layers import VALID_AGGR  # noqa: E402
 from src.processing.sparse_expand import build_adjacency, sparse_expand  # noqa: E402
 from src.privacy.accounting import calibrate_sparsegnn_noise  # noqa: E402
 from src.training.sparse_gnn import train_sparse_gnn          # noqa: E402
@@ -46,12 +47,6 @@ _MECHANISMS = {
     'binary_gnn': BinaryGNNMechanism,
     'regression_gnn': RegressionGNNMechanism,
 }
-
-# metric_name -> whether a larger value is better.  accuracy/micro_f1/auroc are
-# scores (higher = better); mae is a loss (lower = better).  Console sorting and
-# the "below trivial baseline" comparison both need to know which.
-_HIGHER_IS_BETTER = {'accuracy': True, 'micro_f1': True, 'auroc': True,
-                    'mae': False}
 
 
 def _set_seed(seed):
@@ -91,8 +86,8 @@ def _report_subgraph_size(adj, candidate_nodes, num_nodes, *, p2, r, direction,
               "contributes nothing beyond the root's own features.")
 
 
-def plot_sweep(summary, dataset_name, out_dir):
-    """Plot test accuracy vs p2, one line per p1 (linestyle per r if r is swept).
+def plot_sweep(summary, dataset_name, out_dir, metric):
+    """Plot the test metric vs p2, one line per p1 (linestyle per swept r).
 
     `summary` is a list of (p1, p2, r, test_mean, test_std, val_mean, val_std).
     """
@@ -122,9 +117,9 @@ def plot_sweep(summary, dataset_name, out_dir):
             ax.errorbar(xs, ys, yerr=es, fmt='o' + linestyles[ri % len(linestyles)],
                         capsize=4, label=label)
     ax.set_xlabel('edge-sampling probability p2  (1.0 = all edges)')
-    ax.set_ylabel('test accuracy')
+    ax.set_ylabel(f'test {metric}')
     r_txt = f'r={rs[0]}' if len(rs) == 1 else f'r in {rs}'
-    ax.set_title(f'{dataset_name}: SparseGNN test accuracy vs sparsification ({r_txt}, no DP)')
+    ax.set_title(f'{dataset_name}: SparseGNN test {metric} vs sparsification ({r_txt}, no DP)')
     ax.grid(True, alpha=0.3)
     ax.legend(title='root-sampling p1')
     fig.tight_layout()
@@ -143,23 +138,14 @@ def parse_args():
                    choices=['gnn', 'multilabel_gnn', 'binary_gnn',
                             'regression_gnn'],
                    default='gnn',
-                   help="base mechanism g0: 'gnn' (GCN, single-label), "
-                        "'multilabel_gnn' (BCE + micro-F1, for PPI), "
-                        "'binary_gnn' (BCE + AUROC, for RelBench binary entity "
-                        "tasks), or 'regression_gnn' (MSE + MAE/RMSE, for "
-                        "RelBench REGRESSION entity tasks e.g. rel-f1/"
-                        "driver-position, rel-amazon/user-ltv)")
-    p.add_argument('--aggr', choices=['mean', 'gcn'], default='mean',
-                   help="message-passing aggregator: 'mean' (GraphSAGE) makes "
-                        "the rooted-subgraph computation agree EXACTLY with "
-                        "full-graph inference; 'gcn' only approximates it, with "
-                        "error growing in graph density")
-    p.add_argument('--relbench_root', choices=['row', 'entity'], default='row',
-                   help='RelBench only: root one prediction per task ROW (all '
-                        'supervision) or per ENTITY (labels aggregated)')
-    p.add_argument('--relbench_reverse_edges', action='store_true',
-                   help='RelBench only: also add parent->child arcs; enriches '
-                        'neighbourhoods but raises K_out and hence epsilon')
+                   help="base mechanism g0: 'gnn' (single-label GNN), "
+                        "'multilabel_gnn' (BCE + micro-F1, for multilabel tasks), "
+                        "'binary_gnn' (BCE + AUROC, for binary tasks), or "
+                        "'regression_gnn' (MSE training + R² evaluation, for regression tasks)")
+    p.add_argument('--aggr', choices=VALID_AGGR, default='mean',
+                   help="message-passing aggregator: 'mean' (GraphSAGE), "
+                        "'gcn' (normalized GCN), or 'gin' (sum aggregation, "
+                        "two-layer ReLU MLP, fixed epsilon=0)")
     p.add_argument('--train_domains', nargs='+',
                    help='domain datasets: canonical training domain slugs')
     p.add_argument('--val_domains', nargs='+',
@@ -173,8 +159,9 @@ def parse_args():
     # Training is always inductive: run.py constructs separate training and
     # evaluation graphs before dispatching to SparseGNN.
     p.add_argument('--common_inductive_split', action='store_true',
-                   help='use the saved deterministic 60/20/20 split and delete '
-                        'all inter-partition edges before private training')
+                   help='use the saved deterministic 60/20/20 split (or native '
+                        'masks for fixed-split, regression, and multilabel datasets) '
+                        'and delete all inter-partition edges before private training')
     p.add_argument('--split_root', default='data/inductive_splits',
                    help='directory holding common saved inductive split indices')
     p.add_argument('--split_seed', type=int, default=0,
@@ -189,8 +176,8 @@ def parse_args():
                    help='root-sampling probability p1 (Bernoulli per node); '
                         'pass several to sweep, e.g. --p1 0.25 0.5 1.0')
     p.add_argument('--p2', type=float, nargs='+', default=[0.5],
-                   help='edge-sparsification probability p2 (Bernoulli per arc); '
-                        'pass several to sweep')
+                   help='edge-sparsification probability p2 before the '
+                        '20-edge incoming sampling cap; pass several to sweep')
     p.add_argument('--r', type=int, nargs='+', default=[2],
                    help='maximum expansion distance r (SparseExpand levels); '
                         'pass several to sweep, e.g. --r 1 2 3')
@@ -198,7 +185,7 @@ def parse_args():
                    help='number of training steps T')
     # Model / optimization
     p.add_argument('--hidden', type=int, default=64)
-    p.add_argument('--num_layers', type=int, default=2, help='GCN layers L')
+    p.add_argument('--num_layers', type=int, default=2, help='message-passing layers L')
     p.add_argument('--dropout', type=float, default=0.5)
     # 'auto' = adam, DP or not (see the opt_kind comment in main()).
     p.add_argument('--optimizer', choices=['auto', 'adam', 'sgd'],
@@ -266,7 +253,7 @@ def parse_args():
     p.add_argument('--seeds', type=int, default=3)
     p.add_argument('--out_dir', default='results')
     p.add_argument('--plot', action='store_true',
-                   help='save a sweep plot (test acc vs p2, line per r, subplot per p1)')
+                   help='save a sweep plot (test metric vs p2, line per p1, linestyle per r)')
     p.add_argument('--verbose', action='store_true')
     p.add_argument('--progress_every', type=int,
                    help='verbose progress/evaluation interval; defaults to '
@@ -325,16 +312,8 @@ def main():
             'val_ratio': args.domain_val_ratio,
         }
 
-    load_kwargs = {
-        'device': str(device),
-        'domain_split': domain_split,
-    }
-    if str(args.dataset).startswith('relbench'):
-        load_kwargs.update(
-            root=args.relbench_root,
-            reverse_edges=args.relbench_reverse_edges,
-        )
-    dataset, data = load_dataset(args.dataset, **load_kwargs)
+    dataset, data = load_dataset(
+        args.dataset, device=str(device), domain_split=domain_split)
     is_domain_dataset = bool(getattr(dataset, 'domain_dataset', False))
     normalized_domain_split = (
         getattr(dataset, 'domain_split', None) if is_domain_dataset else None)
@@ -355,7 +334,7 @@ def main():
             "its domain_split masks already define the inductive protocol")
 
     tag = '_dp' if args.dp else ''
-    # RelBench names contain separators; domain runs additionally carry their
+    # Dataset names may contain separators; domain runs additionally carry their
     # normalized split fingerprint so distinct protocols cannot overwrite.
     ds_slug = args.dataset.replace(':', '_').replace('/', '_')
     split_tag = f'_{domain_split_id}' if domain_split_id else ''
@@ -366,9 +345,13 @@ def main():
     num_classes = dataset.num_classes
     if args.common_inductive_split:
         from src.processing.splits import load_or_create_inductive_split
+        from src.experiments.run import _resolve_task_metadata
+        task = _resolve_task_metadata(dataset, {})
+        split_strategy = getattr(dataset, 'split_strategy', None) or (
+            'native' if task['regression'] or task['multilabel'] else 'stratified')
         split = load_or_create_inductive_split(
             data.clone().cpu(), args.dataset, root=args.split_root,
-            seed=args.split_seed)
+            seed=args.split_seed, split_strategy=split_strategy, **task)
         masks = split.masks
         data.train_mask = masks['train'].to(device)
         data.val_mask = masks['val'].to(device)
@@ -391,8 +374,8 @@ def main():
           f"{int(data.edge_index.size(1))}; max (in,out) "
           f"{max_degrees(data.edge_index, int(data.num_nodes))}")
     # Model/task guard: fail fast on pairings that would crash deep in a shape
-    # error (single-label GNN on multilabel PPI) or silently report a
-    # misleading metric (accuracy on an imbalanced binary RelBench task).
+    # error (single-label GNN on multilabel targets) or silently report a
+    # misleading metric (accuracy on an imbalanced binary task).
     if (getattr(dataset, 'multilabel', False)
             and args.model != 'multilabel_gnn'):
         raise SystemExit(
@@ -508,7 +491,6 @@ def main():
     _probe = _MECHANISMS[args.model]
     _metric = getattr(_probe, 'metric_name', 'accuracy')
     trivial = trivial_baseline(test_data, _metric)
-    _better_high = _HIGHER_IS_BETTER.get(_metric, True)
     print(f"  trivial baseline ({_metric}) on test: {trivial:.4f} "
           f"— every result below must clear this")
 
@@ -522,7 +504,7 @@ def main():
     with open(partial_path, 'w', newline='') as fh:
         w = csv.writer(fh)
         # train_acc/val_acc/test_acc hold whatever `metric` names — accuracy for
-        # single-label GNN, micro-F1 for multilabel, AUROC for binary.
+        # single-label GNN, micro-F1 for multilabel, AUROC for binary, R² for regression.
         w.writerow(['dataset', 'domain_split', 'domain_split_id',
                     'model', 'aggr', 'metric', 'direction', 'p1', 'p2', 'r',
                     'sigma', 'clip', 'K_in',
@@ -535,15 +517,6 @@ def main():
                     'K_in_achieved', 'K_out_achieved',
                     'train_acc', 'val_acc', 'test_acc', 'trivial_baseline',
                     'train_auroc', 'val_auroc', 'test_auroc',
-                    # Secondary metrics for regression (RegressionGNNMechanism
-                    # reports MAE as the primary train/val/test columns above,
-                    # RMSE and R^2 here).  Blank otherwise.  R^2 uses the
-                    # evaluated split's own mean as the baseline (RelBench's
-                    # and sklearn's convention), not the trivial_baseline
-                    # column above, which predicts the TRAIN mean -- R^2=0
-                    # means "no better than predicting this split's own mean".
-                    'train_rmse', 'val_rmse', 'test_rmse',
-                    'train_r2', 'val_r2', 'test_r2',
                     # Secondary metric for binary_gnn (metric_name="auroc" is
                     # primary, above): plain accuracy, meaningful only next to
                     # AUROC on an imbalanced split -- see binary_mechanism.py.
@@ -632,7 +605,7 @@ def main():
                 history = accs.pop('history', [])
                 tests.append(accs['test'])
                 vals.append(accs['val'])
-                print(f"  seed={seed}  train={accs['train']:.4f}  "
+                print(f"  seed={seed}  metric={_metric}  train={accs['train']:.4f}  "
                       f"val={accs['val']:.4f}  test={accs['test']:.4f}")
 
                 def _write_row(step, m):
@@ -653,9 +626,6 @@ def main():
                                 *(f"{m[k]:.5f}" if k in m else ''
                                   for k in ('train_auroc', 'val_auroc',
                                             'test_auroc',
-                                            'train_rmse', 'val_rmse',
-                                            'test_rmse',
-                                            'train_r2', 'val_r2', 'test_r2',
                                             'train_bin_acc', 'val_bin_acc',
                                             'test_bin_acc'))])
 
@@ -668,20 +638,21 @@ def main():
             tm, ts = _mean_std(tests)
             vm, vs = _mean_std(vals)
             summary.append((p1, p2, r, sigma, tm, ts, vm, vs))
-            beats_trivial = (tm > trivial) if _better_high else (tm < trivial)
+            beats_trivial = tm > trivial
             mark = "" if beats_trivial else "   <-- BELOW TRIVIAL BASELINE"
-            print(f"  >> test {tm:.4f} +/- {ts:.4f}   "
+            print(f"  >> test {_metric} {tm:.4f} +/- {ts:.4f}   "
                   f"val {vm:.4f} +/- {vs:.4f}{mark}")
 
     os.replace(partial_path, csv_path)
 
-    # Sweep summary table (sorted by test metric, best first)
+    # Sweep summary table (sorted by validation metric, best first).
     print(f"\n{'='*66}")
+    print(f"metric={_metric} (higher is better; ranked by validation)")
     print(f"{'p1':>5} {'p2':>5} {'r':>3} {'sigma':>6} {'test':>16} {'val':>16}")
     print('-'*66)
-    _sort_sign = -1 if _better_high else 1
     for p1, p2, r, sigma, tm, ts, vm, vs in sorted(
-            summary, key=lambda s: _sort_sign * s[4]):
+            summary, key=lambda s: s[6] if s[6] == s[6] else float('-inf'),
+            reverse=True):
         print(f"{p1:>5} {p2:>5} {r:>3} {sigma:>6}   {tm:.4f} +/- {ts:.4f}   "
               f"{vm:.4f} +/- {vs:.4f}")
     print(f"\nresults written to {csv_path}")
@@ -696,7 +667,7 @@ def main():
         plot_path = plot_sweep(
             [(s[0], s[1], s[2], s[4], s[5], s[6], s[7])
              for s in summary if s[3] == sigmas[0]],
-            plot_dataset_name, args.out_dir)
+            plot_dataset_name, args.out_dir, _metric)
         if plot_path:
             print(f"plot written to {plot_path}")
 

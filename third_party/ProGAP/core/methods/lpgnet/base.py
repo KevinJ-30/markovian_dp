@@ -18,7 +18,7 @@ class LPGNet (NodeClassification):
                  hidden_dim:    Annotated[int,   ArgInfo(help='dimension of the hidden layers')] = 16,
                  hidden_layers: Annotated[int,   ArgInfo(help='number of base MLP layers')] = 1,
                  activation:    Annotated[str,   ArgInfo(help='type of activation function', choices=['relu', 'selu', 'tanh'])] = 'selu',
-                 dropout:       Annotated[float, ArgInfo(help='dropout rate')] = 0.0,
+                 dropout:       Annotated[float, ArgInfo(help='dropout rate')] = 0.5,
                  batch_norm:    Annotated[bool,  ArgInfo(help='if true, then model uses batch normalization')] = True,
                  optimizer:     Annotated[str,   ArgInfo(help='optimization algorithm', choices=['sgd', 'adam'])] = 'adam',
                  learning_rate: Annotated[float, ArgInfo(help='learning rate', option='--lr')] = 0.01,

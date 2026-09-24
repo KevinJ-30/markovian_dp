@@ -3,8 +3,8 @@
 # ladder that the private runs degrade from.
 #
 #   ./scripts/ladder_stage01.sh                       # arxiv + flickr
-#   DATASETS="ppi" ./scripts/ladder_stage01.sh        # PPI only
-#   DATASETS="ogbn-arxiv flickr ppi" ./scripts/ladder_stage01.sh
+#   DATASETS="ppi-large" ./scripts/ladder_stage01.sh  # PPI-large only
+#   DATASETS="ogbn-arxiv flickr ppi-large" ./scripts/ladder_stage01.sh
 #
 #   nohup caffeinate -i ./scripts/ladder_stage01.sh > results/logs/ladder_stage01.log 2>&1 &
 #

@@ -21,18 +21,11 @@ from src.processing.graphs import preprocess_inductive_split
 from src.processing.splits import load_or_create_inductive_split
 
 
-# Methods that accept a continuous target.  Regression is a loss/head change,
-# not a mechanism change -- every one of these bounds sensitivity by clipping a
-# per-example gradient, and clipping is downstream of the loss, so epsilon is
-# identical to the classification run at the same hyperparameters.
-#
-# `progap` is the one exclusion, and it is a code-provenance decision rather
-# than a privacy one: upstream fuses its loss and its metric inside
-# ProgressiveModule.step (third_party/ProGAP/core/modules/prog.py:112-130), so a
-# regression head there means editing vendored code and giving up the
-# "unmodified upstream" property that is ProGAP's remaining faithfulness claim.
+# Continuous targets change the task head/objective, not the clipped-gradient
+# or normalized-aggregation mechanisms. ProGAP's vendored task adaptation
+# retains its upstream NAP, DP-SGD, and composed accountant.
 _REGRESSION_METHODS = frozenset(
-    {"mlp", "dp_mlp", "graphsage", "dpar", "dp_gnn", "heterpoisson"})
+    {"mlp", "dp_mlp", "graphsage", "dpar", "dp_gnn", "heterpoisson", "progap"})
 
 
 def _dataclass_config(cls: type, values: dict[str, Any]) -> Any:
@@ -93,7 +86,7 @@ def _resolve_task_metadata(dataset: Any, config: dict[str, Any]) -> dict[str, An
     expected_metric = (
         "auroc" if resolved["binary"]
         else "micro_f1" if resolved["multilabel"]
-        else "mae" if resolved["regression"]
+        else "r2" if resolved["regression"]
         else "accuracy"
     )
     primary_metric = str(getattr(dataset, "primary_metric", expected_metric)).lower()
@@ -155,9 +148,7 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     if task["regression"] and method not in _REGRESSION_METHODS:
         raise ValueError(
             f"method {method!r} does not support regression; only "
-            f"{sorted(_REGRESSION_METHODS)} accept it. ProGAP fuses its loss "
-            f"and metric inside upstream's ProgressiveModule.step, so a "
-            f"regression head there means editing vendored code")
+            f"{sorted(_REGRESSION_METHODS)} accept it.")
 
     domain_dataset = bool(
         getattr(dataset, "domain_dataset", getattr(data, "domain_dataset", False)))
@@ -172,7 +163,13 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("domain datasets require split_strategy='domain'")
         split_strategy = "domain"
     else:
-        split_strategy = str(requested_strategy or "stratified")
+        dataset_strategy = getattr(dataset, "split_strategy", None)
+        if (dataset_strategy is not None and requested_strategy is not None
+                and requested_strategy != dataset_strategy):
+            raise ValueError(
+                f"configured split_strategy={requested_strategy!r} conflicts with "
+                f"dataset split_strategy={dataset_strategy!r}")
+        split_strategy = str(dataset_strategy or requested_strategy or "stratified")
         if split_strategy == "domain":
             raise ValueError("split_strategy='domain' requires a domain dataset")
         if split_strategy not in {"stratified", "native"}:
@@ -203,12 +200,12 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
         for name in ("multilabel", "regression", "binary", "metric_ignore_label"):
             options[name] = task[name]
     elif method == "progap":
-        # ProGAP consumes these at its adapter boundary. HeterPoisson retains
-        # its existing task surface and is deliberately not changed here.
+        # Task metadata travels in the partition manifest; the bridge takes the
+        # seed from the top-level config, not ProGAP's hyperparameter namespace.
         options["multilabel"] = task["multilabel"]
-        options["binary"] = task["binary"]
-        options["metric_ignore_label"] = task["metric_ignore_label"]
-    if method in _REGRESSION_METHODS:
+        for name in ("seed", "binary", "regression", "metric_ignore_label"):
+            options.pop(name, None)
+    if method in _REGRESSION_METHODS and method != "progap":
         options.setdefault("regression", task["regression"])
 
     if method == "dpar":

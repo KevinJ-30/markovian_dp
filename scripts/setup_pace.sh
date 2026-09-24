@@ -37,7 +37,6 @@ echo "== 4. pre-stage $DATASET into scratch (compute nodes may lack outbound net
 mkdir -p $SCRATCH/data
 export REDDIT_DATA_ROOT=$SCRATCH/data/Reddit
 export FACEBOOK_DATA_ROOT=$SCRATCH/data/facebook100
-export PPI_DATA_ROOT=$SCRATCH/data/PPI
 export FLICKR_DATA_ROOT=$SCRATCH/data/Flickr
 cd "$REPO"
 python - "$DATASET" <<'PY'

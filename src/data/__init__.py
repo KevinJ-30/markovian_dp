@@ -1,1 +1,1 @@
-"""Dataset loading: benchmark graphs and RelBench entity tasks."""
+"""Dataset loading: benchmark graphs and domain-disjoint node tasks."""

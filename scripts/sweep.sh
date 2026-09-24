@@ -2,7 +2,7 @@
 # Tuning sweeps: vary one axis at a time around a fixed base configuration.
 #
 #   ./scripts/sweep.sh <axis> [dataset]
-#   ./scripts/sweep.sh lr ppi
+#   ./scripts/sweep.sh lr ppi-large
 #
 # Axes:
 #   lr         learning rate x steps
@@ -22,7 +22,7 @@ set -e
 cd "$(dirname "$0")/.."
 PY=/Users/kevinjacob/anaconda3/envs/PytorchEnv/bin/python
 AXIS=${1:?usage: sweep.sh lr|momentum|clip|batch|k|optimizer [dataset]}
-DS=${2:-ppi}
+DS=${2:-ppi-large}
 source scripts/_dataset_settings.sh $DS
 OUT_ROOT=results/${TAG}/sweep_${AXIS}
 

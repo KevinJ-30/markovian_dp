@@ -21,7 +21,7 @@ from src.training.dpgnn import DPGNNConfig, PartitionedDPGNN
 @pytest.fixture
 def one_hop_stars():
     torch.manual_seed(31)
-    model = _OneHopGCN(inputs=3, hidden=5, classes=2)
+    model = _OneHopGCN(inputs=3, hidden=5, classes=2, dropout=0.0)
     with torch.no_grad():
         model.encoder.bias.copy_(torch.tensor([0.3, -0.4, 0.2, 0.5, -0.1]))
         model.core.bias.fill_(0.2)
@@ -68,7 +68,7 @@ def test_padded_root_logits_match_explicit_one_hop_stars(one_hop_stars):
 
 def test_padded_graphsage_logits_match_explicit_one_hop_stars(one_hop_stars):
     _, features, node_mask, _, stars = one_hop_stars
-    model = _OneHopGraphSAGE(inputs=3, hidden=5, classes=2)
+    model = _OneHopGraphSAGE(inputs=3, hidden=5, classes=2, dropout=0.0)
     with torch.no_grad():
         expected = torch.stack([_explicit_star_logits(model, star) for star in stars])
         actual = _PaddedOneHopGraphSAGE(model)(features, node_mask)
@@ -98,6 +98,94 @@ def test_opacus_grad_samples_match_explicit_per_root_autograd(one_hop_stars):
                 rtol=1e-5, atol=1e-6)
     finally:
         wrapped.to_standard_module()
+
+
+@pytest.mark.parametrize("model_type,padded_type", [
+    (_OneHopGCN, _PaddedOneHopGCN),
+    (_OneHopGraphSAGE, _PaddedOneHopGraphSAGE),
+])
+@pytest.mark.parametrize("dropout", [0.0, 0.5])
+def test_hidden_dropout_matches_full_and_padded_training_and_evaluation(
+        model_type, padded_type, dropout):
+    # Identity decoding exposes hidden activations in the observable logits.
+    options = {} if dropout == 0.5 else {"dropout": dropout}
+    model = model_type(inputs=3, hidden=32, classes=32, **options)
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.fill_(0.1)
+        model.decoder.weight.copy_(torch.eye(32))
+        model.decoder.bias.zero_()
+    padded = padded_type(model)
+    x = torch.ones(4, 3)
+    nodes = torch.arange(4)
+    edges = torch.stack((nodes, nodes))
+    weights = torch.ones(4)
+    features, mask = x[:, None, :], torch.ones(4, 1, dtype=torch.bool)
+    model.eval()
+    padded.eval()
+    expected = model(x, edges, weights)
+    torch.testing.assert_close(padded(features, mask), expected)
+    torch.testing.assert_close(model(x, edges, weights), expected, rtol=0, atol=0)
+    torch.testing.assert_close(padded(features, mask), expected, rtol=0, atol=0)
+
+    model.train()
+    padded.train()
+    torch.manual_seed(17)
+    full_train = model(x, edges, weights)
+    torch.manual_seed(17)
+    padded_train = padded(features, mask)
+    torch.testing.assert_close(full_train, padded_train)
+    if dropout == 0:
+        torch.testing.assert_close(full_train, expected, rtol=0, atol=0)
+    else:
+        assert (full_train == 0).any()
+        assert (full_train != 0).any()
+        torch.testing.assert_close(
+            full_train, torch.where(full_train == 0, 0, expected / (1 - dropout)))
+        assert not torch.equal(model(x, edges, weights), full_train)
+    model.eval()
+    padded.eval()
+    torch.testing.assert_close(model(x, edges, weights), expected, rtol=0, atol=0)
+    torch.testing.assert_close(padded(features, mask), expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("model_type,padded_type", [
+    (_OneHopGCN, _PaddedOneHopGCN),
+    (_OneHopGraphSAGE, _PaddedOneHopGraphSAGE),
+])
+def test_dropout_opacus_grad_samples_match_per_root_autograd(
+        one_hop_stars, model_type, padded_type):
+    _, features, node_mask, labels, _ = one_hop_stars
+    model = model_type(inputs=3, hidden=16, classes=2)
+    reference = padded_type(deepcopy(model))
+    # Replaying the same batched dropout draw keeps the stochastic masks fixed
+    # while comparing each root's true derivative to Opacus's grad_sample.
+    torch.manual_seed(43)
+    losses = F.cross_entropy(reference(features, node_mask), labels, reduction="none")
+    gradients = [
+        torch.autograd.grad(loss, tuple(reference.parameters()), retain_graph=True)
+        for loss in losses
+    ]
+    wrapped = GradSampleModule(
+        padded_type(model), batch_first=True, loss_reduction="mean", strict=True)
+    try:
+        torch.manual_seed(43)
+        F.cross_entropy(wrapped(features, node_mask), labels).backward()
+        for index, parameter in enumerate(model.parameters()):
+            torch.testing.assert_close(
+                parameter.grad_sample,
+                torch.stack([per_root[index] for per_root in gradients]),
+                rtol=1e-5, atol=1e-6)
+    finally:
+        wrapped.to_standard_module()
+
+
+@pytest.mark.parametrize("dropout", [-0.1, 1.0, float("nan"), float("inf")])
+def test_invalid_dropout_is_rejected_before_training(dropout):
+    with pytest.raises(ValueError, match="dropout"):
+        PartitionedDPGNN(DPGNNConfig(
+            num_classes=2, steps=1, batch_size=1, noise_multiplier=1.0,
+            dropout=dropout))
 
 
 @pytest.fixture
@@ -167,7 +255,7 @@ def test_private_step_matches_global_clipping_and_real_noise(
     clip, max_terms, noise_seed = 0.2, 2, 1234
     config = DPGNNConfig(
         num_classes=2, steps=1, batch_size=4, noise_multiplier=0.4,
-        max_degree=1, clip=clip, latent_size=5)
+        max_degree=1, clip=clip, latent_size=5, dropout=0.0)
     trainer = PartitionedDPGNN(config)
     adam = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
     reference_adam = torch.optim.Adam(reference.parameters(), lr=config.learning_rate)
@@ -209,7 +297,7 @@ def test_noisy_adam_updates_are_independent_of_unequal_physical_chunks(
     clip, max_terms, noise_lambda, noise_seed = 0.2, 2, 0.4, 2718
     config = DPGNNConfig(
         num_classes=2, steps=2, batch_size=4, noise_multiplier=noise_lambda,
-        max_degree=1, clip=clip, latent_size=5, multilabel=multilabel)
+        max_degree=1, clip=clip, latent_size=5, multilabel=multilabel, dropout=0.0)
     trainer = PartitionedDPGNN(config, device=device)
     adams = [
         torch.optim.Adam(model.parameters(), lr=config.learning_rate) for model in models]
@@ -271,9 +359,9 @@ def test_small_population_fit_uses_effective_terms_for_release_and_accounting():
     held_out = SimpleNamespace(num_nodes=1, x=x[:1], y=y[:1], edge_index=edges)
     config = DPGNNConfig(
         num_classes=2, steps=2, batch_size=3, noise_multiplier=0.7, seed=0,
-        max_degree=5, latent_size=5, clip=0.2, max_private_batch_nodes=2)
+        max_degree=5, latent_size=5, clip=0.2, max_private_batch_nodes=2, dropout=0.0)
     torch.manual_seed(config.seed)
-    reference = _OneHopGraphSAGE(inputs=3, hidden=5, classes=2)
+    reference = _OneHopGraphSAGE(inputs=3, hidden=5, classes=2, dropout=0.0)
     reference_adam = torch.optim.Adam(reference.parameters(), lr=config.learning_rate)
     generator = torch.Generator().manual_seed(10_000)
     for _ in range(config.steps):
@@ -351,3 +439,20 @@ def test_binary_fit_uses_one_logit_and_auroc_result_keys():
     assert result["model"].decoder.out_features == 1
     assert result["metric"] == "auroc"
     assert set(result) >= {"validation_auroc", "test_auroc"}
+
+
+def test_regression_evaluate_scores_only_selected_targets_with_negative_r2():
+    class FixedModel(torch.nn.Module):
+        def forward(self, x, edge_index, edge_weight):
+            return x
+
+    data = SimpleNamespace(
+        num_nodes=4,
+        x=torch.tensor([[1000.0], [2.0], [2.0], [-1000.0]]),
+        y=torch.tensor([1000.0, 0.0, 1.0, -1000.0]),
+        edge_index=torch.empty((2, 0), dtype=torch.long),
+        eval_mask=torch.tensor([False, True, True, False]),
+    )
+    trainer = PartitionedDPGNN(DPGNNConfig(
+        num_classes=1, regression=True, steps=1, batch_size=1, noise_multiplier=1.0))
+    assert trainer.evaluate(FixedModel(), data, seed=0) == pytest.approx(-9.0)

@@ -4,7 +4,6 @@
     ladder_stage01.sh        S0 baselines + S1 sparsification sweep (no DP)
     ladder_stage2.sh         S2 clip+noise sweep, then S3 post-hoc epsilon
     orientation_ablation.sh  in- vs out-expansion (directed graphs only)
-    relbench_f1.sh           RelBench entity-task ladder
     sweep.sh <axis>          one-axis tuning sweeps (lr, momentum, clip,
                              batch, k, optimizer)
     diagnose.sh <what>       gradnorm / metrics diagnostics

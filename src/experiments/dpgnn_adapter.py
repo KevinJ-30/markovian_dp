@@ -7,6 +7,7 @@ this module retains the public manifest/result contract.
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,7 @@ def _load_partitions(manifest: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     if not isinstance(num_classes, int) or isinstance(num_classes, bool) or num_classes < 1:
         raise ValueError("partition manifest must record a positive num_classes")
     primary_metric = payload.get("primary_metric")
-    if primary_metric not in {"accuracy", "micro_f1", "auroc", "mae"}:
+    if primary_metric not in {"accuracy", "micro_f1", "auroc", "r2"}:
         raise ValueError("partition manifest has an unsupported primary_metric")
     binary = payload.get("binary")
     if not isinstance(binary, bool):
@@ -79,7 +80,7 @@ def run_partitioned(manifest: str | Path, result_path: str | Path, *, steps: int
                     evaluate_every: int = 50, seed: int = 0,
                     clip: float = 1.0, regression: bool = False,
                     max_private_batch_nodes: int = 8192,
-                    architecture: str = "graphsage") -> dict[str, Any]:
+                    architecture: str = "graphsage", dropout: float = 0.5) -> dict[str, Any]:
     """Train first-party DP-GNN on train.pt and evaluate val.pt/test.pt.
 
     The manifest is the graph-disjoint boundary: no validation or test graph is
@@ -88,7 +89,7 @@ def run_partitioned(manifest: str | Path, result_path: str | Path, *, steps: int
     """
     manifest = Path(manifest)
     data, task = _load_partitions(manifest)
-    manifest_regression = task["primary_metric"] == "mae"
+    manifest_regression = task["primary_metric"] == "r2"
     if regression and not manifest_regression:
         raise ValueError("regression argument conflicts with partition task metadata")
     trainer = PartitionedDPGNN(
@@ -100,7 +101,7 @@ def run_partitioned(manifest: str | Path, result_path: str | Path, *, steps: int
             binary=task["binary"],
             metric_ignore_label=task["metric_ignore_label"],
             max_private_batch_nodes=max_private_batch_nodes,
-            architecture=architecture,
+            architecture=architecture, dropout=dropout,
         ),
     )
     trained = trainer.fit(data["train"], data["val"], data["test"])
@@ -110,6 +111,7 @@ def run_partitioned(manifest: str | Path, result_path: str | Path, *, steps: int
     result = {
         "method": "dp_gnn",
         "metric": metric,
+        "parameters": asdict(trainer.config),
         "privacy": {
             "epsilon": trained["epsilon"],
             "delta": trained["delta"],
@@ -135,7 +137,7 @@ def run_partitioned(manifest: str | Path, result_path: str | Path, *, steps: int
         })
     else:
         # Retain the established subprocess result envelope for nonbinary
-        # callers, even when the value is macro-F1 or MAE.
+        # callers, even when the value is macro-F1 or R².
         result.update({
             "validation_accuracy": trained[f"validation_{metric}"],
             "test_accuracy": trained[f"test_{metric}"],

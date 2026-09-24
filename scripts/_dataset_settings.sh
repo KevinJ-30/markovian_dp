@@ -90,26 +90,6 @@ case $_ds in
     CAP=(--K_in 5 --K_out 5)
     HIDDEN=512; DROPOUT=0.1
     ;;
-  ppi)
-    # 24 disconnected graphs split 20/2/2. The training graph contains only the
-    # 20 training components. Labels are 121-way multilabel, so plain
-    # --model gnn is invalid.
-    # T=2000: the measured learning curve plateaus by step ~1000 (0.4756 at 1k,
-    # 0.4712 at 6k), so this is ample.
-    MODEL=(--model multilabel_gnn --aggr mean)
-    P1=0.01; T=2000
-    CAP=(--K_in 5 --K_out 5)
-    ;;
-  relbench*)
-    # Temporal splits use the loader's train-cutoff graph. Binary and
-    # imbalanced, so AUROC. A root is a prediction row: r=1 reaches only its
-    # entity, r=2 reaches its history.
-    # p1=0.05 (68 of 1353 train rows per step) with T=900 keeps total epochs
-    # comparable to the earlier p1=0.2/T=300 while keeping epsilon affordable.
-    MODEL=(--model binary_gnn --aggr mean)
-    P1=0.05; T=900
-    CAP=(--K_in 20 --K_out 3)
-    ;;
   twitch-explicit)
     # Domain roles come from the loader's benchmark defaults unless the caller
     # adds explicit --*_domains flags. Twitch is binary and reports AUROC.
@@ -206,5 +186,5 @@ LR_NONDP=${LR_NONDP:-0.01}
 # converged.  Run the ceiling to convergence and say so.
 DELTA=${DELTA:-1e-6}
 
-# relbench:<db>/<task> contains characters that are not filename-safe.
+# Dataset namespaces can contain characters that are not filename-safe.
 TAG=$(echo $_ds | tr '/:' '__')

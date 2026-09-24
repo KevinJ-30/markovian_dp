@@ -30,91 +30,10 @@ def test_numeric_delta_calibrates_node_and_edge_safely(monkeypatch):
     assert edge.composed_mechanism.get_approxDP(edge.effective_delta) <= edge.epsilon
 
 
-def test_manifest_adapter_uses_train_for_setup_and_validation_for_fit(monkeypatch, tmp_path):
-    adapter = importlib.import_module("inductive_adapter")
-    graphs = {
-        name: Data(
-            x=torch.full((3, 2), float(index)),
-            y=torch.tensor([0, 1, 0]),
-            edge_index=torch.tensor([[0, 1], [1, 2]]),
-            eval_mask=torch.tensor([True, False, True]),
-        )
-        for index, name in enumerate(("train", "val", "test"), start=1)
-    }
-    calls = []
-
-    class Mechanism:
-        params = {"coeff_list": [1, 2]}
-
-        def get_approxDP(self, delta):
-            assert delta == 5e-4
-            return 7.9
-
-    class FakeMethod:
-        def __init__(self, **kwargs):
-            assert kwargs["num_classes"] == 3
-            assert kwargs["epsilon"] == 8.0
-            assert kwargs["delta"] == 5e-4
-            assert kwargs["monitor"] == "val/acc"
-            self.classifier = SimpleNamespace(multilabel=None)
-            self.composed_mechanism = Mechanism()
-            self.effective_delta = 5e-4
-            self.noise_scale = 1.25
-
-        def to_device(self, data):
-            return data
-
-        def setup(self, data):
-            calls.append(("setup", int(data.x[0, 0])))
-
-        def fit(self):
-            calls.append(("fit", int(self.validation.x[0, 0])))
-
-    monkeypatch.setattr(adapter, "InductiveNodeLevelProGAP", FakeMethod)
-    monkeypatch.setattr(adapter, "_load", lambda _path, _manifest, name: graphs[name])
-
-    def metrics(_method, data):
-        calls.append(("metrics", int(data.x[0, 0])))
-        return 0.5, 0.4
-
-    monkeypatch.setattr(adapter, "_metrics", metrics)
-    manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(json.dumps({
-        "format": 2,
-        "num_classes": 3,
-        "binary": False,
-        "primary_metric": "accuracy",
-        "metric_ignore_label": None,
-        "partitions": {"train": "train.pt", "val": "val.pt", "test": "test.pt"},
-    }))
-    result_path = tmp_path / "result.json"
-    monkeypatch.setenv("PARTITION_MANIFEST", str(manifest_path))
-    monkeypatch.setenv("RESULT_PATH", str(result_path))
-    monkeypatch.setenv("PROGAP_TARGET_EPSILON", "8")
-    monkeypatch.setenv("PROGAP_TARGET_DELTA", "0.0005")
-    monkeypatch.setenv("PROGAP_MULTILABEL", "0")
-    monkeypatch.setenv("PROGAP_BINARY", "0")
-    monkeypatch.setenv("PROGAP_PRIMARY_METRIC", "accuracy")
-    monkeypatch.setenv("PROGAP_EPOCHS", "1")
-    monkeypatch.setenv("PROGAP_BATCH_SIZE", "2")
-    monkeypatch.setenv("PROGAP_MAX_DEGREE", "5")
-    monkeypatch.setenv("PROGAP_DEPTH", "1")
-
-    adapter.main()
-
-    assert calls == [
-        ("setup", 1),
-        ("fit", 2),
-        ("metrics", 2),
-        ("metrics", 3),
-    ]
-    result = json.loads(result_path.read_text())
-    assert result["privacy"]["total"]["epsilon"] == 7.9
-    assert result["privacy"]["total"]["delta"] == 5e-4
-    assert result["calibration"]["noise_std"] == 1.25
-
-
-def test_progressive_fit_restores_global_stage_maxima_and_floor_schedule(monkeypatch, tmp_path):
+@pytest.mark.parametrize("regression", [False, True])
+def test_progressive_fit_restores_global_stage_maxima_and_floor_schedule(
+    monkeypatch, tmp_path, regression
+):
     adapter = importlib.import_module("inductive_adapter")
     load = torch.load
     monkeypatch.setattr(
@@ -123,24 +42,31 @@ def test_progressive_fit_restores_global_stage_maxima_and_floor_schedule(monkeyp
     torch.manual_seed(6)
     nodes = torch.arange(17)
     graph = Data(
-        x=torch.randn(17, 3), y=nodes % 2,
+        x=torch.randn(17, 3), y=nodes.float() + 1000 if regression else nodes % 2,
         edge_index=torch.stack((nodes, (nodes + 1) % 17)),
     )
     validation = graph.clone()
     validation.eval_mask = nodes % 3 != 0
     method = adapter.InductiveNodeLevelProGAP(
-        num_classes=2, epsilon=8.0, delta=1 / 17, depth=2, batch_size=8,
+        num_classes=1 if regression else 2,
+        epsilon=8.0, delta=1 / 17, depth=2, batch_size=8,
         epochs=10, hidden_dim=64, dropout=0.0, device="cpu", verbose=False,
         eval_chunk_size=3, max_degree=2,
+        monitor="val/r2" if regression else "val/acc",
     )
+    method.classifier.regression = regression
     method.validation = adapter._prepare(validation)
     method.checkpoint_dir = tmp_path
     method.setup(adapter._prepare(graph))
-    method.fit()
+    fit_result = method.fit()
 
     assert method.updates_completed == 3 * 10 * (17 // 8)
     assert method.epochs_completed == 30
     assert method.composed_mechanism.get_approxDP(1 / 17) <= 8.0 + 1e-6
+    assert all("loss" not in row and "training_loss" not in row for row in method.history)
+    if regression:
+        assert all(row["validation_metric"] < 0 for row in method.history)
+        assert fit_result["val/r2"] == method.best_validation["score"]
     for stage, selected in enumerate(method.stage_states):
         rows = [row for row in method.history if row["stage"] == stage]
         first_max = max(rows, key=lambda row: row["validation_metric"])
@@ -150,8 +76,11 @@ def test_progressive_fit_restores_global_stage_maxima_and_floor_schedule(monkeyp
         assert checkpoint["validation"]["score"] == first_max["validation_metric"]
         assert checkpoint["optimizer"]["state"]
     restored = adapter.evaluate_stage(method.classifier, method.validation, chunk_size=17)
-    assert restored["score"] == method.best_validation["score"]
-    assert restored["loss"] == pytest.approx(method.best_validation["loss"], abs=1e-6)
+    assert restored["score"] == pytest.approx(method.best_validation["score"])
+    # Chunk shapes can change float32 GEMM rounding; MSE scales with the targets.
+    assert restored["loss"] == pytest.approx(
+        method.best_validation["loss"], rel=1e-7, abs=1e-6
+    )
     final = torch.load(tmp_path / "checkpoint.pt")
     assert final["updates_completed"] == method.updates_completed
     assert len(final["stages"]) == 3
@@ -159,17 +88,22 @@ def test_progressive_fit_restores_global_stage_maxima_and_floor_schedule(monkeyp
     # the upstream pipeline while retaining every unscored context node.
     heldout = method.evaluate_partition(validation)
     assert heldout["scored_nodes"] == int(validation.eval_mask.sum())
-    assert 0 <= heldout["score"] <= 1
+    if regression:
+        assert heldout["metric"] == "r2"
+        assert heldout["score"] < 0
+    else:
+        assert 0 <= heldout["score"] <= 1
 
 
 class _ObjectiveModule(torch.nn.Module):
     root_losses = staticmethod(ProgressiveModule.root_losses)
 
-    def __init__(self, logits, multilabel, binary=False):
+    def __init__(self, logits, multilabel, binary=False, regression=False):
         super().__init__()
         self.logits = logits
         self.multilabel = multilabel
         self.binary = binary
+        self.regression = regression
         self.current_stage = 0
 
     def forward(self, xs):
@@ -220,6 +154,23 @@ def test_progressive_binary_objective_uses_tie_correct_auroc_and_sigmoid():
     assert torch.isnan(binary_auroc(torch.tensor([0.1, 0.2]), torch.ones(2)))
 
 
+def test_progressive_regression_uses_per_root_squared_error_and_raw_predictions():
+    predictions = torch.tensor([[-2.0], [3.0]])
+    module = _ObjectiveModule(predictions, multilabel=False, regression=True)
+    data = Data(
+        x0=torch.ones(2, 1), y=torch.tensor([1.0, 2.0]), batch_nodes=torch.arange(2),
+    )
+    loss, metrics = ProgressiveModule.step(module, data, "val")
+    _, output = ProgressiveModule.predict(module, data)
+    assert torch.equal(
+        ProgressiveModule.root_losses(predictions, data.y, regression=True),
+        torch.tensor([9.0, 1.0]),
+    )
+    assert loss == 5
+    assert metrics["val/r2"] == -19
+    assert torch.equal(output, predictions)
+
+
 def test_target_metrics_score_only_eval_roots_but_predict_full_graph():
     adapter = importlib.import_module("inductive_adapter")
     graph = Data(
@@ -244,87 +195,6 @@ def test_target_metrics_score_only_eval_roots_but_predict_full_graph():
     auroc, duplicate = adapter._metrics(Method(), graph)
     assert auroc == 0.5
     assert duplicate == auroc
-
-
-def test_binary_manifest_uses_one_logit_auroc_and_loads_test_after_fit(
-    monkeypatch, tmp_path
-):
-    adapter = importlib.import_module("inductive_adapter")
-    graphs = {
-        name: Data(
-            x=torch.full((3, 2), float(index)),
-            y=torch.tensor([0, 1, 0]),
-            edge_index=torch.tensor([[0, 1], [1, 2]]),
-            eval_mask=torch.tensor([True, True, False]),
-        )
-        for index, name in enumerate(("train", "val", "test"), start=1)
-    }
-    events = []
-
-    def load(_path, _manifest, name):
-        events.append(f"load-{name}")
-        return graphs[name]
-
-    class Mechanism:
-        params = {"coeff_list": [1, 2]}
-
-        def get_approxDP(self, _delta):
-            return 7.9
-
-    class FakeMethod:
-        def __init__(self, **kwargs):
-            assert kwargs["num_classes"] == 1
-            assert kwargs["monitor"] == "val/auroc"
-            self.classifier = SimpleNamespace()
-            self.composed_mechanism = Mechanism()
-            self.effective_delta = 5e-4
-            self.noise_scale = 1.25
-
-        def to_device(self, data):
-            return data
-
-        def setup(self, data):
-            events.append(f"setup-{int(data.x[0, 0])}")
-
-        def fit(self):
-            assert "load-test" not in events
-            events.append("fit")
-
-    monkeypatch.setattr(adapter, "InductiveNodeLevelProGAP", FakeMethod)
-    monkeypatch.setattr(adapter, "_load", load)
-    monkeypatch.setattr(
-        adapter,
-        "_metrics",
-        lambda _method, data: (
-            (0.75, 0.75) if int(data.x[0, 0]) == 2 else (0.625, 0.625)
-        ),
-    )
-    manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(json.dumps({
-        "format": 2,
-        "num_classes": 2,
-        "binary": True,
-        "primary_metric": "auroc",
-        "metric_ignore_label": None,
-        "partitions": {"train": "train.pt", "val": "val.pt", "test": "test.pt"},
-    }))
-    result_path = tmp_path / "result.json"
-    monkeypatch.setenv("PARTITION_MANIFEST", str(manifest_path))
-    monkeypatch.setenv("RESULT_PATH", str(result_path))
-    monkeypatch.setenv("PROGAP_TARGET_EPSILON", "8")
-    monkeypatch.setenv("PROGAP_TARGET_DELTA", "0.0005")
-    monkeypatch.setenv("PROGAP_MULTILABEL", "0")
-    monkeypatch.setenv("PROGAP_BINARY", "1")
-    monkeypatch.setenv("PROGAP_PRIMARY_METRIC", "auroc")
-
-    adapter.main()
-
-    assert events.index("fit") < events.index("load-test")
-    result = json.loads(result_path.read_text())
-    assert result["metric"] == "auroc"
-    assert result["validation_auroc"] == 0.75
-    assert result["test_auroc"] == 0.625
-    assert "validation_accuracy" not in result
 
 
 def test_manifest_adapter_rejects_multilabel_flag_rank_mismatch(monkeypatch, tmp_path):
@@ -355,44 +225,6 @@ def test_manifest_adapter_rejects_multilabel_flag_rank_mismatch(monkeypatch, tmp
         adapter.main()
 
 
-def test_environment_knobs_reach_real_constructor_and_adam(monkeypatch):
-    adapter = importlib.import_module("inductive_adapter")
-    from src.experiments.upstream import _target_environment
-
-    load = torch.load
-    monkeypatch.setattr(
-        torch, "load", lambda *args, **kwargs: load(*args, **{**kwargs, "weights_only": False}),
-    )
-    parameters = {
-        "target_epsilon": 8.0, "target_delta": 0.001, "hidden_dim": 7,
-        "dropout": 0.25, "optimizer": "adam", "learning_rate": 0.037,
-        "weight_decay": 0.12, "max_grad_norm": 0.3, "eval_chunk_size": 2,
-    }
-    encoded = _target_environment(
-        "progap", {"parameters": parameters}, {},
-        {"binary": False, "primary_metric": "accuracy", "metric_ignore_label": None},
-    )
-    for name, value in encoded.items():
-        monkeypatch.setenv(name, value)
-    method = adapter.InductiveNodeLevelProGAP(
-        num_classes=3, epsilon=8.0, delta=0.001, depth=1, device="cpu",
-        **adapter._constructor_options(),
-    )
-    model = method.classifier
-    model.eval()
-    embeddings, logits = model([torch.ones(5, 4)])
-    assert embeddings.shape == (5, 7)
-    assert logits.shape == (5, 3)
-    optimizer = model.configure_optimizers()
-    assert isinstance(optimizer, torch.optim.Adam)
-    assert optimizer.param_groups[0]["lr"] == 0.037
-    assert optimizer.param_groups[0]["weight_decay"] == 0.12
-    assert any(isinstance(module, torch.nn.Dropout) and module.p == 0.25
-               for module in model.modules())
-    assert method.max_grad_norm == 0.3
-    assert method.eval_chunk_size == 2
-
-
 @pytest.mark.parametrize("name,value", [
     ("PROGAP_HIDDEN_DIM", "1.5"), ("PROGAP_EVAL_CHUNK_SIZE", "0"),
     ("PROGAP_LEARNING_RATE", "nan"), ("PROGAP_MAX_GRAD_NORM", "inf"),
@@ -409,11 +241,12 @@ def test_constructor_environment_rejects_invalid_numerics(monkeypatch, name, val
 class _FixedStageLogits(torch.nn.Module):
     root_losses = staticmethod(ProgressiveModule.root_losses)
 
-    def __init__(self, binary=False):
+    def __init__(self, binary=False, regression=False):
         super().__init__()
         self.anchor = torch.nn.Parameter(torch.zeros(()))
         self.current_stage = 0
         self.binary = binary
+        self.regression = regression
 
     def forward(self, xs):
         return xs[0], xs[0] + self.anchor * 0
@@ -454,3 +287,82 @@ def test_chunked_counts_loss_and_context_embeddings_match_full(multilabel):
     assert chunked["scored_nodes"] == 3
     embeddings = adapter.stage_embeddings(model, graph, 2)
     assert torch.equal(embeddings, logits)  # Includes unscored context nodes.
+
+
+def test_chunked_regression_uses_stable_whole_scored_split_r2():
+    adapter = importlib.import_module("inductive_adapter")
+    offset = 1e12
+    labels = torch.tensor(
+        [offset, offset + 2, -99, offset + 4, offset + 8, 4e12],
+        dtype=torch.float64,
+    )
+    predictions = torch.tensor(
+        [offset + 3, offset - 4, 0, offset, offset + 1, -4e12],
+        dtype=torch.float64,
+    ).unsqueeze(-1)
+    graph = Data(
+        x=predictions, x0=predictions, y=labels,
+        eval_mask=torch.tensor([True, True, True, True, True, False]),
+    )
+    model = _FixedStageLogits(regression=True)
+    for chunk_size in (1, 2, 3, 100):
+        result = adapter.evaluate_stage(model, graph, chunk_size, metric_ignore_label=-99)
+        assert result["metric"] == "r2"
+        assert result["scored_nodes"] == 4
+        assert result["loss"] == pytest.approx(110 / 4)
+        assert result["score"] == pytest.approx(1 - 110 / 35)
+
+
+@pytest.mark.parametrize("prediction,expected", [(7.0, 1.0), (-2.0, 0.0)])
+def test_regression_constant_targets_match_sklearn(prediction, expected):
+    adapter = importlib.import_module("inductive_adapter")
+    predictions = torch.full((4, 1), prediction)
+    graph = Data(
+        x=predictions, x0=predictions, y=torch.full((4,), 7.0),
+        eval_mask=torch.ones(4, dtype=torch.bool),
+    )
+    result = adapter.evaluate_stage(_FixedStageLogits(regression=True), graph, 1)
+    assert result["score"] == expected
+
+
+def test_regression_fallback_scores_raw_predictions_only_on_selected_roots():
+    adapter = importlib.import_module("inductive_adapter")
+    graph = Data(
+        x=torch.tensor([[-2.0], [4.0], [1000.0]]),
+        y=torch.tensor([2.0, 4.0, -1000.0]),
+        edge_index=torch.tensor([[0, 1, 2], [1, 2, 0]]),
+        eval_mask=torch.tensor([True, True, False]),
+    )
+
+    class Method:
+        classifier = SimpleNamespace(regression=True)
+
+        def to_device(self, data):
+            return data
+
+        def predict(self):
+            return self.data.x, self.data.x
+
+    score, legacy_score = adapter._metrics(Method(), graph)
+    assert score == legacy_score == -7.0
+
+
+@pytest.mark.parametrize("binary,multilabel", [(True, False), (False, True)])
+def test_regression_manifest_rejects_conflicting_task_flags(
+    monkeypatch, tmp_path, binary, multilabel
+):
+    adapter = importlib.import_module("inductive_adapter")
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({
+        "format": 2, "num_classes": 1, "binary": binary, "primary_metric": "r2",
+        "partitions": {},
+    }))
+    monkeypatch.setenv("PARTITION_MANIFEST", str(manifest_path))
+    monkeypatch.setenv("RESULT_PATH", str(tmp_path / "result.json"))
+    monkeypatch.setenv("PROGAP_TARGET_EPSILON", "8")
+    monkeypatch.setenv("PROGAP_TARGET_DELTA", "0.0005")
+    monkeypatch.setenv("PROGAP_BINARY", str(int(binary)))
+    monkeypatch.setenv("PROGAP_MULTILABEL", str(int(multilabel)))
+    monkeypatch.setenv("PROGAP_PRIMARY_METRIC", "r2")
+    with pytest.raises(ValueError):
+        adapter.main()

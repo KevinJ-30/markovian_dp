@@ -8,8 +8,9 @@ One training step:
 
 1. **Root sampling.** Each node is selected independently with probability `p1`.
 2. **SparseExpand.** Each selected root grows a rooted subgraph by walking
-   *incoming* edges for `r` levels, keeping each examined arc independently with
-   probability `p2` (Algorithm 5 of the manuscript).
+   *incoming* edges for `r` levels, retaining at most **20 incoming arcs per
+   expanded node**. For degree `d`, draw `B ~ Binomial(d, p2)` and choose
+   `min(B, 20)` arcs uniformly without replacement.
 3. **Noisy update.** Each rooted subgraph contributes one gradient `g0`, clipped
    to L2 norm `C`; the clipped gradients are summed and one draw of
    `N(0, (sigma*C)^2 I)` is added. `sigma` is the Opacus noise multiplier.
@@ -24,7 +25,7 @@ Poisson subsampling alone gives, which is what the dominating pairs in
 src/
   data/
     datasets.py           dataset dispatch and graph loaders
-    relbench.py           RelBench database -> homogeneous directed graph
+    domain_datasets.py    domain-disjoint Twitch, Facebook100, and MAG loaders
   processing/
     splits.py             saved graph-disjoint inductive partitions
     graphs.py             separate training-graph selection
@@ -71,22 +72,41 @@ Entry points:
 - `python -m src.experiments.compute_epsilon` — post-hoc privacy accounting.
 - `python -m src.experiments.run` — graph-disjoint baseline comparisons.
 
+Baseline dropout defaults to `0.5` for MLP, GraphSAGE, DP-MLP, DPAR, DP-GNN,
+and ProGAP. Shipped baseline presets and the non-private full-batch ceiling use
+the same default. Explicit overrides remain supported: set `parameters.dropout`
+in a baseline JSON config, or `--dropout` for the ceiling CLI; `0.0` disables it.
+Historical experiment recipes and recorded results retain their original rates.
+
 The old SparseGNN import and CLI paths have been removed. Existing command-line
 flags, dataset/split caches, and result filenames and schemas are unchanged.
 
 ## Install
 
 ```bash
-pip install torch torch_geometric ogb opacus dp_accounting scipy pandas matplotlib pytest
+pip install torch torch_geometric ogb opacus dp_accounting scipy pandas matplotlib pytest "scikit-learn>=1.5" pyyaml
 ```
-
-`relbench` is needed only for RelBench datasets.
 
 ## Datasets
 
 Most datasets download themselves on first use, into `data/` (gitignored).
-Planetoid, OGB, and PyG's Reddit/Flickr/PPI need no setup, while RelBench pulls
-its databases through the `relbench` package.
+Planetoid, OGB node datasets, and PyG's Reddit/Flickr need no setup.
+
+Supported dataset keys:
+
+| Family | Dataset keys |
+|---|---|
+| Citation networks | `cora`, `cora-ml`, `citeseer`, `pubmed` |
+| OGB node classification | `ogbn-arxiv`, `ogbn-products` |
+| PyG node classification | `reddit`, `flickr` |
+| Single-university Facebook | `facebook` |
+| GraphSAINT | `ppi-large`, `saint-flickr`, `saint-reddit`, `saint-yelp`, `saint-amazon` |
+| Domain-disjoint classification | `twitch-explicit`, `facebook100`, `mag-countries` |
+| GraphLand regression | `hm-prices`, `avazu-ctr` |
+
+GraphSAINT also accepts `graphsaint:<name>` for `ppi-large`, `flickr`,
+`reddit`, `yelp`, and `amazon`. Bare `reddit` and `flickr` retain their
+distinct PyG releases; `ppi-large` uses the GraphSAINT release.
 
 **The four large GraphSAINT graphs are the exception and need a manual
 download.** Zeng et al. distribute them as a Google Drive folder with no
@@ -135,6 +155,98 @@ PyG's Reddit has 57.3M undirected edges against GraphSAINT's 11.6M, and the
 splits differ too. The raw GraphSAINT directory names remain `flickr`, `reddit`,
 `yelp`, and `amazon`. The `_load_graphsaint` docstring documents the
 preprocessing needed to reconcile the released files with the paper's Table 1.
+
+### GraphLand regression
+
+`hm-prices` (product price) and `avazu-ctr` (device click-through rate) use
+PyG's `GraphLandDataset` to download and preprocess the released graphs.
+This requires a PyG version providing that dataset class, scikit-learn >= 1.5,
+and PyYAML. The cache defaults to `data/graphland`; set
+`GRAPHLAND_DATA_ROOT` or pass `root=` to `load_dataset` to relocate it.
+
+Both use a **custom random 80/10/10 train/validation/test node split**, fixed
+at split seed 0 across training seeds. Training and validation counts are
+rounded down; test receives the remainder. This replaces the published RH
+masks and is **not** GraphLand's published RL, RH, TH, or THI protocol.
+The generic comparison runner defaults to these loader-provided (`native`)
+masks and rejects a conflicting split strategy. `--common_inductive_split`
+also preserves them rather than stratifying continuous targets.
+
+```bash
+python -m src.experiments.sparse \
+  --dataset hm-prices --model regression_gnn --aggr mean \
+  --common_inductive_split --T 200 --seeds 1
+```
+
+Use `--dataset avazu-ctr` for CTR, or `--aggr gin` for SparseGIN. Generic
+`src.experiments.run` configs can select either dataset with the existing
+regression-capable methods, without explicit regression or split flags:
+
+```json
+{
+  "dataset": "avazu-ctr",
+  "method": "graphsage",
+  "device": "auto",
+  "parameters": {"epochs": 20, "hidden_size": 64}
+}
+```
+
+The task uses one scalar output and MSE loss. Targets are standardized using
+only the **new 80% training labels**, with mean and scale exposed as
+`dataset.target_mean` and `dataset.target_std`. Constant training targets use
+scale 1. **R² is the sole regression evaluation metric** (`r2`), and higher
+is better, including when all candidate scores are negative. Checkpoint
+selection maximizes validation R². The score is unitless and unchanged by
+target standardization; it is computed over the entire scored split, not
+averaged over minibatches. Existing result fields named `*_accuracy` or
+`*_acc` retain their legacy names but contain R². No auxiliary regression
+metric columns are emitted.
+
+R² uses the evaluated split's own target mean in its denominator. The trivial
+reference predictor instead predicts the training mean and can score below
+zero. As in scikit-learn's default `r2_score`, constant targets score 1 for
+perfect predictions and 0 otherwise; fewer than two scored nodes yield NaN.
+
+The loader rejects nonfinite targets rather than admitting unlabeled roots
+into the training/accounting population.
+
+Feature encoding, quantile transforms, and missing-feature imputation retain
+PyG's **full-graph** preprocessing. Message-passing contexts still follow the
+selected runner: generic comparisons and SparseGNN with
+`--common_inductive_split` use graph-disjoint partitions; ordinary SparseGNN
+uses train-induced edges for fitting and the full graph for evaluation.
+Thus this is not a strictly train-only feature-preprocessing benchmark.
+DP training accounting does **not** account for releasing or fitting these
+data-dependent feature/target transforms; treating their statistics as public
+or otherwise accounting for them is a separate privacy assumption.
+
+**ProGAP adapted for regression** is supported through the retained inductive
+adapter. The runner derives the task from dataset metadata (`primary_metric:
+"r2"`); no separate regression flag is needed. Each progressive stage uses one
+unbounded scalar output and per-root MSE. Prediction bypasses softmax, and
+validation/test R² is reduced over the entire scored split using centered
+float64 statistics, independently of evaluation chunk size. Selection maximizes
+validation R² even when all checkpoints have negative scores. Results declare
+`metric: "r2"`; legacy accuracy/macro-F1 result fields carry that same R².
+The adapter requires at least two scored nodes for a defined evaluation.
+
+For example, reuse the existing ProGAP smoke configuration and its configured
+ProGAP Python environment:
+
+```bash
+python -m src.experiments.run \
+  --config configs/cora_ml_progap_smoke.json --dataset hm-prices \
+  --out results/inductive/hm-prices/progap.json
+```
+
+Use `--dataset avazu-ctr` for CTR. ProGAP's `epochs` applies **per progressive
+stage**: depth `d` trains `d + 1` stages. NAP normalization/noise, degree bounding,
+per-example gradient clipping/noise, sampling, and composed calibration remain
+unchanged by the regression adaptation. This is task-adapted ProGAP, not an
+unmodified upstream classification baseline. Raw private-training losses are
+not published in adapter histories; validation metrics assume public/fixed
+held-out data. Data-dependent preprocessing and private validation selection
+still require separate privacy treatment.
 
 ### Domain-disjoint datasets
 
@@ -207,6 +319,9 @@ The APPR matrix is `M × sampled_nodes`; it has no identity rows for other
 nodes. Each epoch visits those `M` roots once, including a final partial batch,
 so it makes `ceil(M / batch_size)` updates. SGD calibration uses
 `min(batch_size, M) / M`, separately from outer graph sampling amplification.
+The ISTA recurrence uses float64 to prevent residual roundoff from blocking
+convergence at the requested tolerance. Converged weights are converted to
+float32 before clipping, noise addition, and release.
 The released PPR/SGD accounting arithmetic remains a qualified repository
 convention, not an independently certified node-level DP guarantee.
 
@@ -261,15 +376,26 @@ parameters recorded in the CSV. Accounting never touches training.
 
 ```bash
 # 1. train (--dp adds clip+noise; omit it for the non-private reference)
-python -m src.experiments.sparse --dataset ppi --model multilabel_gnn --direction in \
+python -m src.experiments.sparse --dataset ppi-large --model multilabel_gnn --direction in \
     --dp --p1 0.01 --p2 0.1 --r 1 --num_layers 2 --T 2000 --sigma 5 \
     --K_in 5 --K_out 5 --lr 0.3 --seeds 3 --track_every 50 \
-    --out_dir results/ppi/myrun
+    --out_dir results/ppi-large/myrun
 
 # 2. attach epsilon
 python -m src.experiments.compute_epsilon \
-    --csv results/ppi/myrun/sparse_gnn_ppi_dp_results.csv --delta 1e-6
+    --csv results/ppi-large/myrun/sparse_gnn_ppi-large_dp_results.csv --delta 1e-6
 ```
+
+Select the SparseGNN architecture with `--aggr mean` (the default GraphSAGE),
+`--aggr gcn`, or `--aggr gin`. GIN uses sum aggregation and
+`MLP((1 + epsilon) * x + sum(neighbors))`, with fixed `epsilon=0`.
+Each layer's MLP is `Linear(in, out) -> ReLU -> Linear(out, out)`, without
+batch normalization; `--hidden` and `--num_layers` set the stack dimensions.
+It supports non-private training, padded per-root Opacus clipping/noise, and
+full-graph CSR inference. For the study runner, set `"aggregation": "gin"`
+in the JSON cell; the existing `"mean"` setting remains the default.
+Changing the architecture does not change calibration for fixed sampling,
+degree bounds, clipping, and update count.
 
 `--track_every N` evaluates every N steps and writes one CSV row per
 checkpoint. Since epsilon grows with the step count, a single run then yields a
@@ -280,6 +406,14 @@ tracked run follows exactly the same trajectory as an untracked one.
 Higher-level drivers live in `scripts/`: `ladder_stage01.sh` (baselines and the
 sparsification sweep, no DP), `ladder_stage2.sh` (clip+noise, then epsilon), and
 `sweep.sh <axis>` for one-axis tuning.
+
+The SparseGNN study runner (`results/eight_gpu_domain_graphsaint/sparse/run.py`)
+accepts a positive integer `batch_size <= n_train` in its JSON cell. This is
+the expected Poisson root count: set `p1 = batch_size / n_train`,
+`steps_per_epoch = ceil(n_train / batch_size)`, and
+`steps = epochs * steps_per_epoch` for a full run. Changing batch size at a
+fixed epoch budget changes both sampling probability and update count;
+recalibrate noise for the new schedule rather than reusing the old multiplier.
 
 ### Degree capping
 
@@ -295,6 +429,16 @@ directed mode; when omitted, its recorded value comes from the capped graph's
 observed maximum incoming degree. `--cap_mode undirected` is unchanged:
 it requires equal `K_in` and `K_out`, bounds both endpoints' degrees, and keeps
 both arcs of each retained edge. Evaluation graphs remain uncapped.
+
+Separately, incoming SparseExpand sampling now caps retained arcs at **20 per
+expanded node per hop**, in both private and non-private SparseGNN runs.
+`MAX_INCOMING_EDGES` in `src/processing/sparse_expand.py` sets this cap.
+The sampler draws the capped Binomial count and samples CSR positions directly;
+it does not construct a candidate tensor spanning a high-degree node's entire
+neighborhood. This bounds local expansion work, not the total number of roots
+or nodes in a batch. Outgoing expansion, preprocessing degree limits, other
+models, and full-graph evaluation are unchanged. Accounting formulas are
+unchanged; this implementation change does not revalidate them for the cap.
 
 ### Parameters that price epsilon, and parameters that do not
 
@@ -351,6 +495,9 @@ replacement draws in Google's executable implementation.
 
 Method `parameters` accept:
 - `clip` (default `1.0`): global L2 bound `C` on each root's complete gradient.
+- `dropout` (default `0.5`): hidden-activation dropout immediately before the
+  decoder in both GCN and GraphSAGE, including private padded batches. Disabled
+  during evaluation; set `0.0` to disable it during training as well.
 - `max_private_batch_nodes` (default `8192`): physical padded-slot budget.
   Chunking preserves one noise addition and one Adam update per logical batch;
   a single oversized star is processed alone.
@@ -403,18 +550,18 @@ pytest tests/
 
 ## Things worth knowing before reading SparseGNN results
 
-- **Aggregator.** The default `--aggr mean` (GraphSAGE) makes the rooted-subgraph
-  computation *exactly* equal full-graph inference, because its normalizer reads
-  only the target's in-neighbourhood, which SparseExpand always materializes in
-  full. `--aggr gcn` normalizes by the *source* degree, which a subgraph
-  boundary truncates; measured rooted-vs-full relative error is ~0 for mean and
-  ~1.1 for gcn, and GCN loses ~27 accuracy points on PPI as a result.
+- **Aggregator.** `--aggr mean` uses GraphSAGE neighbor means; `--aggr gin`
+  uses neighbor sums and a two-layer MLP; `--aggr gcn` uses symmetric degree
+  normalization. Sparse and padded implementations compute the same function
+  on a given rooted subgraph. This does not imply equality with full-graph
+  inference: edge sampling, expansion depth, and degree caps can remove needed
+  context. GCN additionally depends on source degrees at the subgraph boundary.
 - **Separate graphs.** Training always uses the loader's training graph or the
   graph induced by `train_mask`; evaluation always receives the separate,
   uncapped test graph.
-- **Metrics.** On PPI the all-positive predictor scores 0.4608 micro-F1 while
-  having no ranking ability at all (AUROC 0.4955), so a model below that floor
-  may still be learning. AUROC is recorded alongside micro-F1 for this reason.
-- **Inductive settings differ.** PPI and RelBench supply disjoint or temporal
-  training graphs. For ogbn-arxiv, Flickr, Reddit, and other single graphs,
-  `src.experiments.sparse` always drops arcs whose endpoints are not both training nodes.
+- **Metrics.** For multilabel tasks, micro-F1 depends on a fixed decision
+  threshold and can be misleading for poorly calibrated predictions. AUROC
+  is recorded alongside micro-F1 to measure ranking quality.
+- **Inductive settings differ.** GraphSAINT releases supply training-only
+  adjacency. For ogbn-arxiv, Flickr, Reddit, and other single graphs,
+  `src.experiments.sparse` drops arcs whose endpoints are not both training nodes.

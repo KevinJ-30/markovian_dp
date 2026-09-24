@@ -45,30 +45,13 @@ def _curve(rows, key):
     return {t: sum(v) / len(v) for t, v in by.items()}, eps
 
 
-def _lower_is_better(rows, metric_arg):
-    # r2 is always higher-is-better, regardless of the mechanism's primary
-    # metric -- a regression_gnn run's declared metric is "mae" (lower-is-
-    # better), but its secondary test_r2/val_r2 columns are not. Check the
-    # column name for this special case before falling back to the
-    # mechanism-wide declared metric.
-    if metric_arg.endswith('_r2') or metric_arg == 'r2':
-        return False
-    # run.py writes every mechanism's primary metric into a column literally
-    # named test_acc regardless of what it measures -- accuracy for
-    # classification, mae for regression_gnn -- so the --metric column name
-    # cannot tell direction. The CSV's own `metric` field (the mechanism's
-    # real metric name, e.g. "mae"/"accuracy"/"auroc"/"micro_f1") can.
-    declared = (rows[0].get('metric') or '').lower() if rows else ''
-    if declared:
-        return declared in ('mae', 'rmse')
-    return any(tag in metric_arg for tag in ('mae', 'rmse'))
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('sweep_dir')
-    ap.add_argument('--metric', default='test_acc')
+    ap.add_argument('--metric', default='test_acc',
+                    help='score column to report (higher is better); test_acc '
+                         'holds the primary metric, including R² for regression')
     args = ap.parse_args()
 
     cells = sorted(d for d in glob.glob(os.path.join(args.sweep_dir, '*'))
@@ -76,8 +59,8 @@ def main():
     if not cells:
         raise SystemExit(f"no cell directories under {args.sweep_dir}")
 
-    print(f"{'cell':<24} {'best':>8} {'step':>6} {'eps':>8} {'auroc':>8} {'final':>8}")
-    print('-' * 66)
+    print(f"{'cell':<24} {'metric':>10} {'best':>8} {'step':>6} {'eps':>8} {'auroc':>8} {'final':>8}")
+    print('-' * 77)
     for d in cells:
         # Prefer the epsilon-augmented CSV when compute_epsilon has run.
         csvs = (sorted(glob.glob(f'{d}/*_with_eps.csv'))
@@ -95,19 +78,14 @@ def main():
         val_key = ('val_' + args.metric[len('test_'):]
                   if args.metric.startswith('test_') else None)
         val_curve, _ = _curve(rows, val_key) if val_key else (None, None)
-        # mae/rmse are losses (lower = better); every other metric here
-        # (accuracy, micro_f1, auroc) is a score (higher = better).  Picking
-        # "best" with the wrong direction silently reports the worst
-        # checkpoint as the best one.
-        lower_is_better = _lower_is_better(rows, args.metric)
 
         def _pick(c, label):
-            """argmin/argmax over c, skipping NaN.
+            """argmax over c, skipping NaN.
 
-            min()/max() seed with the first element and every comparison against
+            max() seeds with the first element and every comparison against
             NaN is False, so a single leading NaN silently returns the EARLIEST
             step as "best".  NaN is reachable: AUROC on a single-class split,
-            R^2 when ss_tot == 0, any metric on an empty mask.
+            R² on fewer than two observations, any metric on an empty mask.
             """
             finite = {s: v for s, v in c.items() if v == v}   # v == v is False for NaN
             dropped = len(c) - len(finite)
@@ -118,8 +96,6 @@ def main():
                 print(f"  WARNING: {d}: all {label} checkpoints are NaN; "
                       f"skipping cell", file=sys.stderr)
                 return None
-            if lower_is_better:
-                return min(finite, key=lambda s: finite[s])
             return max(finite, key=lambda s: finite[s])
 
         if val_curve:
@@ -136,7 +112,9 @@ def main():
         au_s = f"{au[best]:.4f}" if au and best in au else '-'
         # `if eps.get(best)` would print '-' for a genuine epsilon of 0.0.
         eps_s = f"{eps[best]:.3f}" if eps.get(best) is not None else '-'
-        print(f"{os.path.basename(d):<24} {curve[best]:>8.4f} {best:>6} "
+        metric = (rows[0].get('metric', 'accuracy') if args.metric == 'test_acc'
+                  else args.metric.removeprefix('test_'))
+        print(f"{os.path.basename(d):<24} {metric:>10} {curve[best]:>8.4f} {best:>6} "
               f"{eps_s:>8} {au_s:>8} {curve[max(curve)]:>8.4f}")
 
 

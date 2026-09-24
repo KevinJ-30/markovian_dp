@@ -1,4 +1,6 @@
+import csv
 import math
+import sys
 from types import SimpleNamespace
 
 import torch
@@ -11,6 +13,7 @@ from src.training.baselines import (
     _LayerwiseNeighborSampler,
 )
 import src.experiments.run as run_module
+import src.experiments.sparse as sparse_module
 import src.training.dpar as dpar_module
 from src.experiments.run import _resolve_task_metadata
 from src.models.objectives import _binary_auroc, _task_loss
@@ -194,6 +197,20 @@ def test_private_ista_matches_released_aliased_recurrence():
     ).to_dense()
     expected = _literal_released_ista(edge_index, 4, roots, config)
     assert torch.allclose(actual.to(torch.float64), expected, atol=1e-6, rtol=1e-6)
+
+
+def test_private_ista_converges_at_requested_tolerance():
+    num_nodes = 256
+    neighbours = torch.arange(1, num_nodes)
+    edge_index = torch.stack((torch.zeros_like(neighbours), neighbours))
+    ppr = private_ista_ppr(
+        edge_index, num_nodes, torch.tensor([0]),
+        DPARConfig(topk=1, ista_epsilon=1e-6),
+        torch.device("cpu"),
+    )
+    # Only the root has a nonzero PPR weight in this outward-directed star.
+    assert torch.equal(ppr.indices(), torch.tensor([[0], [0]]))
+    torch.testing.assert_close(ppr.values(), torch.ones(1))
 
 
 def test_dpar_target_budget_samples_graph_and_composes_total(tmp_path):
@@ -452,3 +469,103 @@ def test_domain_dataset_rejects_unsupported_heterpoisson(monkeypatch):
             "method": "heterpoisson",
             "device": "cpu",
         })
+
+
+def _fixed_regression_dataset():
+    nodes = torch.arange(30)
+    data = Data(
+        x=torch.stack((nodes.float() / 30, torch.ones(30)), dim=1),
+        y=nodes.float().square() / 7,
+        edge_index=torch.stack((nodes, torch.roll(nodes, shifts=-1))),
+    )
+    order = torch.randperm(30, generator=torch.Generator().manual_seed(0))
+    for name, indices in zip(
+            ("train", "val", "test"), (order[:24], order[24:27], order[27:])):
+        mask = torch.zeros(30, dtype=torch.bool)
+        mask[indices] = True
+        setattr(data, f"{name}_mask", mask)
+    train_labels = data.y[data.train_mask]
+    data.y = (data.y - train_labels.mean()) / train_labels.std(unbiased=False)
+    dataset = SimpleNamespace(
+        task_type="REGRESSION", primary_metric="r2", multilabel=False,
+        split_strategy="native", num_features=2, num_classes=1,
+    )
+    return dataset, data
+
+
+def test_run_preserves_fixed_regression_partitions_across_seeds(monkeypatch, tmp_path):
+    dataset, data = _fixed_regression_dataset()
+    monkeypatch.setattr(
+        run_module, "load_dataset", lambda *args, **kwargs: (dataset, data.clone()))
+    original_fit = BaselineTrainer.fit
+
+    def fit(self, split):
+        for name in ("train", "val", "test"):
+            partition = getattr(split, name)
+            expected_ids = torch.where(getattr(data, f"{name}_mask"))[0]
+            assert torch.equal(partition.node_ids, expected_ids)
+            torch.testing.assert_close(partition.data.y, data.y[expected_ids])
+        return original_fit(self, split)
+
+    monkeypatch.setattr(BaselineTrainer, "fit", fit)
+    for seed in (0, 19):
+        result = run_module.run({
+            "dataset": "hm-prices", "method": "mlp", "device": "cpu",
+            "seed": seed, "split_root": tmp_path,
+            "parameters": {"epochs": 1, "hidden_size": 4, "dropout": 0.0},
+        })
+        assert result["split_strategy"] == "native"
+        assert result["primary_metric"] == "r2"
+        assert [result["partitions"][name]["nodes"]
+                for name in ("train", "val", "test")] == [24, 3, 3]
+        # Portable baselines retain their legacy score-column names for R².
+        assert math.isfinite(result["test_accuracy"])
+
+
+def test_run_rejects_resplitting_fixed_regression_targets(monkeypatch, tmp_path):
+    dataset, data = _fixed_regression_dataset()
+    monkeypatch.setattr(
+        run_module, "load_dataset", lambda *args, **kwargs: (dataset, data))
+    with pytest.raises(ValueError, match="conflicts with dataset split_strategy"):
+        run_module.run({
+            "dataset": "hm-prices", "method": "mlp", "device": "cpu",
+            "split_strategy": "stratified", "split_root": tmp_path,
+        })
+    assert not list(tmp_path.iterdir())
+
+
+def test_sparse_common_split_trains_with_fixed_regression_masks(monkeypatch, tmp_path):
+    dataset, data = _fixed_regression_dataset()
+    monkeypatch.setattr(sparse_module.torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(
+        sparse_module, "load_dataset", lambda *args, **kwargs: (dataset, data.clone()))
+    original_train = sparse_module.train_sparse_gnn
+
+    def train(mechanism, train_graph, test_graph, **kwargs):
+        for name in ("train", "val", "test"):
+            expected_mask = getattr(data, f"{name}_mask")
+            assert torch.equal(getattr(train_graph, f"{name}_mask"), expected_mask)
+            assert torch.equal(getattr(test_graph, f"{name}_mask"), expected_mask)
+        torch.testing.assert_close(train_graph.y, data.y)
+        assert data.train_mask[train_graph.edge_index].all()
+        roles = data.val_mask.long() + 2 * data.test_mask.long()
+        source, target = test_graph.edge_index
+        assert torch.equal(roles[source], roles[target])
+        return original_train(mechanism, train_graph, test_graph, **kwargs)
+
+    monkeypatch.setattr(sparse_module, "train_sparse_gnn", train)
+    monkeypatch.setattr(sys, "argv", [
+        "sparse", "--dataset", "avazu-ctr", "--model", "regression_gnn",
+        "--common_inductive_split", "--split_seed", "19",
+        "--split_root", str(tmp_path / "splits"),
+        "--p1", "1", "--p2", "1", "--r", "1", "--T", "1", "--seeds", "1",
+        "--hidden", "4", "--num_layers", "1", "--dropout", "0",
+        "--out_dir", str(tmp_path),
+    ])
+    sparse_module.main()
+
+    with (tmp_path / "sparse_gnn_avazu-ctr_results.csv").open(newline="") as fh:
+        row = next(csv.DictReader(fh))
+    assert row["metric"] == "r2"
+    assert math.isfinite(float(row["test_acc"]))
+    assert not any("mae" in key or "rmse" in key for key in row)

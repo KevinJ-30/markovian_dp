@@ -1,20 +1,8 @@
-"""RegressionGNNMechanism: the base mechanism g0 for node/entity regression.
+"""Scalar node regression with MSE training and R² evaluation.
 
-Same shape as `GNNMechanism` — an L-layer GCN on each root's sparsified
-subgraph, read off at the root — but with a single unbounded output, MSE loss,
-and MAE as the reported metric.
-
-Targets are expected SCALED but NOT centred: `load_relbench` divides by the
-train-split std and leaves the mean alone.  MAE and RMSE are reported in that
-scaled space -- i.e. in train-std units -- matching `objectives._regression_mae`,
-which the DPAR/DP-GNN/MLP baselines use.  Multiply by `data.target_std` to
-recover the label's original units.  (R^2 is scale-invariant either way.)
-
-Because the target is not centred, "predict the train mean" is NOT "predict 0"
-— `objectives.py`'s trivial_baseline subtracts mean(y_train) explicitly — and this
-head, which emits an unbounded scalar with no output transform, has to learn
-that intercept itself.  Under per-root clipping at C the intercept competes for
-gradient budget with the signal, so a large uncentred target is worth noticing.
+R² uses each evaluated split's own mean as its baseline, is higher-is-better,
+and is invariant to a shared affine transformation of predictions and targets.
+The label-only reference predictor instead predicts the training mean.
 """
 
 from typing import Dict
@@ -25,6 +13,7 @@ import torch.nn.functional as F
 
 from .base_mechanism import BaseMechanism
 from .layers import PaddedGNNStack, build_conv_stack
+from .objectives import _regression_r2
 
 
 class _RegressionGNN(nn.Module):
@@ -53,7 +42,7 @@ class RegressionGNNMechanism(BaseMechanism):
     freely; `num_classes` is accepted and ignored (always one output).
     """
 
-    metric_name = "mae"
+    metric_name = "r2"
 
     def __init__(self, data, num_features, num_classes=1, *, hidden=64,
                 num_layers=2, dropout=0.5, aggr='mean', device=None):
@@ -97,18 +86,5 @@ class RegressionGNNMechanism(BaseMechanism):
         metrics = {}
         for split in ("train", "val", "test"):
             mask = getattr(data, f"{split}_mask")
-            n = int(mask.sum().item())
-            if not n:
-                metrics[split] = float("nan")
-                metrics[f"{split}_rmse"] = float("nan")
-                metrics[f"{split}_r2"] = float("nan")
-                continue
-            residual = pred[mask] - target[mask]
-            metrics[split] = float(residual.abs().mean())
-            metrics[f"{split}_rmse"] = float(residual.pow(2).mean().sqrt())
-            y_true = target[mask]
-            ss_tot = (y_true - y_true.mean()).pow(2).sum()
-            metrics[f"{split}_r2"] = (
-                float(1.0 - residual.pow(2).sum() / ss_tot)
-                if ss_tot > 0 else float("nan"))
+            metrics[split] = _regression_r2(pred[mask], target[mask])
         return metrics
