@@ -20,6 +20,8 @@ from typing import Dict, List
 
 import torch
 
+from .bootstrap import BootstrapMetrics
+
 
 class BaseMechanism(ABC):
     """Abstract base mechanism g0 consumed by the SparseGNN engine."""
@@ -121,8 +123,9 @@ class BaseMechanism(ABC):
             f"{type(self).__name__} does not implement private padded training")
 
     @abstractmethod
-    def evaluate(self, data) -> Dict[str, float]:
-        """Return a dict of evaluation metrics (e.g. train/val/test accuracy)."""
+    def evaluate(self, data, *, splits=("train", "val", "test"),
+                 bootstrap: BootstrapMetrics = None) -> Dict[str, float]:
+        """Score only requested splits; optionally accumulate test nodes for CIs."""
         ...
 
     def zero_loss(self) -> torch.Tensor:

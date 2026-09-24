@@ -18,6 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base_mechanism import BaseMechanism
+from .bootstrap import BootstrapMetrics
 from .layers import PaddedGNNStack, build_conv_stack
 
 
@@ -165,17 +166,20 @@ class GNNMechanism(BaseMechanism):
                 for loss in batch]
 
     @torch.no_grad()
-    def evaluate(self, data=None) -> Dict[str, float]:
+    def evaluate(self, data=None, *, splits=("train", "val", "test"),
+                 bootstrap: BootstrapMetrics = None) -> Dict[str, float]:
         data = data or self.data
         self.eval_mode()
         out = self.module(data.x, self.eval_edges(data))
         pred = out.argmax(dim=1)
         accs = {}
-        for split in ("train", "val", "test"):
+        for split in splits:
             mask = getattr(data, f"{split}_mask")
             if self.metric_ignore_label is not None:
                 mask = mask & data.y.ne(self.metric_ignore_label)
             n = int(mask.sum().item())
             accs[split] = (float((pred[mask] == data.y[mask]).sum().item()) / n
                            if n else float("nan"))
+            if split == "test" and bootstrap is not None:
+                bootstrap.update(out[mask], data.y[mask])
         return accs

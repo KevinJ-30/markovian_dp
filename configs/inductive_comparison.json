@@ -22,6 +22,7 @@
     "dp_mlp": {"parameters": {"epochs": 100, "batch_size": 256, "noise_multiplier": 1.0}},
     "mlp": {"parameters": {"epochs": 100}},
     "graphsage": {"parameters": {"epochs": 100}},
+    "gin": {"parameters": {"epochs": 100}},
     "dp_gnn": {"adapter": "src.experiments.upstream.UpstreamBaseline"},
     "progap": {"adapter": "src.experiments.upstream.UpstreamBaseline"}
   }

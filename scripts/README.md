@@ -1,20 +1,37 @@
-# Experiment entry points
+# Supporting scripts
 
-    _dataset_settings.sh     per-dataset config sourced by every driver
-    ladder_stage01.sh        S0 baselines + S1 sparsification sweep (no DP)
-    ladder_stage2.sh         S2 clip+noise sweep, then S3 post-hoc epsilon
-    orientation_ablation.sh  in- vs out-expansion (directed graphs only)
-    sweep.sh <axis>          one-axis tuning sweeps (lr, momentum, clip,
-                             batch, k, optimizer)
-    diagnose.sh <what>       gradnorm / metrics diagnostics
-    ceiling_fullbatch.py     non-DP utility ceiling, full-batch
-    summarize_sweep.py       best-checkpoint table for a sweep directory
-    plot_*.py                figures
+Training entry points are `python -m src.experiments.sparse` and
+`python -m src.experiments.run`. The legacy local experiment drivers and
+study-specific figure recipes have been removed.
 
-Long runs should be detached so neither a closed terminal nor idle sleep kills
-them:
+## Reusable utilities
 
-    nohup caffeinate -i ./scripts/sweep.sh lr > results/logs/sweep_lr.log 2>&1 &
+| Script | Purpose |
+|---|---|
+| `setup_graphsaint.sh` | Extract and check manually downloaded GraphSAINT datasets. |
+| `calibrate_grid.py` | Emit noise multipliers for a grid of privacy targets. |
+| `ceiling_fullbatch.py` | Run a non-private full-batch classification comparison. |
+| `summarize_sweep.py` | Select a validation-best step and report seed-averaged test results; one configuration per child directory. |
+| `summarize_matched_eps.py` | Summarize matched-budget studies using their expected directory naming conventions. |
+| `plot_frontier.py` | Plot privacy–utility curves from an explicit CSV glob. |
+| `plot_sparse_frontier.py` | Plot a compatible SparseGNN CSV containing epsilon values. |
 
-Set `OMP_NUM_THREADS=1` when running many cells concurrently; each cell is
-launch-latency bound on small subgraphs, so parallel processes beat threads.
+The Python utilities expose `--help`. GraphSAINT setup accepts an input ZIP
+directory and an optional destination; see the root README.
+
+## Cluster helpers
+
+- `_ice_env.sh`: sourced by the ICE Slurm launchers to configure their environment.
+- `_matched_eps_grid.sh`: sourced by `sbatch/graphsaint_meps.sbatch` to run its
+  matched-budget grid.
+
+These are source-only helpers, not standalone training commands.
+
+## Study-specific campaign helpers
+
+`sparsegnn_final_sweep.py`, `sparsegnn_final_reports.py`,
+`sparsegnn_final_verification.py`, and `sparsegnn_partial_nonprivate.py` are
+retained for the initial-tuning study. They depend on that study's Python
+modules and original layout; they are not general-purpose experiment commands.
+Moving the study under `results/old_stuff/` does not automatically migrate
+their imports or paths.

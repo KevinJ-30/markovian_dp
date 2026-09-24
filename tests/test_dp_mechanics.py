@@ -51,8 +51,8 @@ class _LinearMechanism(BaseMechanism):
         values = private_module(batch.features[rows, batch.root_index]).view(-1)
         return values * batch.loss_mask.to(values.dtype)
 
-    def evaluate(self, data=None):
-        return {"train": 0.0, "val": 0.0, "test": 0.0}
+    def evaluate(self, data=None, *, splits=("train", "val", "test")):
+        return {split: 0.0 for split in splits}
 
 
 def _private_update(targets, roots, *, clip=1.0, sigma=0.0,

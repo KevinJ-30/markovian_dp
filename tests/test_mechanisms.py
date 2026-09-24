@@ -8,6 +8,7 @@ import torch
 from torch_geometric.data import Data
 
 from src.models.binary_mechanism import BinaryGNNMechanism, _auroc
+from src.models.bootstrap import BootstrapConfig, BootstrapMetrics
 from src.models.gnn_mechanism import GNNMechanism
 from src.models.multilabel_mechanism import MultiLabelGNNMechanism, _micro_f1
 from src.models.regression_mechanism import RegressionGNNMechanism
@@ -148,6 +149,45 @@ def test_regression_mechanism_scores_each_split_with_its_own_mean():
     mechanism = RegressionGNNMechanism(data, 1, hidden=2, num_layers=1)
     mechanism.module = FixedPredictions()
     assert mechanism.evaluate() == {"train": 0., "val": -1., "test": 0.}
+
+
+@pytest.mark.parametrize(
+    "mechanism_type, labels, predictions, expected, secondary",
+    [
+        (GNNMechanism, [0, 1], [[2., -1.], [-1., 2.]], 1., None),
+        (BinaryGNNMechanism, [0, 1], [-1., 1.], 1., "val_bin_acc"),
+        (MultiLabelGNNMechanism, [[0., 1.], [1., 0.]],
+         [[-1., 1.], [1., -1.]], 1., "val_auroc"),
+        (RegressionGNNMechanism, [0., 2.], [2., 4.], -3., None),
+    ],
+)
+def test_validation_only_evaluation_needs_no_train_or_test_mask(
+        mechanism_type, labels, predictions, expected, secondary):
+    data = Data(
+        x=torch.tensor(predictions).reshape(2, -1),
+        y=torch.tensor(labels),
+        edge_index=torch.empty((2, 0), dtype=torch.long),
+        train_mask=torch.ones(2, dtype=torch.bool),
+        val_mask=torch.ones(2, dtype=torch.bool),
+    )
+    mechanism = mechanism_type(data, data.x.size(1), 2, num_layers=1)
+
+    class FixedPredictions(torch.nn.Module):
+        def forward(self, x, edge_index):
+            return x[:, 0] if x.size(1) == 1 else x
+
+    mechanism.module = FixedPredictions()
+    del data.train_mask
+    accumulator = BootstrapMetrics(
+        mechanism.metric_name, BootstrapConfig(n_resamples=10))
+    metrics = mechanism.evaluate(
+        data, splits=("val",), bootstrap=accumulator)
+
+    expected_metrics = {"val": expected}
+    if secondary:
+        expected_metrics[secondary] = 1.
+    assert metrics == expected_metrics
+    assert accumulator.compute()["n_observations"] == 0
 
 
 # ── mechanisms plug into the engine ───────────────────────────────────────────

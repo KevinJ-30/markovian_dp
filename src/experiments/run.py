@@ -15,6 +15,7 @@ from typing import Any
 import torch
 
 from src.data.datasets import load_dataset
+from src.models.bootstrap import BootstrapConfig
 from src.training.baselines import BaselineConfig, BaselineTrainer
 from src.training.dpar import DPARConfig, DPARTrainer
 from src.processing.graphs import preprocess_inductive_split
@@ -24,7 +25,7 @@ from src.processing.splits import load_or_create_inductive_split
 # Every supported method also accepts continuous targets through its task head
 # and objective; the privacy mechanisms and accountants remain method-owned.
 _SUPPORTED_METHODS = frozenset(
-    {"mlp", "dp_mlp", "graphsage", "dpar", "dp_gnn", "progap"})
+    {"mlp", "dp_mlp", "graphsage", "gin", "dpar", "dp_gnn", "progap"})
 
 
 def _dataclass_config(cls: type, values: dict[str, Any]) -> Any:
@@ -133,6 +134,11 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     if method not in _SUPPORTED_METHODS:
         raise ValueError(
             f"unsupported method {method!r}; expected {sorted(_SUPPORTED_METHODS)}")
+    bootstrap = BootstrapConfig(
+        confidence_level=config.get("bootstrap_confidence", 0.95),
+        n_resamples=config.get("bootstrap_resamples", 1000),
+        seed=config.get("bootstrap_seed", 0),
+    )
     seed = int(config.get("seed", 0))
     device = _device(str(config.get("device", "auto")))
 
@@ -146,6 +152,12 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("parameters must be a configuration mapping")
     options = dict(raw_options)
     options.setdefault("seed", seed)
+    if method != "progap":
+        options.update(
+            bootstrap_confidence=bootstrap.confidence_level,
+            bootstrap_resamples=bootstrap.n_resamples,
+            bootstrap_seed=bootstrap.seed,
+        )
     _check_task_options(options, task)
 
     domain_dataset = bool(
@@ -188,7 +200,7 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     )
     split = preprocess_inductive_split(split)
 
-    first_party = {"dpar", "mlp", "dp_mlp", "graphsage"}
+    first_party = {"dpar", "mlp", "dp_mlp", "graphsage", "gin"}
     if method in first_party:
         for name in ("multilabel", "regression", "binary", "metric_ignore_label"):
             options[name] = task[name]
@@ -204,7 +216,7 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     if method == "dpar":
         result = DPARTrainer(
             _dataclass_config(DPARConfig, options), device=device).fit(split)
-    elif method in {"mlp", "dp_mlp", "graphsage"}:
+    elif method in {"mlp", "dp_mlp", "graphsage", "gin"}:
         options["method"] = method
         result = BaselineTrainer(
             _dataclass_config(BaselineConfig, options), device=device).fit(split)
@@ -255,12 +267,30 @@ def main() -> None:
     parser.add_argument(
         "--out", type=Path,
         help="default: results/inductive/<dataset>/<method>[-<domain-split-id>].json")
+    parser.add_argument(
+        "--bootstrap-confidence", type=float,
+        help="bootstrap confidence fraction (default: 0.95)")
+    parser.add_argument(
+        "--bootstrap-resamples", type=int,
+        help="number of test bootstrap resamples; 0 disables (default: 1000)")
+    parser.add_argument(
+        "--bootstrap-seed", type=int,
+        help="local test bootstrap seed (default: 0)")
     args = parser.parse_args()
     config = json.loads(args.config.read_text())
     if args.dataset:
         config["dataset"] = args.dataset
     if args.method:
         config["method"] = args.method
+    for name in ("bootstrap_confidence", "bootstrap_resamples", "bootstrap_seed"):
+        value = getattr(args, name)
+        if value is not None:
+            config[name] = value
+    BootstrapConfig(
+        confidence_level=config.get("bootstrap_confidence", 0.95),
+        n_resamples=config.get("bootstrap_resamples", 1000),
+        seed=config.get("bootstrap_seed", 0),
+    )
     device = _device(str(config.get("device", "auto")))
     if device.startswith("cuda"):
         torch.cuda.set_device(torch.device(device))
@@ -288,6 +318,10 @@ def main() -> None:
             "validation_accuracy": result.get("validation_accuracy"),
             "test_accuracy": result.get("test_accuracy"),
         })
+    if "test_confidence_intervals" in result:
+        summary["test_confidence_intervals"] = result["test_confidence_intervals"]
+    if "selection" in result:
+        summary["selection"] = result["selection"]
     print(json.dumps(summary, sort_keys=True))
 
 

@@ -366,3 +366,22 @@ def test_regression_manifest_rejects_conflicting_task_flags(
     monkeypatch.setenv("PROGAP_PRIMARY_METRIC", "r2")
     with pytest.raises(ValueError):
         adapter.main()
+
+
+def test_bootstrap_preserves_sigmoid_ties_and_scored_rows():
+    adapter = importlib.import_module("inductive_adapter")
+    logits = torch.tensor([[80.0], [90.0], [-100.0]])
+    graph = Data(x=logits, x0=logits, y=torch.tensor([1, 0, 19]),
+                 eval_mask=torch.ones(3, dtype=torch.bool))
+    bootstrap = adapter.BootstrapMetrics(
+        "auroc", adapter.BootstrapConfig(n_resamples=100, seed=2),
+        metrics=("auroc",))
+    result = adapter.evaluate_stage(
+        _FixedStageLogits(binary=True), graph, 1, metric_ignore_label=19,
+        bootstrap=bootstrap)
+    interval = bootstrap.compute()
+    assert result["score"] == 0.5  # Raw-logit ranking would incorrectly give 0.
+    assert interval["n_observations"] == 2
+    assert interval["metrics"]["auroc"]["lower"] == 0.5
+    assert interval["metrics"]["auroc"]["upper"] == 0.5
+    assert 0 < interval["metrics"]["auroc"]["valid_resamples"] < 100

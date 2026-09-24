@@ -17,7 +17,7 @@ import src.experiments.sparse as sparse_module
 import src.training.dpar as dpar_module
 from src.experiments.run import _resolve_task_metadata
 from src.models.objectives import _binary_auroc, _task_loss
-from src.models.baselines import GraphSAGE
+from src.models.baselines import GIN, GraphSAGE
 from src.training.dpar import (
     DPARConfig,
     DPARTrainer,
@@ -272,8 +272,8 @@ def test_dpar_supervises_roots_only_but_uses_nonroot_features(monkeypatch, priva
     monkeypatch.setattr(dpar_module, "_sample_train_partition", sample_roots)
 
     class ObservedTrainer(DPARTrainer):
-        def _evaluate(self, model, partition):
-            result = super()._evaluate(model, partition)
+        def _evaluate(self, model, partition, *, bootstrap=None):
+            result = super()._evaluate(model, partition, bootstrap=bootstrap)
             self.state = {
                 name: value.detach().clone() for name, value in model.state_dict().items()
             }
@@ -369,7 +369,55 @@ def test_baseline_scores_eval_mask_and_ignore_label_after_full_forward():
     assert macro_f1 == 1.0
 
 
-def test_hierarchical_graphsage_matches_untrimmed_sampled_loss():
+def test_graphsage_sampling_replays_its_stream_without_changing_model_rng():
+    edge_index = torch.stack((torch.arange(1, 65), torch.zeros(64, dtype=torch.long)))
+    sampler = _LayerwiseNeighborSampler(edge_index, num_nodes=65)
+    generator = torch.Generator().manual_seed(17)
+    roots = torch.tensor([0])
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(9)
+        expected_model_draws = torch.rand(8)
+        torch.manual_seed(9)
+        first = sampler.sample(roots, fanouts=[10, 10], generator=generator)
+        second = sampler.sample(roots, fanouts=[10, 10], generator=generator)
+        torch.testing.assert_close(torch.rand(8), expected_model_draws)
+        assert set(first.node_ids.tolist()) != set(second.node_ids.tolist())
+        assert first.node_ids.unique().numel() == 11
+        assert second.node_ids.unique().numel() == 11
+        replay = torch.Generator().manual_seed(17)
+        for expected in (first, second):
+            actual = sampler.sample(roots, fanouts=[10, 10], generator=replay)
+            torch.testing.assert_close(actual.node_ids, expected.node_ids)
+            torch.testing.assert_close(actual.edge_index, expected.edge_index)
+
+
+@pytest.mark.parametrize("model_type", [GraphSAGE, GIN])
+def test_sampled_gnn_full_fanout_preserves_directed_logits_and_gradients(model_type):
+    # Include overlapping roots, duplicate edges, a self-loop and isolated node 8.
+    edge_index = torch.tensor([
+        [1, 2, 2, 3, 4, 5, 5, 6, 7, 0, 2, 4, 7],
+        [0, 0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 6, 7],
+    ])
+    roots = torch.tensor([0, 4, 8])
+    sampled = _LayerwiseNeighborSampler(edge_index, num_nodes=9).sample(
+        roots, fanouts=[100, 100], generator=torch.Generator().manual_seed(8),
+    )
+    features = torch.randn(9, 4)
+    model = model_type(4, 3, hidden=7, layers=2, dropout=0.0)
+    whole = model(features, edge_index)[roots]
+    local = model.forward_sampled(
+        features[sampled.node_ids], sampled.edge_index,
+        sampled.num_sampled_nodes, sampled.num_sampled_edges, hierarchical=True,
+    )
+    torch.testing.assert_close(local, whole)
+    whole_grads = torch.autograd.grad(whole.square().sum(), model.parameters())
+    local_grads = torch.autograd.grad(local.square().sum(), model.parameters())
+    for actual, expected in zip(local_grads, whole_grads):
+        torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.parametrize("model_type", [GraphSAGE, GIN])
+def test_hierarchical_gnn_matches_untrimmed_sampled_loss(model_type):
     edge_index = torch.tensor([
         [1, 2, 3, 4, 5, 5, 6, 7, 7, 0],
         [0, 0, 0, 1, 1, 2, 2, 3, 4, 4],
@@ -396,7 +444,7 @@ def test_hierarchical_graphsage_matches_untrimmed_sampled_loss():
                 counts[frontier_start:frontier_start + frontier_size].max()
             ) <= 2
         offset += edge_count
-    model = GraphSAGE(inputs=3, classes=1, hidden=5, layers=2, dropout=0.0)
+    model = model_type(inputs=3, classes=1, hidden=5, layers=2, dropout=0.0)
     model.eval()
     features = torch.randn(sampled.node_ids.numel(), 3)
     neighbor_logits = model.forward_sampled(
@@ -417,14 +465,38 @@ def test_hierarchical_graphsage_matches_untrimmed_sampled_loss():
 
 
 
+def test_nonprivate_gin_sums_neighbors_and_retains_root_features():
+    model = GIN(2, 2, hidden=4, layers=1, dropout=0.0)
+    with torch.no_grad():
+        for layer in (model.convs[0].nn[0], model.convs[0].nn[2]):
+            layer.weight.copy_(torch.eye(2))
+            layer.bias.zero_()
+    features = torch.tensor([[1., 2.], [3., 4.], [5., 6.], [7., 8.]])
+    # Repeated edges contribute twice; a self-loop adds to the explicit root.
+    edges = torch.tensor([[1, 2, 2, 0], [0, 0, 0, 0]])
+    expected = features.clone()
+    expected[0] = 2 * features[0] + features[1] + 2 * features[2]
+    torch.testing.assert_close(model(features, edges), expected)
+    sampled = _LayerwiseNeighborSampler(edges, num_nodes=4).sample(
+        torch.tensor([0, 3]), fanouts=[10],
+        generator=torch.Generator().manual_seed(1),
+    )
+    actual = model.forward_sampled(
+        features[sampled.node_ids], sampled.edge_index,
+        sampled.num_sampled_nodes, sampled.num_sampled_edges, hierarchical=True,
+    )
+    torch.testing.assert_close(actual, expected[[0, 3]])
+
+
+@pytest.mark.parametrize("method", ["graphsage", "gin"])
 @pytest.mark.parametrize("sampling", ["neighbor", "hierarchical"])
-def test_graphsage_sampling_modes_train(sampling, tmp_path):
+def test_sampled_gnn_sampling_modes_train(method, sampling, tmp_path):
     split = load_or_create_inductive_split(
-        _graph(), f"graphsage-{sampling}", root=tmp_path, seed=3
+        _graph(), f"{method}-{sampling}", root=tmp_path, seed=3
     )
     result = BaselineTrainer(
         BaselineConfig(
-            method="graphsage",
+            method=method,
             graphsage_sampling=sampling,
             max_fanout=2,
             layers=2,
@@ -435,7 +507,6 @@ def test_graphsage_sampling_modes_train(sampling, tmp_path):
         ),
         "cpu",
     ).fit(split)
-    assert result["config"]["graphsage_sampling"] == sampling
     assert 0.0 <= result["validation_accuracy"] <= 1.0
     assert 0.0 <= result["test_accuracy"] <= 1.0
 

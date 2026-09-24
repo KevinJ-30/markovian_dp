@@ -26,6 +26,7 @@ from src.models.gnn_mechanism import GNNMechanism           # noqa: E402
 from src.models.multilabel_mechanism import MultiLabelGNNMechanism  # noqa: E402
 from src.models.binary_mechanism import BinaryGNNMechanism  # noqa: E402
 from src.models.regression_mechanism import RegressionGNNMechanism  # noqa: E402
+from src.models.bootstrap import BootstrapConfig  # noqa: E402
 from src.models.layers import VALID_AGGR  # noqa: E402
 from src.processing.sparse_expand import build_adjacency, sparse_expand  # noqa: E402
 from src.privacy.accounting import calibrate_sparsegnn_noise  # noqa: E402
@@ -243,6 +244,12 @@ def parse_args():
                         'graph fixed across seeds (isolating model/sampling/'
                         'noise variance instead).')
     # General
+    p.add_argument('--bootstrap-confidence', type=float, default=0.95,
+                   help='confidence level for final test node-bootstrap intervals')
+    p.add_argument('--bootstrap-resamples', type=int, default=1000,
+                   help='node bootstrap replicates; zero disables intervals')
+    p.add_argument('--bootstrap-seed', type=int, default=0,
+                   help='independent random seed for test bootstrap resampling')
     p.add_argument('--track_every', type=int, default=0,
                    help='if >0, evaluate every this many steps and write one '
                         'CSV row per checkpoint (step column).  Evaluation '
@@ -256,10 +263,14 @@ def parse_args():
                    help='save a sweep plot (test metric vs p2, line per p1, linestyle per r)')
     p.add_argument('--verbose', action='store_true')
     p.add_argument('--progress_every', type=int,
-                   help='verbose progress/evaluation interval; defaults to '
-                        '--eval_every and has no effect without --verbose')
-    p.add_argument('--eval_every', type=int, default=50)
+                   help='verbose progress interval; defaults to the validation '
+                        'interval and does not change checkpoint selection')
+    p.add_argument('--eval_every', type=int, default=50,
+                   help='validate/select every N updates and at the final update; '
+                        '0 uses one expected epoch (ceil(1/p1)); default: 50')
     args = p.parse_args()
+    if args.eval_every < 0:
+        p.error("--eval_every must be nonnegative")
     supplied_domain_roles = [
         args.train_domains is not None,
         args.val_domains is not None,
@@ -281,6 +292,9 @@ def parse_args():
 
 def main():
     args = parse_args()
+    bootstrap = BootstrapConfig(
+        confidence_level=args.bootstrap_confidence,
+        n_resamples=args.bootstrap_resamples, seed=args.bootstrap_seed)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(args.out_dir, exist_ok=True)
 
@@ -498,8 +512,7 @@ def main():
 
     # Write to <name>.partial and rename only on success.  Rows are still
     # flushed as they complete, so a killed run leaves an inspectable partial
-    # file — but the final path never exists unless the sweep finished, which is
-    # what the ladder scripts' resume guard keys on.
+    # file — the final path is published only after the entire sweep succeeds.
     partial_path = csv_path + '.partial'
     with open(partial_path, 'w', newline='') as fh:
         w = csv.writer(fh)
@@ -520,7 +533,8 @@ def main():
                     # Secondary metric for binary_gnn (metric_name="auroc" is
                     # primary, above): plain accuracy, meaningful only next to
                     # AUROC on an imbalanced split -- see binary_mechanism.py.
-                    'train_bin_acc', 'val_bin_acc', 'test_bin_acc'])
+                    'train_bin_acc', 'val_bin_acc', 'test_bin_acc',
+                    'test_confidence_intervals', 'selection'])
 
         for cell in grid:
             calibration = None
@@ -592,21 +606,24 @@ def main():
                 mech.build_optimizer(lr=args.lr, weight_decay=args.weight_decay,
                                      kind=opt_kind, momentum=args.momentum)
 
-                progress_every = (args.progress_every
-                                  if args.verbose and args.progress_every is not None
-                                  else args.eval_every)
                 accs = train_sparse_gnn(
                     mech, train_data, test_data, adj=gph['adj'],
                     direction=args.direction, p1=p1, p2=p2, r=r, T=args.T,
                     dp=args.dp, clip=args.clip, sigma=sigma, seed=seed,
-                    eval_every=progress_every, track_every=args.track_every,
-                    verbose=args.verbose,
+                    eval_every=args.eval_every, track_every=args.track_every,
+                    progress_every=args.progress_every,
+                    verbose=args.verbose, bootstrap=bootstrap,
                 )
                 history = accs.pop('history', [])
                 tests.append(accs['test'])
                 vals.append(accs['val'])
                 print(f"  seed={seed}  metric={_metric}  train={accs['train']:.4f}  "
                       f"val={accs['val']:.4f}  test={accs['test']:.4f}")
+                if 'selection' in accs:
+                    print("    selection=" + json.dumps(accs['selection'], allow_nan=False))
+                if 'test_confidence_intervals' in accs:
+                    print("    test_confidence_intervals=" + json.dumps(
+                        accs['test_confidence_intervals'], allow_nan=False))
 
                 def _write_row(step, m):
                     w.writerow([args.dataset, normalized_domain_split_json,
@@ -627,10 +644,16 @@ def main():
                                   for k in ('train_auroc', 'val_auroc',
                                             'test_auroc',
                                             'train_bin_acc', 'val_bin_acc',
-                                            'test_bin_acc'))])
+                                            'test_bin_acc')),
+                                (json.dumps(m['test_confidence_intervals'],
+                                            allow_nan=False)
+                                 if 'test_confidence_intervals' in m else ''),
+                                (json.dumps(m['selection'], allow_nan=False)
+                                 if 'selection' in m else '')])
 
                 for h in history:
-                    if h['step'] < args.T:   # final checkpoint == the T row
+                    # The T row is the selected model, charged for all T updates.
+                    if h['step'] < args.T:
                         _write_row(h['step'], h)
                 _write_row(args.T, accs)
                 fh.flush()   # persist each row so a killed run keeps its rows

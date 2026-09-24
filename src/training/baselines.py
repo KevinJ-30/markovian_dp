@@ -11,10 +11,11 @@ import torch
 from torch import Tensor, nn
 from torch.func import functional_call, grad, vmap
 
+from src.models.bootstrap import BootstrapConfig, BootstrapMetrics
 from src.models.objectives import _metric_rows, _task_loss, _task_metric
 from src.privacy.accountants import DPMLPAccountant
 
-from src.models.baselines import MLP, GraphSAGE
+from src.models.baselines import GIN, MLP, GraphSAGE
 
 @dataclass(frozen=True)
 class BaselineConfig:
@@ -36,6 +37,16 @@ class BaselineConfig:
     metric_ignore_label: int | None = None
     graphsage_sampling: str = "hierarchical"
     max_fanout: int = 10
+    bootstrap_confidence: float = 0.95
+    bootstrap_resamples: int = 1000
+    bootstrap_seed: int = 0
+
+    def __post_init__(self) -> None:
+        BootstrapConfig(
+            confidence_level=self.bootstrap_confidence,
+            n_resamples=self.bootstrap_resamples,
+            seed=self.bootstrap_seed,
+        )
 
 
 @dataclass(frozen=True)
@@ -47,7 +58,7 @@ class _SampledNeighborhood:
 
 
 class _LayerwiseNeighborSampler:
-    """Uniform fixed-fanout sampling with seed-first BFS node ordering."""
+    """Compiled fixed-fanout sampling with seed-first BFS node ordering."""
 
     def __init__(self, edge_index: Tensor, num_nodes: int):
         edges = edge_index.detach().cpu().to(torch.long)
@@ -76,52 +87,20 @@ class _LayerwiseNeighborSampler:
         if any(fanout <= 0 for fanout in fanouts):
             raise ValueError("fanouts must be positive")
 
-        node_ids = roots.tolist()
-        local_index = {node: index for index, node in enumerate(node_ids)}
-        frontier = list(node_ids)
-        node_counts = [len(node_ids)]
-        edge_counts: list[int] = []
-        edge_groups: list[Tensor] = []
+        from pyg_lib.sampler import neighbor_sample
 
-        for fanout in fanouts:
-            next_frontier: list[int] = []
-            local_sources: list[int] = []
-            local_targets: list[int] = []
-            for target_node in frontier:
-                start = int(self.offsets[target_node])
-                stop = int(self.offsets[target_node + 1])
-                degree = stop - start
-                if degree == 0:
-                    continue
-                if degree <= fanout:
-                    selected = self.neighbors[start:stop]
-                else:
-                    selected = self.neighbors[
-                        start + torch.randperm(degree, generator=generator)[:fanout]
-                    ]
-                target_index = local_index[target_node]
-                for source_node in selected.tolist():
-                    source_index = local_index.get(source_node)
-                    if source_index is None:
-                        source_index = len(node_ids)
-                        local_index[source_node] = source_index
-                        node_ids.append(source_node)
-                        next_frontier.append(source_node)
-                    local_sources.append(source_index)
-                    local_targets.append(target_index)
-            edge_count = len(local_sources)
-            edge_counts.append(edge_count)
-            edge_groups.append(
-                torch.tensor([local_sources, local_targets], dtype=torch.long)
-                if edge_count
-                else torch.empty((2, 0), dtype=torch.long)
+        # pyg-lib uses the global CPU RNG; isolate it from model/dropout draws.
+        with torch.random.fork_rng(devices=[]):
+            torch.set_rng_state(generator.get_state())
+            source, target, node_ids, _, node_counts, edge_counts = neighbor_sample(
+                self.offsets, self.neighbors, roots, fanouts,
+                csc=True, replace=False, directed=True, return_edge_id=False,
             )
-            node_counts.append(len(next_frontier))
-            frontier = next_frontier
+            generator.set_state(torch.get_rng_state())
 
         return _SampledNeighborhood(
-            node_ids=torch.tensor(node_ids, dtype=torch.long),
-            edge_index=torch.cat(edge_groups, dim=1),
+            node_ids=node_ids,
+            edge_index=torch.stack((source, target)),
             num_sampled_nodes=node_counts,
             num_sampled_edges=edge_counts,
         )
@@ -131,11 +110,11 @@ class BaselineTrainer:
     """Train/evaluate graph partitions without exposing held-out graphs to fitting."""
 
     def __init__(self, config: BaselineConfig, device: str | torch.device = "cpu"):
-        if config.method not in {"mlp", "graphsage", "dp_mlp"}:
+        if config.method not in {"mlp", "graphsage", "gin", "dp_mlp"}:
             raise ValueError(f"unsupported portable baseline {config.method!r}")
         if sum((config.multilabel, config.regression, config.binary)) > 1:
             raise ValueError("binary, multilabel, and regression tasks are mutually exclusive")
-        if config.method == "graphsage":
+        if config.method in {"graphsage", "gin"}:
             if config.graphsage_sampling not in {"neighbor", "hierarchical"}:
                 raise ValueError(
                     "graphsage_sampling must be 'neighbor' or 'hierarchical'"
@@ -150,7 +129,12 @@ class BaselineTrainer:
         self.device = torch.device(device)
 
     def _model(self, train_data: Any, num_classes: int) -> nn.Module:
-        factory = GraphSAGE if self.config.method == "graphsage" else MLP
+        if self.config.method == "graphsage":
+            factory = GraphSAGE
+        elif self.config.method == "gin":
+            factory = GIN
+        else:
+            factory = MLP
         outputs = 1 if (self.config.binary or self.config.regression) else num_classes
         return factory(train_data.x.size(1), outputs, self.config.hidden_size,
                        self.config.layers, self.config.dropout).to(self.device)
@@ -159,7 +143,10 @@ class BaselineTrainer:
         return model(data.x, getattr(data, "edge_index", None))
 
     @torch.no_grad()
-    def _evaluate(self, model: nn.Module, partition: Any) -> tuple[float, float]:
+    def _evaluate(
+        self, model: nn.Module, partition: Any, *,
+        bootstrap: BootstrapMetrics | None = None,
+    ) -> tuple[float, float]:
         data = partition.data.to(self.device)
         model.eval()
         logits = self._forward(model, data)
@@ -169,6 +156,8 @@ class BaselineTrainer:
             eval_mask=getattr(partition, "eval_mask", None),
             metric_ignore_label=self.config.metric_ignore_label,
         )
+        if bootstrap is not None:
+            bootstrap.update(logits, labels)
         return _task_metric(
             logits, labels, self.config.multilabel,
             regression=self.config.regression, binary=self.config.binary)
@@ -177,8 +166,8 @@ class BaselineTrainer:
         torch.manual_seed(self.config.seed)
         train_cpu = split.train.data
         train = (
-            train_cpu
-            if self.config.method == "graphsage"
+            train_cpu.to(self.device, "x", "y")
+            if self.config.method in {"graphsage", "gin"}
             else train_cpu.to(self.device)
         )
         model = self._model(train_cpu, split.num_classes)
@@ -189,7 +178,7 @@ class BaselineTrainer:
         steps_per_epoch = math.ceil(train.num_nodes / self.config.batch_size)
         sampler = (
             _LayerwiseNeighborSampler(train.edge_index, int(train.num_nodes))
-            if self.config.method == "graphsage"
+            if self.config.method in {"graphsage", "gin"}
             else None
         )
         best_state = None
@@ -197,9 +186,9 @@ class BaselineTrainer:
         started = time.perf_counter()
         for _ in range(self.config.epochs):
             model.train()
-            if self.config.method == "graphsage":
+            if self.config.method in {"graphsage", "gin"}:
                 assert sampler is not None
-                self._graphsage_epoch(
+                self._sampled_gnn_epoch(
                     model, optimizer, train, sampler, sampling_generator
                 )
             elif self.config.method == "dp_mlp":
@@ -226,7 +215,20 @@ class BaselineTrainer:
         assert best_state is not None
         model.load_state_dict(best_state)
         validation, val_f1 = self._evaluate(model, split.val)
-        test, test_f1 = self._evaluate(model, split.test)
+        bootstrap = (
+            BootstrapMetrics(
+                "r2" if self.config.regression else
+                "auroc" if self.config.binary else
+                "micro_f1" if self.config.multilabel else "accuracy",
+                BootstrapConfig(
+                    confidence_level=self.config.bootstrap_confidence,
+                    n_resamples=self.config.bootstrap_resamples,
+                    seed=self.config.bootstrap_seed,
+                ),
+            )
+            if self.config.bootstrap_resamples else None
+        )
+        test, test_f1 = self._evaluate(model, split.test, bootstrap=bootstrap)
         privacy = None
         if self.config.method == "dp_mlp":
             privacy = DPMLPAccountant().account(
@@ -254,9 +256,11 @@ class BaselineTrainer:
             })
         if self.config.regression:
             result["metric"] = "r2"
+        if bootstrap is not None:
+            result["test_confidence_intervals"] = bootstrap.compute()
         return result
 
-    def _graphsage_epoch(
+    def _sampled_gnn_epoch(
         self,
         model: nn.Module,
         optimizer: torch.optim.Optimizer,
@@ -264,8 +268,8 @@ class BaselineTrainer:
         sampler: _LayerwiseNeighborSampler,
         generator: torch.Generator,
     ) -> None:
-        if not isinstance(model, GraphSAGE):
-            raise TypeError("GraphSAGE sampling requires a GraphSAGE model")
+        if not isinstance(model, (GraphSAGE, GIN)):
+            raise TypeError("neighbor sampling requires a GraphSAGE or GIN model")
         roots = torch.randperm(int(data.num_nodes), generator=generator)
         fanouts = [self.config.max_fanout] * self.config.layers
         hierarchical = self.config.graphsage_sampling == "hierarchical"
@@ -275,11 +279,9 @@ class BaselineTrainer:
                 fanouts=fanouts,
                 generator=generator,
             )
-            node_ids = sampled.node_ids
-            x = data.x[node_ids].to(self.device)
-            labels = data.y[node_ids[:sampled.num_sampled_nodes[0]]].to(
-                self.device
-            )
+            node_ids = sampled.node_ids.to(self.device)
+            x = data.x[node_ids]
+            labels = data.y[node_ids[:sampled.num_sampled_nodes[0]]]
             edge_index = sampled.edge_index.to(self.device)
             optimizer.zero_grad(set_to_none=True)
             logits = model.forward_sampled(

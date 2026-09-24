@@ -13,8 +13,7 @@
 # All private runs use --direction in.
 #
 # Reddit (232k nodes) is the reason this lives on the cluster;
-# ogbn-arxiv and Flickr run fine on a laptop
-# via scripts/ladder_stage01.sh.
+# For local experiments, invoke python -m src.experiments.sparse directly.
 #
 # IMPORTANT: --direction in is the corrected orientation (manuscript v35 §5-6).
 # Anything recorded before that fix used out-expansion, where the root received

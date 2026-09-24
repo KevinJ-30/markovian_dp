@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+
 import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
@@ -22,43 +24,28 @@ class MLP(nn.Module):
         return self.layers[-1](x)
 
 
-class GraphSAGE(nn.Module):
-    """Mean-aggregating GraphSAGE without a PyG runtime dependency."""
+class _SampledGNN(nn.Module, ABC):
+    """Shared full-neighbor and hierarchical sampled message passing."""
 
-    def __init__(self, inputs: int, classes: int, hidden: int, layers: int, dropout: float):
+    def __init__(self, layers: int, dropout: float):
         super().__init__()
         if layers < 1:
             raise ValueError("layers must be positive")
-        widths = [inputs] + [hidden] * (layers - 1) + [classes]
-        self.self_layers = nn.ModuleList(nn.Linear(a, b) for a, b in zip(widths, widths[1:]))
-        self.neighbor_layers = nn.ModuleList(nn.Linear(a, b, bias=False) for a, b in zip(widths, widths[1:]))
+        self.num_layers = layers
         self.dropout = dropout
 
-    @staticmethod
-    def _mean_neighbors(
-        x: Tensor,
-        edge_index: Tensor,
-        num_targets: int | None = None,
+    @abstractmethod
+    def _convolve(
+        self, index: int, x: Tensor, edge_index: Tensor, num_targets: int,
     ) -> Tensor:
-        source, target = edge_index
-        target_count = x.size(0) if num_targets is None else num_targets
-        sums = x.new_zeros((target_count, x.size(1)))
-        sums.index_add_(0, target, x[source])
-        degree = torch.bincount(target, minlength=target_count).to(
-            x.dtype
-        ).clamp_min_(1)
-        return sums / degree[:, None]
+        """Apply one layer to the leading target nodes."""
 
     def forward(self, x: Tensor, edge_index: Tensor | None = None) -> Tensor:
         if edge_index is None:
-            raise ValueError("GraphSAGE requires edge_index")
-        for index, (self_layer, neighbor_layer) in enumerate(
-            zip(self.self_layers, self.neighbor_layers)
-        ):
-            x = self_layer(x) + neighbor_layer(
-                self._mean_neighbors(x, edge_index)
-            )
-            if index < len(self.self_layers) - 1:
+            raise ValueError(f"{type(self).__name__} requires edge_index")
+        for index in range(self.num_layers):
+            x = self._convolve(index, x, edge_index, x.size(0))
+            if index < self.num_layers - 1:
                 x = F.relu(x)
                 x = F.dropout(x, p=self.dropout, training=self.training)
         return x
@@ -78,7 +65,7 @@ class GraphSAGE(nn.Module):
         subgraph. ``hierarchical=True`` progressively drops the deepest hop,
         preserving identical seed logits while avoiding unused activations.
         """
-        layer_count = len(self.self_layers)
+        layer_count = self.num_layers
         if len(num_sampled_nodes) != layer_count + 1:
             raise ValueError("sampled node counts must contain one entry per hop")
         if len(num_sampled_edges) != layer_count:
@@ -86,20 +73,64 @@ class GraphSAGE(nn.Module):
         if not hierarchical:
             return self.forward(x, edge_index)[:num_sampled_nodes[0]]
 
-        for index, (self_layer, neighbor_layer) in enumerate(
-            zip(self.self_layers, self.neighbor_layers)
-        ):
+        for index in range(layer_count):
             retained_hops = layer_count - index
             target_count = sum(num_sampled_nodes[:retained_hops])
             edge_count = sum(num_sampled_edges[:retained_hops])
             layer_edges = edge_index[:, :edge_count]
-            x = self_layer(x[:target_count]) + neighbor_layer(
-                self._mean_neighbors(x, layer_edges, target_count)
-            )
+            x = self._convolve(index, x, layer_edges, target_count)
             if index < layer_count - 1:
                 x = F.relu(x)
                 x = F.dropout(x, p=self.dropout, training=self.training)
         return x
+
+
+class GraphSAGE(_SampledGNN):
+    """Mean-aggregating GraphSAGE without a PyG runtime dependency."""
+
+    def __init__(self, inputs: int, classes: int, hidden: int, layers: int, dropout: float):
+        super().__init__(layers, dropout)
+        widths = [inputs] + [hidden] * (layers - 1) + [classes]
+        self.self_layers = nn.ModuleList(nn.Linear(a, b) for a, b in zip(widths, widths[1:]))
+        self.neighbor_layers = nn.ModuleList(nn.Linear(a, b, bias=False) for a, b in zip(widths, widths[1:]))
+
+    @staticmethod
+    def _mean_neighbors(
+        x: Tensor,
+        edge_index: Tensor,
+        num_targets: int | None = None,
+    ) -> Tensor:
+        source, target = edge_index
+        target_count = x.size(0) if num_targets is None else num_targets
+        sums = x.new_zeros((target_count, x.size(1)))
+        sums.index_add_(0, target, x[source])
+        degree = torch.bincount(target, minlength=target_count).to(
+            x.dtype
+        ).clamp_min_(1)
+        return sums / degree[:, None]
+
+    def _convolve(
+        self, index: int, x: Tensor, edge_index: Tensor, num_targets: int,
+    ) -> Tensor:
+        return self.self_layers[index](x[:num_targets]) + self.neighbor_layers[index](
+            self._mean_neighbors(x, edge_index, num_targets)
+        )
+
+
+class GIN(_SampledGNN):
+    """Sum-aggregating GIN with two-layer ReLU MLPs and fixed epsilon=0."""
+
+    def __init__(self, inputs: int, classes: int, hidden: int, layers: int, dropout: float):
+        from src.models.layers import build_conv_stack
+
+        super().__init__(layers, dropout)
+        widths = [inputs] + [hidden] * (layers - 1) + [classes]
+        self.convs = build_conv_stack(widths, aggr="gin")
+
+    def _convolve(
+        self, index: int, x: Tensor, edge_index: Tensor, num_targets: int,
+    ) -> Tensor:
+        return self.convs[index]((x, x[:num_targets]), edge_index)
 
 
 class DPARMLP(nn.Module):

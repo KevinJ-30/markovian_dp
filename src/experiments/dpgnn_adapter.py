@@ -80,12 +80,16 @@ def run_partitioned(manifest: str | Path, result_path: str | Path, *, steps: int
                     evaluate_every: int = 50, seed: int = 0,
                     clip: float = 1.0, regression: bool = False,
                     max_private_batch_nodes: int = 8192,
-                    architecture: str = "graphsage", dropout: float = 0.5) -> dict[str, Any]:
+                    architecture: str = "graphsage", dropout: float = 0.5,
+                    bootstrap_confidence: float = 0.95,
+                    bootstrap_resamples: int = 1000,
+                    bootstrap_seed: int = 0) -> dict[str, Any]:
     """Train first-party DP-GNN on train.pt and evaluate val.pt/test.pt.
 
-    The manifest is the graph-disjoint boundary: no validation or test graph is
-    read before fitting completes. ``evaluate_every`` remains accepted for API
-    compatibility; the first-party trainer returns final-partition metrics.
+    The manifest defines graph-disjoint partitions. Validation selects the best
+    primary-metric checkpoint at ``evaluate_every`` updates (zero means one
+    expected epoch), including the final update. Training always completes all
+    ``steps``; test metrics and bootstrap intervals use the selected checkpoint.
     """
     manifest = Path(manifest)
     data, task = _load_partitions(manifest)
@@ -102,6 +106,9 @@ def run_partitioned(manifest: str | Path, result_path: str | Path, *, steps: int
             metric_ignore_label=task["metric_ignore_label"],
             max_private_batch_nodes=max_private_batch_nodes,
             architecture=architecture, dropout=dropout,
+            bootstrap_confidence=bootstrap_confidence,
+            bootstrap_resamples=bootstrap_resamples,
+            bootstrap_seed=bootstrap_seed,
         ),
     )
     trained = trainer.fit(data["train"], data["val"], data["test"])
@@ -112,6 +119,7 @@ def run_partitioned(manifest: str | Path, result_path: str | Path, *, steps: int
         "method": "dp_gnn",
         "metric": metric,
         "parameters": asdict(trainer.config),
+        "selection": trained["selection"],
         "privacy": {
             "epsilon": trained["epsilon"],
             "delta": trained["delta"],
@@ -142,6 +150,8 @@ def run_partitioned(manifest: str | Path, result_path: str | Path, *, steps: int
             "validation_accuracy": trained[f"validation_{metric}"],
             "test_accuracy": trained[f"test_{metric}"],
         })
+    if "test_confidence_intervals" in trained:
+        result["test_confidence_intervals"] = trained["test_confidence_intervals"]
     if task["domain_split"] is not None:
         result["domain_split"] = task["domain_split"]
         result["domain_split_id"] = task["domain_split_id"]

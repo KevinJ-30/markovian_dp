@@ -19,11 +19,11 @@ src/
     base_mechanism.py      g0 interface, optimizer, and evaluation helpers
     *_mechanism.py        task-specific networks and mechanisms
     layers.py             sparse PyG and padded batch-first message passing
-    baselines.py          MLP, GraphSAGE, DPAR, and DP-GNN networks
+    baselines.py          MLP, GraphSAGE, GIN, DPAR, and DP-GNN networks
     objectives.py         shared baseline losses, metrics, trivial predictors
   training/
     sparse_gnn.py         model-agnostic non-DP and DP training engine
-    baselines.py          portable MLP/GraphSAGE/DP-MLP training
+    baselines.py          portable MLP/GraphSAGE/GIN/DP-MLP training
     dpar.py               DPAR training and private PPR
     dpgnn.py              partitioned DP-GNN training
   privacy/
@@ -54,12 +54,12 @@ Entry points:
 - `python -m src.experiments.compute_epsilon` — post-hoc privacy accounting.
 - `python -m src.experiments.run` — graph-disjoint baseline comparisons.
 
-The comparison runner supports `mlp`, `dp_mlp`, `graphsage`, `dpar`, `dp_gnn`,
+The comparison runner supports `mlp`, `dp_mlp`, `graphsage`, `gin`, `dpar`, `dp_gnn`,
 and `progap`. SparseGNN uses its separate CLI above. HeterPoisson support,
 presets, and vendored PNPiGNNs source have been removed; historical result
 artifacts are retained but are not supported launch configurations.
 
-Baseline dropout defaults to `0.5` for MLP, GraphSAGE, DP-MLP, DPAR, DP-GNN,
+Baseline dropout defaults to `0.5` for MLP, GraphSAGE, GIN, DP-MLP, DPAR, DP-GNN,
 and ProGAP. Shipped baseline presets and the non-private full-batch ceiling use
 the same default. Explicit overrides remain supported: set `parameters.dropout`
 in a baseline JSON config, or `--dropout` for the ceiling CLI; `0.0` disables it.
@@ -73,6 +73,10 @@ flags, dataset/split caches, and result filenames and schemas are unchanged.
 ```bash
 pip install torch torch_geometric ogb opacus dp_accounting scipy pandas matplotlib pytest "scikit-learn>=1.5" pyyaml
 ```
+
+GraphSAGE and GIN additionally require `pyg-lib` built for your PyTorch/CUDA version;
+follow the [official wheel installation instructions](https://github.com/pyg-team/pyg-lib#installation).
+The differently named `pyg-library` package is not a substitute.
 
 ## Datasets
 
@@ -289,16 +293,30 @@ save the following as `/tmp/mag-domain.json` and run
 ```
 
 The same dataset metadata is consumed by the first-party `mlp`, `dp_mlp`,
-`graphsage`, `dpar`, and `dp_gnn` methods and by the retained ProGAP adapter.
+`graphsage`, `gin`, `dpar`, and `dp_gnn` methods and by the retained ProGAP adapter.
 
-The first-party GraphSAGE trainer uses fresh fixed-fanout neighborhoods for
-each root minibatch. `graphsage_sampling: "hierarchical"` (the default) uses
+The first-party GraphSAGE and GIN trainers share compiled `pyg-lib` sampling to
+draw fresh fixed-fanout neighborhoods without replacement for each root minibatch.
+`graphsage_sampling: "hierarchical"` (the default) uses
 the same sampled seed-node computation as `"neighbor"`, but progressively
 trims the deepest unused hop before each layer. Set `max_fanout` to the per-layer
 bound; the trainer repeats it for `layers` hops. Each training root appears
 once per shuffled epoch, with a final partial batch. Validation and test use
 deterministic full-neighbor propagation over each complete held-out context
 graph and score only its `eval_mask`.
+The sampling graph stays on the CPU, while training features and labels reside
+on the selected device throughout fitting; GPU runs require room for those
+tensors as well as minibatch activations. Sampling has its own seeded RNG
+stream, independent of model/dropout draws. Seeds remain reproducible, but
+sampled neighborhoods need not match historical runs of the Python sampler.
+
+Select the non-private GIN baseline with `"method": "gin"` in the configuration
+or `--method gin` on the comparison CLI. It uses the existing sum-aggregating
+GIN layers: fixed epsilon=0 and `Linear(in, out) -> ReLU -> Linear(out, out)`
+per message-passing layer, with ReLU/dropout between layers. The same settings
+apply as for GraphSAGE, including `graphsage_sampling`, `max_fanout`, `layers`,
+`hidden_size`, and optimizer settings. Binary, multiclass, multilabel, and
+regression tasks use their existing task-specific losses and metrics.
 
 The first-party DPAR trainer retains the sampled subgraph as feature context
 but supervises only its `M = min(ppr_num, sampled_nodes)` selected APPR roots.
@@ -390,9 +408,8 @@ whole privacy–utility curve, and each checkpoint carries the guarantee for the
 model as released at that step. Evaluation consumes no sampling randomness, so a
 tracked run follows exactly the same trajectory as an untracked one.
 
-Higher-level drivers live in `scripts/`: `ladder_stage01.sh` (baselines and the
-sparsification sweep, no DP), `ladder_stage2.sh` (clip+noise, then epsilon), and
-`sweep.sh <axis>` for one-axis tuning.
+Reusable setup, calibration, reporting, and plotting tools live in `scripts/`;
+see [scripts/README.md](scripts/README.md). Cluster launchers live in `sbatch/`.
 
 The SparseGNN study runner (`results/eight_gpu_domain_graphsaint/sparse/run.py`)
 accepts a positive integer `batch_size <= n_train` in its JSON cell. This is
@@ -401,6 +418,44 @@ the expected Poisson root count: set `p1 = batch_size / n_train`,
 `steps = epochs * steps_per_epoch` for a full run. Changing batch size at a
 fixed epoch budget changes both sampling probability and update count;
 recalibrate noise for the new schedule rather than reusing the old multiplier.
+
+### Test confidence intervals
+
+Both maintained runners (`src.experiments.run` and `src.experiments.sparse`)
+calculate **95% node-wise percentile bootstrap intervals using 1,000 resamples**
+by default. Only the final test evaluation is bootstrapped: training, validation,
+checkpoint selection, and intermediate tracked rows are unchanged. The model
+runs its existing test inference once; resamples reuse those fixed predictions,
+including the same sampled evaluation graph/noisy ProGAP aggregates.
+
+Both runners accept:
+
+```text
+--bootstrap-confidence 0.95 --bootstrap-resamples 1000 --bootstrap-seed 0
+```
+
+Confidence is a fraction strictly between 0 and 1 (`0.95` means 95%).
+Use `--bootstrap-resamples 0` to disable intervals. The configuration-driven
+runner also accepts top-level JSON keys `bootstrap_confidence`,
+`bootstrap_resamples`, and `bootstrap_seed`; supplied CLI flags override them.
+These are evaluation controls, not entries in the model's `parameters` object.
+
+Results contain `test_confidence_intervals`, with confidence level, requested
+resamples, local seed, scored-node count, and per-metric `lower`, `upper`, and
+`valid_resamples`. SparseGNN stores the same object in a JSON-valued CSV column;
+intermediate rows leave it blank. Metric names are canonical (`accuracy`,
+`macro_f1`, `micro_f1`, `auroc`, `micro_auroc`, `r2`), independent of legacy point
+estimate field aliases. Only metrics reported by that evaluator receive intervals.
+Multilabel micro-AUROC resamples whole nodes with all their labels together.
+Undefined replicates (e.g. AUROC with one class) are excluded and counted,
+not redrawn; undefined original metrics or no valid replicates yield null bounds.
+
+The bootstrap has an independent RNG and does not change training or point
+estimates. These are approximate test-sample intervals conditional on a fixed
+model and graph, not training-seed uncertainty or a correction for graph
+dependence/test-based tuning. Test data are assumed public/fixed, as in the
+existing evaluation protocol; private test releases need separate accounting.
+Historical result files and archived study runners are not rewritten.
 
 ### Degree capping
 

@@ -18,6 +18,8 @@ from typing import Any
 
 import torch
 
+from src.models.bootstrap import BootstrapConfig
+
 
 UPSTREAM_METHODS = {
     "progap": {
@@ -121,6 +123,11 @@ def _target_environment(
     task_metadata: dict[str, Any],
 ) -> dict[str, str]:
     """Encode ProGAP controls without ambient-environment aliases."""
+    bootstrap = BootstrapConfig(
+        confidence_level=config.get("bootstrap_confidence", 0.95),
+        n_resamples=config.get("bootstrap_resamples", 1000),
+        seed=config.get("bootstrap_seed", 0),
+    )
     prohibited = {"PROGAP_TARGET_EPSILON", "PROGAP_TARGET_DELTA", "PROGAP_EPSILON"}
     conflicting = prohibited & set(configured_env)
     if conflicting:
@@ -145,6 +152,9 @@ def _target_environment(
         "PROGAP_TARGET_EPSILON": str(epsilon),
         "PROGAP_TARGET_DELTA": str(delta),
         "PROGAP_SEED": str(int(config.get("seed", 0))),
+        "PROGAP_BOOTSTRAP_CONFIDENCE": str(bootstrap.confidence_level),
+        "PROGAP_BOOTSTRAP_RESAMPLES": str(bootstrap.n_resamples),
+        "PROGAP_BOOTSTRAP_SEED": str(bootstrap.seed),
     }
     supported = {
         "target_epsilon", "target_delta", "epochs", "batch_size", "max_degree",
@@ -230,17 +240,17 @@ class UpstreamBaseline:
         if not source.exists():
             raise FileNotFoundError(f"upstream source directory not found: {source}")
         task_metadata = _task_metadata(split)
+        configured_env = self.config.get("environment", {})
+        if not isinstance(configured_env, dict) or not all(
+                isinstance(key, str) and isinstance(value, (str, int, float))
+                for key, value in configured_env.items()):
+            raise ValueError("environment must be a string-keyed configuration mapping")
+        target_environment = _target_environment(
+            self.config, configured_env, task_metadata
+        )
         with tempfile.TemporaryDirectory(prefix=f"{self.method}-partitions-") as temporary:
             manifest = export_partitions(split, temporary)
             result_path = Path(temporary) / "result.json"
-            configured_env = self.config.get("environment", {})
-            if not isinstance(configured_env, dict) or not all(
-                    isinstance(key, str) and isinstance(value, (str, int, float))
-                    for key, value in configured_env.items()):
-                raise ValueError("environment must be a string-keyed configuration mapping")
-            target_environment = _target_environment(
-                self.config, configured_env, task_metadata
-            )
             inherited_environment = {
                 key: value for key, value in os.environ.items()
                 if key not in _PROGAP_TASK_ENVIRONMENT

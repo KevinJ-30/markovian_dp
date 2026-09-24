@@ -7,11 +7,8 @@
 # ICE is free and non-preemptible for instructional use — no embers/inferno, no
 # billing — which is why we run here.
 #
-# Before submitting, on an ICE login node: clone the repo into scratch, build
-# the venv there, and cache the Facebook .mat:
-#     cd ~/scratch && git clone https://github.com/KevinJ-30/markovian_dp.git
-#     cd markovian_dp && git checkout sparse_expand_clean
-#     bash scripts/setup_pace.sh facebook     # venv + Facebook + tests
+# Before submitting, provision the scratch checkout, Python environment, and
+# Facebook dataset referenced below. See README.md for Python dependencies.
 
 #SBATCH -Jfacebook_dp
 #SBATCH -A coc                             # ICE account (sacctmgr)

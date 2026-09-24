@@ -9,7 +9,7 @@ multi-term hypergeometric RDP accountant.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite
+from math import isfinite, isnan
 from typing import Any, Iterable
 
 import torch
@@ -21,6 +21,7 @@ from opacus.optimizers import DPOptimizer
 from src.models.baselines import (
     _OneHopGCN, _OneHopGraphSAGE, _PaddedOneHopGCN, _PaddedOneHopGraphSAGE,
 )
+from src.models.bootstrap import BootstrapConfig, BootstrapMetrics
 from src.models.objectives import _metric_rows, _task_loss, _task_metric
 from src.processing.dpgnn import (
     iter_dpgnn_batches, sample_dpgnn_roots, sample_training_edges,
@@ -51,6 +52,16 @@ class DPGNNConfig:
     metric_ignore_label: int | None = None
     architecture: str = "graphsage"
     dropout: float = 0.5
+    bootstrap_confidence: float = 0.95
+    bootstrap_resamples: int = 1000
+    bootstrap_seed: int = 0
+
+    def __post_init__(self) -> None:
+        BootstrapConfig(
+            confidence_level=self.bootstrap_confidence,
+            n_resamples=self.bootstrap_resamples,
+            seed=self.bootstrap_seed,
+        )
 
 
 def _inverse_degree_weights(edge_index: torch.Tensor, num_nodes: int,
@@ -69,6 +80,8 @@ class PartitionedDPGNN:
             raise ValueError("binary, multilabel, and regression tasks are mutually exclusive")
         if config.steps < 1 or config.batch_size < 1:
             raise ValueError("steps and batch_size must be positive")
+        if config.evaluate_every < 0:
+            raise ValueError("evaluate_every must be nonnegative")
         if not isfinite(config.noise_multiplier) or config.noise_multiplier <= 0.0:
             raise ValueError("noise_multiplier must be positive and finite")
         if not isfinite(config.clip) or config.clip <= 0.0:
@@ -134,7 +147,10 @@ class PartitionedDPGNN:
             current = following
 
     @torch.no_grad()
-    def evaluate(self, model: torch.nn.Module, data: Any, *, seed: int) -> float:
+    def evaluate(
+        self, model: torch.nn.Module, data: Any, *, seed: int,
+        bootstrap: BootstrapMetrics | None = None,
+    ) -> float:
         model.eval()
         x, labels, edge_index, weights = self._prepared_graph(data, seed=seed)
         predictions = model(x, edge_index, weights)
@@ -144,6 +160,8 @@ class PartitionedDPGNN:
             eval_mask=getattr(data, "eval_mask", None),
             metric_ignore_label=self.config.metric_ignore_label,
         )
+        if bootstrap is not None:
+            bootstrap.update(predictions, labels)
         return _task_metric(
             predictions, labels, self.config.multilabel,
             regression=self.config.regression, binary=self.config.binary)[0]
@@ -188,8 +206,13 @@ class PartitionedDPGNN:
             optimizer=adam, noise_multiplier=2 * max_terms * self.config.noise_multiplier,
             max_grad_norm=self.config.clip, expected_batch_size=self.config.batch_size,
             loss_reduction="mean", generator=noise_generator, secure_mode=False)
+        evaluate_every = self.config.evaluate_every or (
+            (num_nodes + self.config.batch_size - 1) // self.config.batch_size)
+        best_state = None
+        best_validation = float("nan")
+        best_step = 0
         private_module.train()
-        for _ in range(self.config.steps):
+        for step in range(1, self.config.steps + 1):
             roots = sample_dpgnn_roots(
                 num_nodes, self.config.batch_size, generator=root_generator)
             batches = iter_dpgnn_batches(
@@ -197,19 +220,55 @@ class PartitionedDPGNN:
                 max_subgraph_nodes=self.config.max_subgraph_nodes,
                 max_padded_nodes=self.config.max_private_batch_nodes, device=self.device)
             self._private_step(private_module, optimizer, batches)
+            if step % evaluate_every == 0 or step == self.config.steps:
+                validation = self.evaluate(model, val, seed=self.config.seed + 3)
+                if best_state is None or (
+                    not isnan(validation)
+                    and (isnan(best_validation) or validation > best_validation)
+                ):
+                    best_state = {
+                        name: value.detach().cpu().clone()
+                        for name, value in model.state_dict().items()
+                    }
+                    best_validation = validation
+                    best_step = step
+                # Full-graph evaluation shares the private view's layers.
+                # Restore their training mode before the next Opacus update.
+                private_module.train()
         private_module.to_standard_module()
+        assert best_state is not None
+        model.load_state_dict(best_state)
         delta = 1.0 / (10 * num_nodes)
         metric = ("r2" if self.config.regression
                   else "auroc" if self.config.binary
                   else "micro_f1" if self.config.multilabel
                   else "accuracy")
-        return {
+        bootstrap = (
+            BootstrapMetrics(
+                metric,
+                BootstrapConfig(
+                    confidence_level=self.config.bootstrap_confidence,
+                    n_resamples=self.config.bootstrap_resamples,
+                    seed=self.config.bootstrap_seed,
+                ),
+                metrics=(metric,),
+            )
+            if self.config.bootstrap_resamples else None
+        )
+        result = {
             "model": model,
             "architecture": self.config.architecture,
             # Keys are metric-named; publish the name so callers can resolve.
             "metric": metric,
-            f"validation_{metric}": self.evaluate(model, val, seed=self.config.seed + 3),
-            f"test_{metric}": self.evaluate(model, test, seed=self.config.seed + 4),
+            "selection": {
+                "metric": metric,
+                "step": best_step,
+                "validation_score": None if isnan(best_validation) else best_validation,
+                "evaluate_every": evaluate_every,
+            },
+            f"validation_{metric}": best_validation,
+            f"test_{metric}": self.evaluate(
+                model, test, seed=self.config.seed + 4, bootstrap=bootstrap),
             "epsilon": multiterm_dpsgd_epsilon(
                 steps=self.config.steps, noise_multiplier=self.config.noise_multiplier,
                 delta=delta, num_samples=num_nodes,
@@ -217,3 +276,6 @@ class PartitionedDPGNN:
                 max_terms=max_terms),
             "delta": delta,
         }
+        if bootstrap is not None:
+            result["test_confidence_intervals"] = bootstrap.compute()
+        return result

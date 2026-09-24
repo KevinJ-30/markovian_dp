@@ -456,3 +456,110 @@ def test_regression_evaluate_scores_only_selected_targets_with_negative_r2():
     trainer = PartitionedDPGNN(DPGNNConfig(
         num_classes=1, regression=True, steps=1, batch_size=1, noise_multiplier=1.0))
     assert trainer.evaluate(FixedModel(), data, seed=0) == pytest.approx(-9.0)
+
+
+@pytest.mark.parametrize("candidates,undefined,selected_step,validation_score,test_score", [
+    ((3.0, 3.0, 4.0), False, 2, -4.0, 1.0),
+    ((4.0, 3.0, 2.0), False, 5, -1.0, 0.0),
+    ((3.0, 2.0, 4.0), True, 2, None, 1.0),
+])
+def test_fit_restores_validation_selected_model_for_test_and_bootstrap(
+        candidates, undefined, selected_step, validation_score, test_score):
+    edges = torch.empty((2, 0), dtype=torch.long)
+    train = SimpleNamespace(
+        num_nodes=2, x=torch.ones(2, 1), y=torch.tensor([0.0, 2.0]),
+        edge_index=edges)
+    val = SimpleNamespace(
+        **vars(train), eval_mask=torch.full((2,), not undefined, dtype=torch.bool))
+    test = SimpleNamespace(
+        num_nodes=2, x=train.x, y=torch.full((2,), 3.0), edge_index=edges)
+
+    class ControlledDPGNN(PartitionedDPGNN):
+        updates = 0
+
+        def _private_step(self, model, optimizer, batches):
+            # Real private updates exercise Opacus after each validation pass.
+            super()._private_step(model, optimizer, batches)
+            self.updates += 1
+            # Give candidates distinct predictions, including a negative-R² tie.
+            prediction = candidates[{2: 0, 4: 1, 5: 2}.get(self.updates, 0)]
+            with torch.no_grad():
+                model._module.decoder.weight.zero_()
+                model._module.decoder.bias.fill_(prediction)
+
+        def evaluate(self, model, data, *, seed, bootstrap=None):
+            if data is val:
+                self.validation_steps.append(self.updates)
+                assert seed == self.config.seed + 3
+                assert bootstrap is None
+            else:
+                assert data is test
+                assert self.updates == self.config.steps
+            return super().evaluate(model, data, seed=seed, bootstrap=bootstrap)
+
+    config = DPGNNConfig(
+        num_classes=1, regression=True, steps=5, batch_size=2,
+        noise_multiplier=1.0, evaluate_every=2, seed=17,
+        latent_size=3, bootstrap_resamples=20)
+    trainer = ControlledDPGNN(config)
+    trainer.validation_steps = []
+    result = trainer.fit(train, val, test)
+    assert trainer.updates == 5
+    assert trainer.validation_steps == [2, 4, 5]
+    assert result["selection"] == {
+        "metric": "r2", "step": selected_step,
+        "validation_score": validation_score, "evaluate_every": 2,
+    }
+    if validation_score is None:
+        assert np.isnan(result["validation_r2"])
+    else:
+        assert result["validation_r2"] == pytest.approx(validation_score)
+    assert result["test_r2"] == pytest.approx(test_score)
+    selected_prediction = candidates[{2: 0, 4: 1, 5: 2}[selected_step]]
+    torch.testing.assert_close(
+        result["model"](test.x, torch.tensor([[0, 1], [0, 1]]), torch.ones(2)),
+        torch.full((2, 1), selected_prediction))
+    intervals = result["test_confidence_intervals"]
+    assert intervals["n_observations"] == 2
+    assert intervals["metrics"]["r2"] == {
+        "lower": test_score, "upper": test_score, "valid_resamples": 20,
+    }
+    accountant = RdpAccountant(np.arange(1, 10, 0.1)[1:])
+    accountant.compose(GaussianDpEvent(config.noise_multiplier), count=config.steps)
+    assert result["epsilon"] == pytest.approx(
+        accountant.get_epsilon(result["delta"]), rel=0, abs=1e-10)
+
+
+def test_validation_cadence_preserves_private_updates_and_dropout_rng():
+    class ObservedDPGNN(PartitionedDPGNN):
+        def _private_step(self, model, optimizer, batches):
+            super()._private_step(model, optimizer, batches)
+            self.states.append({
+                name: value.detach().clone()
+                for name, value in model.state_dict().items()
+            })
+
+    graph = SimpleNamespace(
+        num_nodes=6, x=torch.arange(18, dtype=torch.float32).reshape(6, 3) / 10,
+        y=torch.tensor([0, 1, 0, 1, 0, 1]),
+        edge_index=torch.tensor([[0, 1, 2, 3, 4], [1, 2, 3, 4, 5]]))
+    trajectories = []
+    for evaluate_every in (1, 0):
+        trainer = ObservedDPGNN(DPGNNConfig(
+            num_classes=2, steps=5, batch_size=4, noise_multiplier=1.0,
+            evaluate_every=evaluate_every, seed=11, latent_size=4,
+            dropout=0.5, bootstrap_resamples=0))
+        trainer.states = []
+        result = trainer.fit(graph, graph, graph)
+        assert result["selection"]["evaluate_every"] == (evaluate_every or 2)
+        trajectories.append(trainer.states)
+    for frequent, epoch in zip(*trajectories):
+        for name in frequent:
+            torch.testing.assert_close(frequent[name], epoch[name], rtol=0, atol=0)
+
+
+def test_negative_evaluation_interval_is_rejected():
+    with pytest.raises(ValueError, match="evaluate_every"):
+        PartitionedDPGNN(DPGNNConfig(
+            num_classes=2, steps=1, batch_size=1, noise_multiplier=1.0,
+            evaluate_every=-1))

@@ -21,6 +21,7 @@ from src.processing.splits import _induce, graph_statistics
 from src.privacy.accountants import DPARAccountant, PrivacyResult, calibrate_dpar_noise
 
 from src.models.baselines import DPARMLP
+from src.models.bootstrap import BootstrapConfig, BootstrapMetrics
 
 from src.models.objectives import _metric_rows, _task_loss, _task_metric
 
@@ -61,8 +62,16 @@ class DPARConfig:
     regression: bool = False
     binary: bool = False
     metric_ignore_label: int | None = None
+    bootstrap_confidence: float = 0.95
+    bootstrap_resamples: int = 1000
+    bootstrap_seed: int = 0
 
     def __post_init__(self) -> None:
+        BootstrapConfig(
+            confidence_level=self.bootstrap_confidence,
+            n_resamples=self.bootstrap_resamples,
+            seed=self.bootstrap_seed,
+        )
         if sum((self.multilabel, self.regression, self.binary)) > 1:
             raise ValueError("binary, multilabel, and regression tasks are mutually exclusive")
         selectors = (self.sampled_train_rate is not None, self.sampled_train_nodes is not None)
@@ -309,7 +318,10 @@ class DPARTrainer:
         self.config = config
         self.device = torch.device(device)
 
-    def _evaluate(self, model: DPARMLP, partition: Any) -> tuple[float, float]:
+    def _evaluate(
+        self, model: DPARMLP, partition: Any, *,
+        bootstrap: BootstrapMetrics | None = None,
+    ) -> tuple[float, float]:
         data = partition.data.to(self.device)
         model.eval()
         with torch.no_grad():
@@ -322,6 +334,8 @@ class DPARTrainer:
             eval_mask=getattr(partition, "eval_mask", None),
             metric_ignore_label=self.config.metric_ignore_label,
         )
+        if bootstrap is not None:
+            bootstrap.update(logits, labels)
         return _task_metric(
             logits, labels, self.config.multilabel,
             regression=self.config.regression, binary=self.config.binary)
@@ -405,7 +419,20 @@ class DPARTrainer:
         assert best_state is not None
         model.load_state_dict(best_state)
         validation, validation_secondary = self._evaluate(model, split.val)
-        test, test_secondary = self._evaluate(model, split.test)
+        bootstrap = (
+            BootstrapMetrics(
+                "r2" if self.config.regression else
+                "auroc" if self.config.binary else
+                "micro_f1" if self.config.multilabel else "accuracy",
+                BootstrapConfig(
+                    confidence_level=self.config.bootstrap_confidence,
+                    n_resamples=self.config.bootstrap_resamples,
+                    seed=self.config.bootstrap_seed,
+                ),
+            )
+            if self.config.bootstrap_resamples else None
+        )
+        test, test_secondary = self._evaluate(model, split.test, bootstrap=bootstrap)
         privacy = self._privacy(
             int(full_train_data.num_nodes), sampled_nodes, ppr_releases, effective_config
         )
@@ -435,6 +462,8 @@ class DPARTrainer:
             result["metric"] = "r2"
         if calibration is not None:
             result["calibration"] = calibration.as_dict()
+        if bootstrap is not None:
+            result["test_confidence_intervals"] = bootstrap.compute()
         return result
 
     def _private_step(self, model: DPARMLP, optimizer: torch.optim.Optimizer, x: Tensor, y: Tensor,
