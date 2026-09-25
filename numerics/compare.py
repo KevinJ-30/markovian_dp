@@ -69,13 +69,13 @@ def daigavane_rdp(population, batch_size, max_terms, sigma, orders=ORDERS):
     return logsumexp(log_probs + exponent, axis=1) / (orders - 1)
 
 
-def parse_args():
+def argument_parser():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--p1", type=float, default=0.01)
     parser.add_argument("--p2", type=float, nargs="+", default=[0.1, 0.25, 0.5, 0.75])
     parser.add_argument("--degree", type=int, default=5)
-    parser.add_argument("--sigma", type=float, default=10.0,
+    parser.add_argument("--sigma", type=float, default=2.0,
                         help="Gaussian noise standard deviation divided by C")
     parser.add_argument("--population", type=int, default=100000,
                         help="Daigavane population N; N*p1 must be an integer")
@@ -92,7 +92,11 @@ def parse_args():
     parser.add_argument("--epsilon-max", type=float, default=10.0)
     parser.add_argument("--points", type=int, default=600)
     parser.add_argument("--out-dir", type=Path, default=Path(__file__).resolve().parent / "figures")
-    
+    return parser
+
+
+def parse_args(parser=None):
+    parser = argument_parser() if parser is None else parser
     args = parser.parse_args()
     
     if not 0 < args.p1 <= 1 or any(not 0 <= p < 1 for p in args.p2):
@@ -150,7 +154,7 @@ def composition_profiles(plds, base_rdp, iterations, delta):
     return curves, composed
 
 
-def draw_panel(ax, x, curves, radius, args, *, composition=False):
+def draw_curves(ax, x, curves, args):
     colors = ["#0072B2", "#009E73", "#D55E00", "#CC79A7", "#56B4E9", "#E69F00"]
     ax.plot(x, curves[0], color="0.2", linestyle=":", linewidth=3, alpha=1,
             label="Daigavane et al. (RDP)")
@@ -159,6 +163,10 @@ def draw_panel(ax, x, curves, radius, args, *, composition=False):
     for index, (p2, values) in enumerate(zip(args.p2, curves[2:])):
         ax.plot(x, values, color=colors[index % len(colors)], linewidth=2.8, alpha=1,
                 label=rf"Ours ($p_2={p2:g}$)")
+
+
+def draw_panel(ax, x, curves, radius, args, *, composition=False):
+    draw_curves(ax, x, curves, args)
     if composition:
         delta_label = matplotlib.ticker.ScalarFormatter(useMathText=True).format_data(args.delta)
         ax.set(xlabel=r"Composition iterations $T$", ylabel=r"$\epsilon$",
@@ -174,14 +182,17 @@ def draw_panel(ax, x, curves, radius, args, *, composition=False):
     ax.spines[["top", "right"]].set_visible(False)
 
 
-def main():
-    
-    args = parse_args()
-    args.out_dir.mkdir(parents=True, exist_ok=True)
+def set_plot_style():
     plt.rcParams.update({"font.family": "serif", "font.size": 18,
                          "axes.labelsize": 22, "axes.titlesize": 21,
                          "xtick.labelsize": 17, "ytick.labelsize": 17,
                          "mathtext.fontset": "stix", "pdf.fonttype": 42})
+
+
+def main():
+    args = parse_args()
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    set_plot_style()
     batch_size = round(args.population * args.p1)
     iterations = np.unique(np.concatenate(([0], np.rint(
         np.linspace(1, args.steps, min(args.steps, args.iteration_points))).astype(int))))
@@ -238,28 +249,19 @@ def main():
                 writer.writerows((radius, args.steps, method, p2, float(e), float(d), float(raw))
                                  for e, d, raw in zip(epsilon, delta, raw_delta))
             panels = [
-                (iterations, epsilon_curves, True, f"epsilon_r{radius}_vs_t"),
-                (epsilon, curves, False, f"delta_r{radius}_t{args.steps}"),
+                (iterations, epsilon_curves, True),
+                (epsilon, curves, False),
             ]
-            for col, (x, values, is_composition, filename) in enumerate(panels):
+            for col, (x, values, is_composition) in enumerate(panels):
                 panel_label = ("(a)", "(b)", "(c)", "(d)")[2 * row + col]
-                figure, ax = plt.subplots(figsize=(8, 6))
-                for panel_ax in (axes[2 * row + col], ax):
-                    draw_panel(panel_ax, x, values, radius, args, composition=is_composition)
-                    panel_ax.set_title(f"{panel_label} {panel_ax.get_title()}")
-                figure.legend(*ax.get_legend_handles_labels(), loc="upper center",
-                              bbox_to_anchor=(0.5, 0.99), ncol=2, fontsize=16)
-                figure.tight_layout(rect=(0, 0, 1, 0.76))
-                for extension in ("png", "pdf"):
-                    figure.savefig(args.out_dir / f"{filename}.{extension}", dpi=180,
-                                   bbox_inches="tight", pad_inches=0.15)
-                plt.close(figure)
-                print(f"Saved {filename}", flush=True)
+                ax = axes[2 * row + col]
+                draw_panel(ax, x, values, radius, args, composition=is_composition)
+                ax.set_title(f"{panel_label} {ax.get_title()}")
     handles, labels = axes[0].get_legend_handles_labels()
     overview.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.99),
                     ncol=6, fontsize=17)
     overview.subplots_adjust(left=0.04, right=0.98, bottom=0.19, top=0.77, wspace=0.22)
-    for extension in ("png", "pdf"):
+    for extension in ("png", "pdf", "svg"):
         overview.savefig(args.out_dir / f"comparison.{extension}", dpi=180,
                          bbox_inches="tight", pad_inches=0.15)
     plt.close(overview)

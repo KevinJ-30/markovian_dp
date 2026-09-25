@@ -183,8 +183,17 @@ class BaselineTrainer:
         )
         best_state = None
         best_val = float("-inf")
+        selected_epoch = selected_step = epochs_completed = completed_updates = 0
+        selected_validation = float("nan")
+
+        def record_update(_optimizer, _args, _kwargs):
+            nonlocal completed_updates
+            completed_updates += 1
+
+        # Empty Poisson draws do not execute Adam in this trainer.
+        update_hook = optimizer.register_step_post_hook(record_update)
         started = time.perf_counter()
-        for _ in range(self.config.epochs):
+        for epoch in range(1, self.config.epochs + 1):
             model.train()
             if self.config.method in {"graphsage", "gin"}:
                 assert sampler is not None
@@ -197,6 +206,7 @@ class BaselineTrainer:
             else:
                 for _ in range(steps_per_epoch):
                     self._step(model, optimizer, train, generator)
+            epochs_completed = epoch
             validation, _ = self._evaluate(model, split.val)
             if not math.isnan(validation) and validation > best_val:
                 best_val = validation
@@ -204,6 +214,8 @@ class BaselineTrainer:
                     name: value.detach().cpu().clone()
                     for name, value in model.state_dict().items()
                 }
+                selected_epoch, selected_step = epoch, completed_updates
+                selected_validation = validation
             elif best_state is None:
                 # Preserve an explicit NaN metric for an unscorable validation
                 # partition while still returning a trained model.
@@ -211,7 +223,10 @@ class BaselineTrainer:
                     name: value.detach().cpu().clone()
                     for name, value in model.state_dict().items()
                 }
+                selected_epoch, selected_step = epoch, completed_updates
+                selected_validation = validation
         training_seconds = time.perf_counter() - started
+        update_hook.remove()
         assert best_state is not None
         model.load_state_dict(best_state)
         validation, val_f1 = self._evaluate(model, split.val)
@@ -240,6 +255,22 @@ class BaselineTrainer:
             "method": self.config.method, "config": asdict(self.config),
             "preprocessing_seconds": 0.0, "training_seconds": training_seconds,
             "privacy": privacy, "train_graph": split.train.stats,
+            "completed_updates": completed_updates,
+            "completed_steps": epochs_completed * steps_per_epoch,
+            "selection": {
+                "metric": (
+                    "r2" if self.config.regression else
+                    "auroc" if self.config.binary else
+                    "micro_f1" if self.config.multilabel else "accuracy"
+                ),
+                "validation_score": selected_validation,
+                "epoch": selected_epoch,
+                "step": selected_step,
+                "evaluate_every": steps_per_epoch,
+                "epochs_completed": epochs_completed,
+                "completed_updates": completed_updates,
+                "completed_steps": epochs_completed * steps_per_epoch,
+            },
         }
         if self.config.binary:
             result.update({

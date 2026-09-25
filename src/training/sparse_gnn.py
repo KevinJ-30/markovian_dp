@@ -196,8 +196,11 @@ def train_sparse_gnn(
                          Logging does not add selection candidates.
 
     Returns:
-        Metrics from the restored model and 'selection' metadata; plus 'history'
-        when track_every > 0. History records the models at those actual steps.
+        Metrics from the restored model, 'selection' metadata, and
+        'sampling_statistics' over all actual rooted training subgraphs (not
+        evaluation graphs or padding); plus 'history' when track_every > 0.
+        History records the models at those actual steps. With no sampled roots,
+        means are None and count/maxima are zero.
     """
     if eval_every < 0:
         raise ValueError("eval_every must be nonnegative")
@@ -238,11 +241,21 @@ def train_sparse_gnn(
     best_state = None
     best_val = None
     best_step = 0
+    sampled_count = total_nodes = total_edges = 0
+    max_nodes = max_edges = 0
     for t in range(1, T + 1):
         roots = sample_roots(num_nodes, p1, generator=sample_gen,
                              candidate_nodes=candidate_nodes)
         subgraphs = batch_sparse_expand(
             adj, roots, p2, r, generator=sample_gen, direction=direction)
+        # Shape metadata only: no extra sampling, copies, or tensor reductions.
+        sampled_count += len(subgraphs)
+        for subgraph in subgraphs:
+            nodes, edges = subgraph.num_nodes, subgraph.num_edges
+            total_nodes += nodes
+            total_edges += edges
+            max_nodes = max(max_nodes, nodes)
+            max_edges = max(max_edges, edges)
 
         if dp:
             # Always execute the logical mechanism.  An empty root draw becomes
@@ -297,6 +310,13 @@ def train_sparse_gnn(
         "step": best_step,
         "validation_score": best_val,
         "evaluate_every": evaluate_every,
+    }
+    final["sampling_statistics"] = {
+        "count": sampled_count,
+        "mean_nodes": total_nodes / sampled_count if sampled_count else None,
+        "mean_edges": total_edges / sampled_count if sampled_count else None,
+        "max_nodes": max_nodes,
+        "max_edges": max_edges,
     }
     if track_every:
         final['history'] = history

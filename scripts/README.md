@@ -22,7 +22,135 @@ study-specific figure recipes have been removed.
 The Python utilities expose `--help`. GraphSAINT setup accepts an input ZIP
 directory and an optional destination; see the root README.
 
+### SparseExpand paper ablations
+
+All **60 one-factor configurations** belong to one `OUT_ROOT`, following the
+`full_matrix.sh` layout. The study uses `ogbn-arxiv`, `saint-yelp`, and
+`twitch-allbut2`, both SAGE and GIN backends, epsilon 8, and training seed 0.
+The anchor is radius 1, edge-retention probability 0.5, and outgoing-degree
+cap 10. Vary radius `{1,2,3}`, probability `{0.05,0.1,0.25,0.5,1}`, or outgoing
+cap `{5,10,20,40}` while holding the other two at the anchor. The shared anchor
+runs once; there are no probability-by-cap interactions.
+
+Batch 256, LR 0.01, 20 epochs, hidden 128, two GNN layers, dropout 0.5, and
+seed-0 splits stay fixed. Expansion depth does not change architecture depth.
+The outgoing preprocessing cap is distinct from the fixed 20-edge incoming
+sampling cap; `p2=1` is not an uncapped full-graph baseline. Noise is recalibrated
+per configuration at the dataset-specific delta. The current chi=1,
+`union_safe=False` accounting policy is retained, not silently corrected.
+
+Sequential execution, followed by rendering:
+
+```bash
+PYTHON=/path/to/environment/bin/python DEVICE=cuda \
+  OUT_ROOT=results/sparse_ablation_ofat \
+  bash scripts/sparse_ablation_ofat.sh
+```
+
+Alternatively, use the existing opportunistic multi-GPU queue, validation, and
+rendering pipeline:
+
+```bash
+PYTHON=/path/to/environment/bin/python \
+  OUT_ROOT=results/sparse_ablation_ofat \
+  bash scripts/sparse_ablation_paper.sh
+```
+
+Choose one mode, not both. Add `--dry-run` to either script to preview the
+60 worker commands and rendering commands without creating files or training.
+Paths are relative to the repository; use a fresh `OUT_ROOT` for new training.
+Queued resumes/retries use `full_matrix_queue.py --ablation-ofat --batch-size 256`
+with the same root; diagnose cleanly exited failures before `--retry-failed`.
+`--report-only` validates completed outputs without launching training.
+Changed source fingerprints require a fresh training study, not mixed versions.
+
+The renderer consumes that **same run folder**, without retraining:
+
+```bash
+python scripts/sparse_ablation.py \
+  --ofat-root results/sparse_ablation_ofat_supervised_20260925
+```
+
+Layout:
+
+```text
+OUT_ROOT/
+  runs/<dataset>/<backend>/<configuration>/seed0/
+  manifest.json
+  source_snapshot/
+  figures/
+    ablation_sage.png
+    ablation_sage.pdf
+    ablation_gin.png
+    ablation_gin.pdf
+    per_run.csv
+    curves.csv
+    provenance.json
+```
+
+Sequential workers write directly under `runs/`, with logs under `logs/`.
+The supervised queue retains immutable `attempts/` and publishes relative
+`runs/` links to accepted outputs; it also writes `requests.json`,
+`queue_state.json`, `results.csv`, and `summary.csv`/`summary.md` at the run root.
+Keep the entire folder when archiving. Historical source snapshots and invocation
+paths remain unchanged evidence, even if the current renderer has moved.
+
+Each backend gets one chart with **three horizontally arranged grouped bar
+panels**: radius, probability, and outgoing cap. Each parameter label has three
+dataset-colored bars, identified by a shared legend; there is no chart title.
+The y-axis reads "Test metric": accuracy for ogbn-arxiv, micro-F1 for Yelp, and
+AUROC for Twitch. These different metrics are not averaged. Bars retain the exact stored
+95% node-bootstrap endpoints (1,000 resamples, bootstrap seed 0) from each
+validation-selected checkpoint. They quantify test-node uncertainty, not
+training-seed variability or dependence between graph nodes.
+
+`per_run.csv` retains all 60 runs; `curves.csv` contains 72 plotted points because
+the anchor is referenced in all three parameter panels, without extra training.
+Both preserve peak process RSS, peak CUDA allocation, calibration/training time,
+sampled-node/edge statistics, raw result paths, and exact intervals. Diagnostics
+are retained as data, not separate plots or additional DP releases. CUDA memory
+is allocator peak, RSS is process-lifetime high-water mark, and CPU CUDA values
+are unavailable rather than zero. Timing includes calibration, training, and
+final evaluation but excludes loading.
+
+The renderer verifies manifests, artifact hashes, actual settings, and checkpoint
+selection. It never overwrites a figure directory. For another reconstruction,
+pass `--out-dir OUT_ROOT/figures_rebuilt`. Provenance records input/output hashes,
+analysis sources, and versions. Existing full-matrix studies and original raw
+ablation outputs are never rewritten.
+
 ### Full final-experiment matrix
+
+For the fixed **336-configuration** campaign, start the direct opportunistic queue:
+
+```bash
+python scripts/full_matrix_queue.py --out-root results/full_matrix_queued_YYYYMMDD
+```
+For a separate batch-256 study, add `--batch-size 256` and use a fresh output
+root. Supply the same flag when resuming or using `--report-only`; a mismatched
+saved grid is rejected. The default batch-1024 grid and existing results remain
+unchanged.
+
+
+It admits authorized GPUs at utilization strictly below 30% with positive free
+memory, including GPUs with other workloads. Two distinct eligible samples and
+a fresh probe under the UUID lock are required. Running workers are not cancelled
+when utilization rises. Healthy workers have no wall-time limit; OOMs retain their
+attempt evidence and defer for five minutes after three attempts.
+Reuse the same output root to resume. After diagnosing a cleanly exited failure,
+use `--retry-failed` to retry it in a new attempt directory; unresolved ownership
+remains blocked. `--report-only` validates saved commitments and regenerates tables
+without GPU discovery or process recovery, returning zero only for 336 valid results.
+These two flags are mutually exclusive.
+
+`summary.md`, `summary.csv`, and `results.csv` retain every configuration in registry
+order, including pending and failed rows. The summaries include validation-selected
+scores, task-specific metrics, exact stored bootstrap endpoints, actual JSON
+parameters, and original per-attempt CSV paths. No winners or rankings are selected.
+Raw attempt outputs are never rewritten by reporting. No separate
+dataset-preparation or smoke campaign is required.
+
+The general sequential shell utility remains available:
 
 Preview without loading data, creating outputs, or allocating a GPU:
 
@@ -57,7 +185,7 @@ The 11 protocols are `ogbn-arxiv`, `ogbn-products`, `reddit`, `facebook`,
 domains except the validation/test pair: respectively `engb/es`,
 `cornell5/penn94`, and `cn/de`. Splits remain fixed at seed 0 across training seeds.
 
-Private noise is calibrated per configuration at `delta=1/(10*N_train)`.
+Private noise is calibrated per configuration at `delta=1/N_train`.
 SparseGNN uses `p1=min(batch_size,N_train)/N_train`, `r=1`, directed outgoing
 degree cap 10, clip 1, and the current chi=1 accountant. SparseGNN and DP-GNN
 use `E*ceil(N_train/effective_batch)` updates and validate each such epoch.
@@ -155,14 +283,6 @@ never inferred from `epsilon_context`; private rows without epsilon are labeled
 `unknown`. For unknown private epsilon, `--best` keeps different configurations
 separate rather than comparing unrecorded privacy budgets. The CSV includes
 configuration IDs/settings, selected seeds, source paths, and selection labels.
-
-## Cluster helpers
-
-- `_ice_env.sh`: sourced by the ICE Slurm launchers to configure their environment.
-- `_matched_eps_grid.sh`: sourced by `sbatch/graphsaint_meps.sbatch` to run its
-  matched-budget grid.
-
-These are source-only helpers, not standalone training commands.
 
 ## Study-specific campaign helpers
 

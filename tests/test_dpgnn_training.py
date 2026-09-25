@@ -389,7 +389,9 @@ def test_noisy_adam_updates_are_independent_of_unequal_physical_chunks(
             wrapped.to_standard_module()
 
 
-def test_small_population_fit_uses_effective_terms_for_release_and_accounting():
+@pytest.mark.parametrize("requested_delta,weight_decay", [(None, 0.0), (1.0 / 3, 5e-4)])
+def test_small_population_fit_uses_effective_terms_for_release_and_accounting(
+        requested_delta, weight_decay):
     class ObservedDPGNN(PartitionedDPGNN):
         def _private_step(self, model, optimizer, batches):
             super()._private_step(model, optimizer, batches)
@@ -403,11 +405,13 @@ def test_small_population_fit_uses_effective_terms_for_release_and_accounting():
     held_out = SimpleNamespace(num_nodes=1, x=x[:1], y=y[:1], edge_index=edges)
     config = DPGNNConfig(
         num_classes=2, steps=2, batch_size=3, noise_multiplier=0.7, seed=0,
+        delta=requested_delta, weight_decay=weight_decay,
         evaluate_every=2,  # Compare the final update, not an earlier selected model.
         max_degree=5, latent_size=5, clip=0.2, max_private_batch_nodes=2, dropout=0.0)
     torch.manual_seed(config.seed)
     reference = _OneHopGraphSAGE(inputs=3, hidden=5, classes=2, dropout=0.0)
-    reference_adam = torch.optim.Adam(reference.parameters(), lr=config.learning_rate)
+    reference_adam = torch.optim.Adam(reference.parameters(), lr=config.learning_rate,
+                                      weight_decay=weight_decay)
     generator = torch.Generator().manual_seed(10_000)
     for _ in range(config.steps):
         _reference_adam_step(
@@ -419,7 +423,7 @@ def test_small_population_fit_uses_effective_terms_for_release_and_accounting():
     result = trainer.fit(train, held_out, held_out)
     _assert_adam_matches(
         result["model"], trainer.adam, reference, reference_adam, step=config.steps)
-    delta = 1.0 / 30
+    delta = requested_delta if requested_delta is not None else 1.0 / 30
     accountant = RdpAccountant(np.arange(1, 10, 0.1)[1:])
     accountant.compose(GaussianDpEvent(config.noise_multiplier), count=config.steps)
     assert result["delta"] == pytest.approx(delta)

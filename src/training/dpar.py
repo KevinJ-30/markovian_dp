@@ -386,8 +386,11 @@ class DPARTrainer:
         preprocessing_seconds = time.perf_counter() - preprocessing_start
         best_state = None
         best_val = float("-inf")
+        selected_epoch = selected_step = epochs_completed = completed_updates = 0
+        selected_validation = float("nan")
+        steps_per_epoch = math.ceil(ppr_releases / effective_config.batch_size)
         training_start = time.perf_counter()
-        for _ in range(effective_config.epochs):
+        for epoch in range(1, effective_config.epochs + 1):
             model.train()
             permutation = torch.randperm(ppr_releases, device=self.device, generator=sampling_generator)
             for root_indices in permutation.split(effective_config.batch_size):
@@ -403,6 +406,8 @@ class DPARTrainer:
                         regression=effective_config.regression,
                         binary=effective_config.binary).backward()
                     optimizer.step()
+                completed_updates += 1
+            epochs_completed = epoch
             val_metric, _ = self._evaluate(model, split.val)
             if not math.isnan(val_metric) and val_metric > best_val:
                 best_val = val_metric
@@ -410,11 +415,15 @@ class DPARTrainer:
                     name: value.detach().cpu().clone()
                     for name, value in model.state_dict().items()
                 }
+                selected_epoch, selected_step = epoch, completed_updates
+                selected_validation = val_metric
             elif best_state is None:
                 best_state = {
                     name: value.detach().cpu().clone()
                     for name, value in model.state_dict().items()
                 }
+                selected_epoch, selected_step = epoch, completed_updates
+                selected_validation = val_metric
         training_seconds = time.perf_counter() - training_start
         assert best_state is not None
         model.load_state_dict(best_state)
@@ -442,6 +451,20 @@ class DPARTrainer:
             "training_seconds": training_seconds, "privacy": privacy,
             "train_graph": split.train.stats,
             "sampled_train_graph": sampled_train_graph,
+            "completed_updates": completed_updates,
+            "selection": {
+                "metric": (
+                    "r2" if effective_config.regression else
+                    "auroc" if effective_config.binary else
+                    "micro_f1" if effective_config.multilabel else "accuracy"
+                ),
+                "validation_score": selected_validation,
+                "epoch": selected_epoch,
+                "step": selected_step,
+                "evaluate_every": steps_per_epoch,
+                "epochs_completed": epochs_completed,
+                "completed_updates": completed_updates,
+            },
         }
         if effective_config.binary:
             result.update({

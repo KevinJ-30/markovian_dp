@@ -6,7 +6,7 @@ remain unchanged. Evaluation chunks only nodewise work, never graph context.
 """
 import json
 from contextlib import nullcontext
-from copy import deepcopy
+from copy import copy, deepcopy
 import math
 import os
 from pathlib import Path
@@ -37,7 +37,14 @@ def _load(manifest_path, manifest, name):
 
 
 def _prepare(data):
-    data = ToSparseTensor(layout=torch.sparse_csr)(data)
+    # Convert only canonical topology. Auxiliary index tensors such as
+    # train_edge_index are not edge-feature matrices and must not be permuted
+    # along dimension zero by ToSparseTensor.
+    topology = Data(edge_index=data.edge_index, num_nodes=data.num_nodes,
+                    edge_weight=getattr(data, "edge_weight", None))
+    data = copy(data)
+    data.adj_t = ToSparseTensor(layout=torch.sparse_csr)(topology).adj_t
+    del data.edge_index
     all_nodes = torch.ones(data.num_nodes, dtype=torch.bool)
     eval_mask = getattr(data, "eval_mask", all_nodes)
     if (
@@ -669,7 +676,38 @@ def main():
         method, _load(manifest_path, manifest, "test"), bootstrap=bootstrap,
     )
     coefficients = list(method.composed_mechanism.params["coeff_list"])
+    stage_counts = [
+        {"epochs_completed": 0, "completed_updates": 0, "evaluate_every": None}
+        for _ in method.stage_states
+    ]
+    for row in method.history:
+        counts = stage_counts[row["stage"]]
+        counts["epochs_completed"] += 1
+        counts["completed_updates"] += row["epoch_updates"]
+        counts["evaluate_every"] = row["epoch_updates"]
+    stage_selections = [
+        {
+            "stage": state["stage"],
+            "metric": state["validation"]["metric"],
+            "validation_score": state["validation"]["score"],
+            "epoch": state["epoch"],
+            "stage_step": state["stage_step"],
+            "step": state["step"],
+            **stage_counts[state["stage"]],
+        }
+        for state in method.stage_states
+    ]
     result = {
+        "selection": {
+            **stage_selections[-1],
+            "stages": len(stage_selections),
+            "stage_selections": stage_selections,
+            "completed_stage_epochs": method.epochs_completed,
+            "completed_updates": method.updates_completed,
+        },
+        "epochs_completed": method.epochs_completed,
+        "completed_updates": method.updates_completed,
+        "timing": dict(method.timing),
         "privacy": {
             "total": {
                 "epsilon": achieved_epsilon,

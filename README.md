@@ -40,7 +40,6 @@ src/
 
 scripts/                   drivers and figures (see scripts/README.md)
   setup_graphsaint.sh      unpack the manually-downloaded GraphSAINT graphs
-sbatch/                    SLURM jobs for the cluster runs
 tests/                     mechanism, accounting, and integration tests
 results/                   experiment output, grouped by dataset (results/README.md)
 paper/                     manuscript and figures
@@ -410,7 +409,7 @@ Tracking consumes no sampling randomness and does not change the validation
 candidate schedule or training trajectory.
 
 Reusable setup, calibration, reporting, and plotting tools live in `scripts/`;
-see [scripts/README.md](scripts/README.md). Cluster launchers live in `sbatch/`.
+see [scripts/README.md](scripts/README.md).
 
 The SparseGNN study runner (`results/eight_gpu_domain_graphsaint/sparse/run.py`)
 accepts a positive integer `batch_size <= n_train` in its JSON cell. This is

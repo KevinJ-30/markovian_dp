@@ -8,6 +8,24 @@ import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 
+
+_MESSAGE_BYTES = 64 * 1024 * 1024
+
+
+def _sum_neighbors(x: Tensor, edge_index: Tensor, num_targets: int) -> Tensor:
+    """Retain every edge while bounding the inference-only message temporary."""
+    source, target = edge_index
+    sums = x.new_zeros((num_targets, x.size(1)))
+    if torch.is_grad_enabled():
+        sums.index_add_(0, target, x[source])
+    else:
+        chunk = max(1, _MESSAGE_BYTES // max(1, x.size(1) * x.element_size()))
+        for start in range(0, source.numel(), chunk):
+            end = start + chunk
+            sums.index_add_(0, target[start:end], x[source[start:end]])
+    return sums
+
+
 class MLP(nn.Module):
     def __init__(self, inputs: int, classes: int, hidden: int, layers: int, dropout: float):
         super().__init__()
@@ -102,8 +120,7 @@ class GraphSAGE(_SampledGNN):
     ) -> Tensor:
         source, target = edge_index
         target_count = x.size(0) if num_targets is None else num_targets
-        sums = x.new_zeros((target_count, x.size(1)))
-        sums.index_add_(0, target, x[source])
+        sums = _sum_neighbors(x, edge_index, target_count)
         degree = torch.bincount(target, minlength=target_count).to(
             x.dtype
         ).clamp_min_(1)
@@ -130,6 +147,10 @@ class GIN(_SampledGNN):
     def _convolve(
         self, index: int, x: Tensor, edge_index: Tensor, num_targets: int,
     ) -> Tensor:
+        if not torch.is_grad_enabled():
+            conv = self.convs[index]
+            neighbors = _sum_neighbors(x, edge_index, num_targets)
+            return conv.nn(neighbors + (1 + conv.eps) * x[:num_targets])
         return self.convs[index]((x, x[:num_targets]), edge_index)
 
 

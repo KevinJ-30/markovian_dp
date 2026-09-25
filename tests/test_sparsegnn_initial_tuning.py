@@ -1,276 +1,530 @@
-"""Observable scientific and process-lifetime contracts of the initial campaign."""
+"""Scientific and process-lifetime contracts of the opportunistic campaign."""
 from __future__ import annotations
 
-import itertools
+from collections import Counter
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import threading
 import time
 
 import pytest
 
-from results.sparsegnn_initial_tuning import study_common as common
-from results.sparsegnn_initial_tuning import search
+from scripts import full_matrix_records as records
+from scripts import full_matrix_runtime as runtime
+from scripts.full_matrix_run import _protocol
 
 
-@pytest.fixture
-def prepared():
-    rows = {}
-    for protocol in common.protocols():
-        binary = protocol['dataset'] == 'twitch-explicit'
-        multilabel = protocol['dataset'] in ('saint-yelp', 'saint-amazon')
-        metric = 'auroc' if binary else 'micro_f1' if multilabel else 'accuracy'
-        rows[protocol['id']] = dict(n_train=4096, manifest='/fixture/manifest.json',
-            split_fingerprint=f"split-{protocol['id']}",
-            task=dict(metric=metric, primary_metric=metric, binary=binary,
-                      multilabel=multilabel, regression=False, num_classes=2,
-                      num_features=8, metric_ignore_label=19 if protocol['dataset']=='mag-countries' else None))
-    return dict(protocols=rows, implementation_hash='fixture-implementation')
+PROTOCOLS = (
+    "ogbn-arxiv", "ogbn-products", "saint-reddit", "saint-yelp", "saint-amazon",
+    "twitch-allbut2", "facebook100-allbut2", "mag-allbut2",
+)
+METHODS = (
+    "mlp", "graphsage", "gin", "dp_mlp", "progap", "dpar",
+    "dp_gnn_sage", "dp_gnn_gin", "sparse_sage", "sparse_gin",
+)
 
 
-def completed_rows(cells, score=.6):
-    return [dict(cell=c, status='completed', accepted=True, folder=f"/fixture/{common.scientific_key(c)}",
-                 result=dict(validation_metric=.5, test_metric=score,
-                             scientific_key=common.scientific_key(c))) for c in cells]
-
-
-def test_exact_grid_and_allbuttwo_domains(prepared):
-    cells = search.tuning_cells(prepared)
-    assert len(cells) == len({common.scientific_key(c) for c in cells}) == 576
-    combinations = set(itertools.product((256,1024),(.5,.1),(.01,.001),(10,20,25)))
-    for protocol in common.PROTOCOL_IDS:
-        for epsilon in (2.,8.):
-            group = [c for c in cells if c['protocol']==protocol and c['epsilon']==epsilon]
-            assert {(c['batch_size'],c['p2'],c['learning_rate'],c['epochs']) for c in group} == combinations
-            assert all(c['aggregation']=='mean' and c['seed']==0 and c['r']==1 for c in group)
+def test_exact_grid_and_allbuttwo_domains():
+    cells = records.enumerate_grid()
+    assert len(cells) == 336
+    assert Counter(row["method"] for row in cells) == {
+        method: 16 if method in {"mlp", "graphsage", "gin"} else
+        64 if method.startswith("sparse_") else 32 for method in METHODS
+    }
+    keys = {(row["dataset"], row["method"], row["epsilon"], row["lr"], row["p2"])
+            for row in cells}
+    assert len(keys) == 336
+    assert Counter(row["dataset"] for row in cells) == {name: 42 for name in PROTOCOLS}
+    for row in cells:
+        assert row["epochs"] == 20 and row["batch_size"] == 1024 and row["seed"] == 0
+        assert row["lr"] in (0.01, 0.001)
+        assert row["dropout"] == 0.5 and row["mlp_hidden"] == 64 and row["gnn_hidden"] == 128
+        assert row["epsilon"] in ((None,) if row["method"] in {"mlp", "graphsage", "gin"} else (2, 8))
+        assert row["p2"] in ((0.5, 0.1) if row["method"].startswith("sparse_") else (None,))
     from src.data.domain_datasets import DOMAIN_REGISTRIES
-    expected = {'twitch-allbut2':('engb','es',5), 'facebook100-allbut2':('cornell5','penn94',16),
-                'mag-allbut2':('cn','de',4)}
-    for p in common.protocols():
-        if p['id'] not in expected:
-            continue
-        val,test,n = expected[p['id']]
-        roles = p['domain_split']
-        assert roles['val']==[val] and roles['test']==[test]
-        assert roles['train']==[d for d in DOMAIN_REGISTRIES[p['dataset']] if d not in (val,test)]
-        assert len(roles['train'])==n
-        assert set(roles['train']).isdisjoint([val,test])
+    expected = {"twitch-allbut2": ("engb", "es", 5),
+                "facebook100-allbut2": ("cornell5", "penn94", 16),
+                "mag-allbut2": ("cn", "de", 4)}
+    for protocol, (validation, test, count) in expected.items():
+        dataset, roles = _protocol(protocol)
+        assert roles["val"] == [validation] and roles["test"] == [test]
+        assert roles["train"] == [d for d in DOMAIN_REGISTRIES[dataset]
+                                  if d not in (validation, test)]
+        assert len(roles["train"]) == count
 
 
-def test_logical_schedules_and_nonprivate_epoch_override(prepared):
-    def cell(method, epochs, batch=256):
-        return common.resolve_cell('ogbn-arxiv',method,None if method in ('mlp','graphsage') else 8,
-            overrides=dict(batch_size=batch,epochs=epochs),phase='compare',prepared=prepared)
-    sparse = cell('sparse',10)
-    assert sparse['p1']==.0625 and sparse['steps']==160
-    assert cell('sparse',20,1024)['steps']==80
-    assert cell('sparse',25)['steps']==400
-    progap = cell('progap',25)
-    assert progap['steps_per_stage']==400 and progap['steps']==1200
-    dpar = cell('dpar',25)
-    assert dpar['steps']==25 and dpar['effective_batch_size']==70 and dpar['sample_rate']==1
-    for epochs in (10,20,25):
-        for method in ('mlp','graphsage'):
-            c = cell(method,epochs)
-            assert c['epochs']==c['requested_epochs']==100 and c['steps']==1600
-    with pytest.raises(ValueError, match='Conflicting derived'):
-        common.resolve_cell('ogbn-arxiv','sparse',8,overrides={'batch_size':256,'steps':1},prepared=prepared)
-
-
-def test_small_evaluation_context_and_batch_admissibility(prepared):
-    import torch
-    from torch_geometric.data import Data
-    from results.sparsegnn_initial_tuning.prepare import _partition_statistics
-    data=Data(x=torch.ones(3,2),y=torch.tensor([0,1,0]),edge_index=torch.tensor([[0,1],[1,0]]))
-    stats=_partition_statistics(data,torch.arange(3),torch.ones(3,dtype=torch.bool),
-        dict(multilabel=False,binary=False,num_classes=2,metric_ignore_label=None),'val')
-    assert stats['context_nodes']==stats['scored_nodes']==3
-    prepared['protocols']['ogbn-arxiv']['n_train']=512
-    cells=[c for c in search.tuning_cells(prepared) if c['protocol']=='ogbn-arxiv']
-    assert all('blocked_reason' not in c for c in cells if c['batch_size']==256)
-    assert all(c.get('blocked_reason') and 'n_train' not in c for c in cells if c['batch_size']==1024)
-
-
-def test_test_score_selection_and_failure_exclusion(prepared):
-    cells=search.tuning_cells(prepared)
-    group=[c for c in cells if c['protocol']=='ogbn-arxiv' and c['epsilon']==2]
-    rows=completed_rows(group,.2)
-    rows[0]['result'].update(validation_metric=.9,test_metric=.6)
-    rows[1]['result'].update(validation_metric=.7,test_metric=.8)
-    rows[2].update(status='failed',accepted=False)
-    rows[2]['result']['test_metric']=.99
-    selection=search.select_winners(rows,cells)
-    winner=next(w for w in selection['winners'] if w['protocol']=='ogbn-arxiv' and w['epsilon']==2)
-    assert winner['scientific_key']==common.scientific_key(group[1])
-    assert winner['status']=='partial_grid' and winner['completed_candidates']==23
-    unavailable=next(w for w in selection['winners'] if w['protocol']=='ogbn-products')
-    assert unavailable['status']=='unavailable' and unavailable['cell'] is None
-    tied=search.select_winners(completed_rows(group,.8),cells)['winners'][0]
-    assert (tied['cell']['epochs'],tied['cell']['batch_size'],tied['cell']['learning_rate'],tied['cell']['p2'])==(10,256,.001,.1)
-
-
-def test_comparison_slots_preserve_nonprivate_reuse(prepared):
-    cells=search.tuning_cells(prepared)
-    rows=completed_rows(cells,.1)
-    for row in rows:
-        c=row['cell']
-        if c['batch_size']==256 and c['learning_rate']==.001:
-            wanted=(c['epsilon']==2 and c['epochs']==10 and c['p2']==.1) or (c['epsilon']==8 and c['epochs']==25 and c['p2']==.5)
-            if wanted:
-                row['result']['test_metric']=.9
-    selected=search.select_winners(rows,cells)
-    slots=search.comparison_slots(selected,prepared)
-    assert len(slots)==192
-    jobs=search.comparison_cells(selected,prepared)
-    assert len(jobs)==168  # 144 private slots + 24 reused nonprivate jobs.
-    for protocol in common.PROTOCOL_IDS:
-        group=[s for s in slots if s['protocol']==protocol]
-        for method in ('mlp','graphsage'):
-            pair=[s['cell'] for s in group if s['method']==method]
-            assert len(pair)==2 and all(c['epochs']==100 for c in pair)
-            assert common.scientific_key(pair[0])==common.scientific_key(pair[1])
-        sparse=[s['cell'] for s in group if s['method']=='sparse' and s['epsilon_context']==2]
-        assert len({common.scientific_key(c) for c in sparse})==2
-    smoke=search.smoke_cells(prepared)
-    assert len(smoke)==32 and all(c['phase']=='smoke' for c in smoke)
-    assert not ({common.scientific_key(c) for c in smoke}&{common.scientific_key(c) for c in cells})
-
-
-def test_preparation_restores_standard_root_after_error(tmp_path,monkeypatch):
-    from results.sparsegnn_initial_tuning.prepare import _loader_root
-    monkeypatch.setenv('OGB_DATA_ROOT','original')
-    with pytest.raises(RuntimeError,match='loader failed'):
-        with _loader_root({'dataset':'ogbn-arxiv'},tmp_path):
-            assert os.environ['OGB_DATA_ROOT']==str(tmp_path)
-            raise RuntimeError('loader failed')
-    assert os.environ['OGB_DATA_ROOT']=='original'
-
-
-def test_real_deadline_kills_descendant_and_records_timeout(tmp_path,monkeypatch):
-    from results.sparsegnn_initial_tuning import queue as scheduler
-    from results.sparsegnn_initial_tuning import policy
-    script=tmp_path/'sleeper.py'
-    child_pid=tmp_path/'child.pid'
-    script.write_text("import subprocess,sys,time\nfrom pathlib import Path\n"
-        "child=subprocess.Popen([sys.executable,'-c','import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(60)'])\n"
-        f"Path({str(child_pid)!r}).write_text(str(child.pid))\n"
-        "time.sleep(60)\n")
-    folder=tmp_path/'attempt'
+def _command(tmp_path, text):
+    script = tmp_path / "child.py"
+    script.write_text(text)
+    folder = tmp_path / "attempt"
     folder.mkdir()
-    command=[sys.executable,str(script),'--folder',str(folder)]
-    environment = {**os.environ, 'CUDA_VISIBLE_DEVICES':'0', 'OMP_NUM_THREADS':'2',
-                   'MKL_NUM_THREADS':'2', 'OPENBLAS_NUM_THREADS':'2',
-                   'PYTHONNOUSERSITE':'1', 'PYTHONPATH':str(tmp_path)}
-    monkeypatch.setattr(scheduler,'runner_command',lambda *args:(command,environment))
-    monkeypatch.setattr(scheduler,'gpu_snapshot',lambda gpu:{'physical_gpu':gpu,'idle':True})
-    monkeypatch.setattr(scheduler,'HardDeadline',lambda:policy.HardDeadline(.5))
-    original_terminate=policy.terminate_owned
-    monkeypatch.setattr(scheduler,'terminate_owned',lambda p,l:original_terminate(p,l,grace=.2))
-    q=scheduler.StudyQueue.__new__(scheduler.StudyQueue)
-    q.root=tmp_path; q.revision='test'; q.source_files={}; q.stop=threading.Event()
-    q.mutex=threading.RLock(); q.reservations={}; q.assert_frozen=lambda:None
-    events=[]
-    q.event=lambda event,**fields:events.append((event,fields))
-    cell={'method':'sparse','epochs':25,'requested_epochs':25}
-    outcome=q.run_process(cell,folder,0,{'estimated_host_bytes':0})
-    assert outcome.cancellation['reason']=='hard_runtime_limit'
-    exit_info=json.loads((folder/'exit.json').read_text())
-    assert exit_info['status']=='timeout' and exit_info['owned_process_exited']
-    assert json.loads((folder/'gpu_release.json').read_text())['idle']
-    assert any(e=='RUN_TIMEOUT' for e,_ in events)
-    assert child_pid.exists()
-    pid=int(child_pid.read_text())
+    return [sys.executable, str(script), "--out-dir", str(folder / "output")], folder
+
+
+def _assert_gone(pid):
     try:
-        assert policy.proc_identity(pid)['state']=='Z'
-    except FileNotFoundError:
+        assert runtime.proc_identity(pid)["state"] == "Z"
+    except (FileNotFoundError, ProcessLookupError):
         pass
-    launch=json.loads((folder/'launch.json').read_text())
-    fake={**launch,'command':launch['observed_command'],'start_ticks':launch['start_ticks']+1}
-    with pytest.raises(RuntimeError,match='ownership mismatch'):
-        policy.validate_owned_process(launch,identity=lambda _:fake)
-    assert policy.HARD_LIMIT==5400
 
 
-def test_numerical_backend_changes_calibration_identity():
-    from results.sparsegnn_initial_tuning.sparse.calibration import cache_identity
-    request = {'n_train':4096, 'arguments':{'p1':.0625,'steps':400,'union_safe':False},
-               'numerical_versions':{'numpy':'1.26.4','scipy':'1.14.1','dp-accounting':'0.4.3'}}
-    changed = {**request, 'numerical_versions':{**request['numerical_versions'],'scipy':'1.15.3'}}
-    assert cache_identity(changed) != cache_identity(request)
- 
-
-def test_ranking_uses_sage_margin_and_requires_all_comparators():
-    from results.sparsegnn_initial_tuning.summarize import rank_datasets
-    selected = {'winners':[{'protocol':'ogbn-arxiv','epsilon':e,
-                           'status':'complete_grid','completed_candidates':24} for e in (2.,8.)]}
-    rows = []
-    for epsilon,sparse,best in ((2.,.80,.75),(8.,.85,.83)):
-        rows.append(dict(protocol='ogbn-arxiv',epsilon_context=epsilon,method='sparse',
-                         aggregation='mean',accepted=True,test_metric=sparse))
-        rows.append(dict(protocol='ogbn-arxiv',epsilon_context=epsilon,method='sparse',
-                         aggregation='gin',accepted=True,test_metric=.99))
-        for method in ('progap','dpar','dpgnn','dpmlp'):
-            rows.append(dict(protocol='ogbn-arxiv',epsilon_context=epsilon,method=method,
-                             accepted=True,test_metric=best if method=='progap' else .5))
-    protocols = [dict(id='ogbn-arxiv',dataset='ogbn-arxiv')]
-    ranking = rank_datasets(rows,selected,protocols)
-    assert ranking[0]['status']=='definitive' and ranking[0]['suitability']==pytest.approx(.035)
-    missing = [r for r in rows if not(r['method']=='dpmlp' and r['epsilon_context']==8)]
-    assert rank_datasets(missing,selected,protocols)[0]['status']=='unranked'
-    selected['winners'][0]['status']='partial_grid'
-    assert rank_datasets(rows,selected,protocols)[0]['status']=='unranked'
+def test_real_deadline_kills_sigterm_resistant_descendant(tmp_path):
+    pid_file = tmp_path / "descendant.pid"
+    command, folder = _command(tmp_path,
+        "import subprocess,sys,time\nfrom pathlib import Path\n"
+        "child=subprocess.Popen([sys.executable,'-c',"
+        "'import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(60)'])\n"
+        f"Path({str(pid_file)!r}).write_text(str(child.pid))\n"
+        "time.sleep(60)\n")
+    outcome = runtime.run_process(command, folder, dict(os.environ), threading.Event(),
+        policy={**runtime.DEFAULT_POLICY, "hard_seconds": 0.6, "termination_grace_seconds": 0.2})
+    assert outcome["status"] == "timeout" and outcome["owned_process_exited"]
+    assert not (folder / "output" / "result.csv").exists()
+    _assert_gone(int(pid_file.read_text()))
+    assert runtime.read_json(folder / "exit.json")["status"] == "timeout"
 
 
-def test_direct_entrypoint_preserves_standard_library_queue():
-    import subprocess
-    for entry in ('prepare.py','summarize.py','verify_complete.py'):
-        script=common.HERE/entry
-        code=(f"import sys,runpy; sys.path.insert(0,{str(common.HERE)!r}); "
-              f"runpy.run_path({str(script)!r},run_name='entrypoint_test'); "
-              "from queue import Queue; q=Queue(); q.put('ok'); assert q.get()=='ok'")
-        result=subprocess.run([sys.executable,'-c',code],cwd=common.ROOT,
-                              capture_output=True,text=True,timeout=30)
-        assert result.returncode==0, result.stderr
+def test_oom_is_retryable_but_unrelated_failure_is_not(tmp_path):
+    oom = tmp_path / "oom"
+    oom.mkdir()
+    command, folder = _command(oom,
+        "import json,sys\nfrom pathlib import Path\n"
+        "out=Path(sys.argv[sys.argv.index('--out-dir')+1]);out.mkdir()\n"
+        "(out/'worker_error.json').write_text(json.dumps({'kind':'cuda_oom','message':'fixture'}))\n"
+        "sys.exit(86)\n")
+    outcome = runtime.run_process(command, folder, dict(os.environ), threading.Event())
+    assert outcome["status"] == "oom" and outcome["owned_process_exited"]
+    failed = tmp_path / "failed"
+    failed.mkdir()
+    command, folder = _command(failed, "import sys\nsys.exit(7)\n")
+    outcome = runtime.run_process(command, folder, dict(os.environ), threading.Event())
+    assert outcome["status"] == "failed" and outcome["returncode"] == 7
 
 
-def test_revised_ranking_requires_complete_shorter_epoch_selection():
-    from scripts.sparsegnn_final_reports import rank_datasets, SELECTION_SCOPE
-    selected = {'selection_scope': dict(SELECTION_SCOPE),
-                'winners': [{'protocol': 'ogbn-arxiv', 'epsilon': epsilon,
-                             'status': 'complete_grid', 'completed_candidates': 16,
-                             'requested_candidates': 16, 'registered_candidates': 16,
-                             'cell': {'epochs': 10}} for epsilon in (2., 8.)]}
-    rows = []
-    for epsilon, sparse, best in ((2., .80, .75), (8., .85, .83)):
-        rows.append(dict(protocol='ogbn-arxiv', epsilon_context=epsilon, method='sparse',
-                         aggregation='mean', accepted=True, test_metric=sparse))
-        rows.append(dict(protocol='ogbn-arxiv', epsilon_context=epsilon, method='sparse',
-                         aggregation='gin', accepted=True, test_metric=.99))
-        for method in ('progap', 'dpar', 'dpgnn', 'dpmlp'):
-            rows.append(dict(protocol='ogbn-arxiv', epsilon_context=epsilon, method=method,
-                             accepted=True, test_metric=best if method=='progap' else .5))
-    def result():
-        return next(row for row in rank_datasets(rows, selected)
-                    if row['protocol'] == 'ogbn-arxiv')
-    assert result()['status'] == 'definitive'
-    assert result()['suitability'] == pytest.approx(.035)
-    selected['winners'][0]['cell']['epochs'] = 25
-    assert result()['status'] == 'unranked'
-    selected['winners'][0]['cell']['epochs'] = 10
-    selected['winners'][0]['completed_candidates'] = 15
-    assert result()['status'] == 'unranked'
+def test_foreign_workload_does_not_cancel_our_running_child(tmp_path):
+    command, folder = _command(tmp_path, "import time\ntime.sleep(0.3)\n")
+    class BusySampler:
+        def snapshot(self, uuid):
+            return {"uuid": uuid, "idle": False, "memory_used_mib": 40000,
+                    "utilization_gpu": 100, "compute_processes": [
+                        {"pid": 987654321, "used_memory_mib": 39000, "gpu_uuid": uuid}]}
+    outcome = runtime.run_process(command, folder, dict(os.environ), threading.Event(),
+        gpu={"uuid": "GPU-fixture"}, sampler=BusySampler(),
+        policy={**runtime.DEFAULT_POLICY, "hard_seconds": 5})
+    assert outcome["status"] == "completed" and outcome["returncode"] == 0
 
 
-def test_nonprivate_cancellation_cannot_resolve_private_requests(tmp_path):
-    from scripts.sparsegnn_partial_nonprivate import verify_cancelled
-    directive = tmp_path / 'nonprivate_stop.json'
-    directive.write_text(json.dumps({'reason': 'User cancelled remaining non-private training'}))
-    disposition = {'status': 'cancelled_unstarted', 'folder': None,
-                   'cancellation_directive_sha256': common.sha256(directive)}
-    assert verify_cancelled(tmp_path, {'method': 'graphsage'}, disposition) == []
-    assert verify_cancelled(tmp_path, {'method': 'sparse'}, disposition)
-    directive.write_text(json.dumps({'reason': 'Changed instruction'}))
-    assert verify_cancelled(tmp_path, {'method': 'graphsage'}, disposition)
+def test_ownership_mismatch_refuses_signalling_live_process(tmp_path):
+    command, folder = _command(tmp_path, "import time\ntime.sleep(60)\n")
+    process = subprocess.Popen(command, start_new_session=True)
+    try:
+        identity = runtime.proc_identity(process.pid)
+        launch = {**identity, "start_ticks": identity["start_ticks"] + 1,
+                  "command": command, "observed_command": identity["command"],
+                  "out_dir": str(folder / "output"), "folder": str(folder),
+                  "boot_id": Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
+        with pytest.raises(runtime.OwnershipError):
+            runtime.validate_owned_process(launch)
+        assert process.poll() is None
+    finally:
+        # This Popen handle is the independently owned test child, not the tampered record.
+        process.terminate()
+        process.wait(timeout=5)
 
+
+def test_cooperative_lock_cannot_be_claimed_twice(tmp_path):
+    path = tmp_path / "gpu.lock"
+    with runtime.file_lock(path, nonblocking=True):
+        with pytest.raises((BlockingIOError, OSError, RuntimeError)):
+            with runtime.file_lock(path, nonblocking=True):
+                pytest.fail("duplicate GPU lease was granted")
+
+
+def test_empty_visibility_never_expands_authorized_gpus(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    monkeypatch.delenv("NVIDIA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.setattr(runtime, "gpu_inventory", lambda: {
+        "GPU-free": {"uuid": "GPU-free", "index": 7, "idle": True}})
+    assert runtime.resolve_gpus("auto") == []
+
+
+def test_worker_occupied_output_is_untouched(tmp_path):
+    from scripts.full_matrix_run import main
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "result.json").write_text('{"evidence":"original"}')
+    args = ["--dataset", "fixture", "--method", "mlp", "--lr", ".001",
+            "--batch-size", "32", "--epochs", "1", "--device", "cpu",
+            "--out-dir", str(output)]
+    assert main(args) == 1
+    assert (output / "result.json").read_text() == '{"evidence":"original"}'
+    assert not (output / "worker_error.json").exists()
+    assert not (output / "worker_exit.json").exists()
+
+
+def test_worker_memory_error_publishes_retryable_failure_not_success(tmp_path, monkeypatch):
+    from scripts import full_matrix_run as worker
+    monkeypatch.chdir(worker.REPO_ROOT)
+    output = tmp_path / "output"
+    def exhausted(args):
+        raise MemoryError("fixture allocation failure")
+    monkeypatch.setattr(worker, "run", exhausted)
+    args = ["--dataset", "fixture", "--method", "mlp", "--lr", ".001",
+            "--batch-size", "32", "--epochs", "1", "--device", "cpu",
+            "--out-dir", str(output)]
+    assert worker.main(args) == 86
+    assert runtime.read_json(output / "worker_error.json")["kind"] == "host_oom"
+    assert not (output / "worker_exit.json").exists()
+
+
+def test_exited_leader_does_not_leave_owned_descendant(tmp_path):
+    pid_file = tmp_path / "descendant.pid"
+    command, folder = _command(tmp_path,
+        "import subprocess,sys,time\nfrom pathlib import Path\n"
+        "child=subprocess.Popen([sys.executable,'-c',"
+        "'import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(60)'])\n"
+        f"Path({str(pid_file)!r}).write_text(str(child.pid))\n"
+        "time.sleep(1.3)\n")
+    outcome = runtime.run_process(command, folder, dict(os.environ), threading.Event(),
+        policy={**runtime.DEFAULT_POLICY, "hard_seconds": 5, "termination_grace_seconds": 0.2})
+    assert outcome["owned_process_exited"]
+    _assert_gone(int(pid_file.read_text()))
+
+
+def test_oom_bursts_defer_without_losing_other_work_or_retry_eligibility(tmp_path):
+    from scripts.full_matrix_campaign import CampaignQueue, _initial_state
+    class Clock:
+        value = 1000.0
+        def time(self):
+            return self.value
+        def monotonic(self):
+            return self.value
+    clock = Clock()
+    queue = CampaignQueue(tmp_path, device="cpu", purpose="smoke", clock=clock)
+    queue.state = {"oom": _initial_state(), "other": _initial_state()}
+    queue.order = ["oom", "other"]
+    outcome = {"status": "oom", "gpu_uuid": "GPU-first", "finished_epoch": clock.value}
+    for attempt in (1, 2):
+        queue._transition(queue.state["oom"], outcome, attempt)
+        assert queue._ready_key(None) == "oom"
+    queue._transition(queue.state["oom"], outcome, 3)
+    assert queue._ready_key(None) == "other"
+    queue._persist_locked()
+    recovered = CampaignQueue(tmp_path, device="cpu", purpose="smoke", clock=clock)
+    recovered.state = runtime.read_json(tmp_path / "queue_state.json")
+    recovered.order = queue.order
+    clock.value = 1299
+    assert recovered._ready_key(None) == "other"
+    clock.value = 1300
+    assert recovered._ready_key(None) == "oom"
+    recovered._transition(recovered.state["oom"], {**outcome, "finished_epoch": clock.value}, 4)
+    assert recovered._ready_key(None) == "oom"
+    recovered._transition(recovered.state["oom"], {"status": "timeout"}, 5)
+    assert recovered._ready_key(None) == "other"
+
+
+def test_new_idle_gpu_requires_two_recent_successful_observations(tmp_path):
+    from scripts.full_matrix_campaign import CampaignQueue
+    class Sampler:
+        row = None
+        def snapshot(self, uuid):
+            return self.row
+    queue = CampaignQueue(tmp_path)
+    queue.sampler = Sampler()
+    assert not queue._stable_idle("GPU-later")
+    queue.sampler.row = {"idle": True, "consecutive_idle": 1,
+                         "observed_monotonic": time.monotonic()}
+    assert not queue._stable_idle("GPU-later")
+    queue.sampler.row["consecutive_idle"] = 2
+    assert queue._stable_idle("GPU-later")
+    queue.sampler.row["error"] = "NVIDIA query failed"
+    assert not queue._stable_idle("GPU-later")
+    del queue.sampler.row["error"]
+    queue.sampler.row["observed_monotonic"] -= 60
+    assert not queue._stable_idle("GPU-later")
+
+
+def test_recovery_terminates_owned_worker_after_controller_crash(tmp_path):
+    worker_script = tmp_path / "sleeper.py"
+    worker_script.write_text("import time\ntime.sleep(60)\n")
+    folder = tmp_path / "attempt"
+    folder.mkdir()
+    supervisor_script = tmp_path / "supervisor.py"
+    supervisor_script.write_text(
+        "import os,sys,threading\nfrom pathlib import Path\n"
+        "from scripts.full_matrix_runtime import run_process\n"
+        f"folder=Path({str(folder)!r})\n"
+        f"run_process([sys.executable,{str(worker_script)!r},'--out-dir',str(folder/'output')],"
+        "folder,dict(os.environ),threading.Event())\n")
+    environment = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+    supervisor = subprocess.Popen([sys.executable, str(supervisor_script)],
+                                  env=environment, start_new_session=True)
+    launch = None
+    try:
+        until = time.monotonic() + 10
+        while not (folder / "launch.json").exists() and time.monotonic() < until:
+            time.sleep(0.02)
+        launch = runtime.read_json(folder / "launch.json")
+        supervisor.kill()
+        supervisor.wait(timeout=5)
+        recovered = runtime.recover_process(folder, grace=0.2)
+        assert recovered["status"] == "interrupted"
+        assert recovered["returncode"] is None and recovered["owned_process_exited"]
+        _assert_gone(launch["pid"])
+    finally:
+        if supervisor.poll() is None:
+            supervisor.terminate()
+            supervisor.wait(timeout=5)
+        if launch is not None:
+            runtime.recover_process(folder, grace=0.2)
+
+
+def test_prepared_roundtrip_preserves_graph_predictions_and_rejects_tampering(tmp_path):
+    import torch
+    from torch_geometric.nn import SAGEConv
+    prepared = records._smoke_prepared(tmp_path, "cuda")["smoke-accuracy"]
+    _, split, _, _ = records.load_prepared_protocol(prepared["manifest"])
+    expected_x = torch.arange(160 * 8, dtype=torch.float32).reshape(160, 8)[:128] / (160 * 8)
+    nodes = torch.arange(128)
+    following = (nodes + 1) % 128
+    expected_edges = torch.stack([torch.cat([nodes, following]), torch.cat([following, nodes])])
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(0)
+        model = SAGEConv(8, 2).eval()
+        with torch.no_grad():
+            expected = model(expected_x, expected_edges)
+            restored = model(split.train.data.x, split.train.data.edge_index)
+    torch.testing.assert_close(restored, expected, rtol=0, atol=0)
+    assert torch.equal(split.test.node_ids, torch.arange(144, 160))
+    assert split.test.eval_mask.all()
+    payload = Path(prepared["manifest"]).parent / "train.pt"
+    with payload.open("ab") as stream:
+        stream.write(b"tampered")
+    with pytest.raises(ValueError, match="hash|SHA|sha|artifact"):
+        records.load_prepared_protocol(prepared["manifest"])
+
+
+def test_transient_empty_exec_argv_does_not_reject_our_worker(tmp_path, monkeypatch):
+    command, folder = _command(tmp_path, "import time\ntime.sleep(0.3)\n")
+    observe = runtime.proc_identity
+    initial = True
+    def exec_transition(pid):
+        nonlocal initial
+        row = observe(pid)
+        if initial:
+            initial = False
+            return {**row, "command": []}
+        return row
+    monkeypatch.setattr(runtime, "proc_identity", exec_transition)
+    outcome = runtime.run_process(command, folder, dict(os.environ), threading.Event(),
+                                  policy={**runtime.DEFAULT_POLICY, "hard_seconds": 5})
+    assert outcome["status"] == "completed" and outcome["owned_process_exited"]
+
+
+def test_direct_queue_requires_distinct_eligible_samples():
+    from scripts import full_matrix_queue as queue
+    history = {}
+    snapshot = {"utilization_gpu": 29.9, "memory_free_mib": 1000,
+                "memory_used_mib": 40000, "compute_processes": [{"pid": 987654321}],
+                "idle": False, "observed_monotonic": 1.0}
+    assert not queue._observe_eligibility(history, "gpu", snapshot)
+    assert not queue._observe_eligibility(history, "gpu", snapshot)
+    assert queue._observe_eligibility(history, "gpu", {**snapshot, "observed_monotonic": 2.0})
+    for bad in (None, {**snapshot, "error": "stale GPU observation"},
+                {**snapshot, "error": "query failed"}, {**snapshot, "utilization_gpu": 30},
+                {**snapshot, "memory_free_mib": 0}, {**snapshot, "utilization_gpu": float("nan")}):
+        assert not queue._observe_eligibility(history, "gpu", bad)
+        assert not queue._observe_eligibility(history, "gpu", {**snapshot, "observed_monotonic": 3.0})
+        history.clear()
+
+
+def test_real_child_without_hard_deadline(tmp_path):
+    command, folder = _command(tmp_path, "import time\ntime.sleep(0.3)\n")
+    outcome = runtime.run_process(command, folder, dict(os.environ), threading.Event(),
+                                  policy={"hard_seconds": None})
+    assert outcome["status"] == "completed" and outcome["returncode"] == 0
+    assert outcome["owned_process_exited"]
+
+
+def _queue_output(tmp_path, row, metric, validation, test):
+    output = tmp_path / row["protocol"] / "output"
+    output.mkdir(parents=True)
+    parameters = {"steps": 40, "evaluate_every": 2, "weight_decay": 0.0005,
+                  "knob": "a|b\nc"}
+    selection = {"metric": metric, "split": "validation", "early_stopping": False,
+                 "epochs_requested": 20, "epochs_completed": 20, "validation_score": validation,
+                 "evaluate_every": 2, "step": 6, "epoch": 3, "completed_updates": 40}
+    interval = {**records.BOOTSTRAP, "n_observations": 10,
+                "metrics": {metric: {"lower": test - 0.123, "upper": test + 0.045,
+                                    "valid_resamples": 1000}}}
+    identity = {key: row[key] for key in ("protocol", "method", "lr", "epochs", "seed", "dropout")}
+    identity.update(target_epsilon=row["epsilon"], requested_batch_size=row["batch_size"],
+                    hidden=64, effective_batch_size=1024, metric=metric, parameters=parameters)
+    result = {**identity, "validation_metric": validation, "test_metric": test,
+              "selection": selection, "completed_epochs": 20, "test_confidence_intervals": interval,
+              "native_result": {"selection": selection, "completed_updates": 40}}
+    runtime.atomic_json(output / "config.json", {**identity, "task": {"primary_metric": metric}})
+    runtime.atomic_json(output / "result.json", result)
+    (output / "result.csv").write_text(f"metric,test_metric\n{metric},{test}\n")
+    _commit_queue_output(output)
+    return {"status": "completed", "attempt": 1, "output": str(output)}
+
+
+def _commit_queue_output(output):
+    runtime.atomic_json(output / "worker_exit.json", {
+        "status": "completed", "artifact_sha256": {
+            name: runtime.sha256(output / name) for name in ("config.json", "result.json", "result.csv")}})
+
+
+def test_direct_queue_tables_preserve_every_result_and_raw_evidence(tmp_path):
+    import csv
+    from scripts import full_matrix_queue as queue
+    grid = records.enumerate_grid()
+    rows = [next(row for row in grid if row["protocol"] == protocol and row["method"] == "mlp")
+            for protocol in ("ogbn-arxiv", "saint-yelp", "saint-amazon")]
+    states = [_queue_output(tmp_path, rows[0], "accuracy", 0.9, 0.4),
+              _queue_output(tmp_path, rows[1], "micro_f1", 0.6, 0.8),
+              {"status": "pending", "attempt": 0, "reason": "busy|GPU\nwait"}]
+    paths = [Path(state["output"]) / "result.csv" for state in states[:2]]
+    hashes = [runtime.sha256(path) for path in paths]
+    for _ in range(2):
+        queue.tables(tmp_path, rows, states)
+        with (tmp_path / "summary.csv").open() as stream:
+            exported = list(csv.DictReader(stream))
+        assert [row["protocol"] for row in exported] == [row["protocol"] for row in rows]
+        for index, metric in enumerate(("accuracy", "micro_f1")):
+            actual = runtime.read_json(Path(states[index]["output"]) / "result.json")
+            own = exported[index]
+            assert own["metric"] == metric
+            assert float(own["validation_metric"]) == actual["validation_metric"]
+            assert float(own["test_metric"]) == actual["test_metric"]
+            assert float(own["ci_lower"]) == actual["test_confidence_intervals"]["metrics"][metric]["lower"]
+            assert float(own["ci_upper"]) == actual["test_confidence_intervals"]["metrics"][metric]["upper"]
+            assert json.loads(own["parameters"]) == actual["parameters"]
+            assert own["selected_epoch"] == "3" and own["selected_step"] == "6"
+            assert own["result_csv"] == str(paths[index])
+        assert exported[2]["status"] == "pending" and exported[2]["test_metric"] == ""
+        assert exported[2]["batch_size"] == "1024" and exported[2]["hidden"] == "64"
+        assert [runtime.sha256(path) for path in paths] == hashes
+        markdown = (tmp_path / "summary.md").read_text()
+        assert len(markdown.splitlines()) == 5
+        assert "busy&#124;GPU<br>wait" in markdown
+    output = Path(states[0]["output"])
+    result = runtime.read_json(output / "result.json")
+    result["test_confidence_intervals"]["metrics"].clear()
+    runtime.atomic_json(output / "result.json", result)
+    _commit_queue_output(output)
+    queue.tables(tmp_path, rows, states)
+    assert states[0]["status"] == "ci_unavailable"
+    assert states[1]["status"] == "completed"
+    (Path(states[1]["output"]) / "result.csv").write_text("tampered\n")
+    queue.tables(tmp_path, rows, states)
+    assert states[1]["status"] == "invalid"
+
+
+def test_direct_queue_busy_locked_probe_never_launches(tmp_path, monkeypatch):
+    from scripts import full_matrix_queue as queue
+    row = records.enumerate_grid()[0]
+    monkeypatch.setattr(queue.records, "enumerate_grid", lambda **_: [row])
+    monkeypatch.setattr(queue.records, "PROTOCOLS", (row["protocol"],))
+    monkeypatch.setattr(sys, "argv", ["queue", "--out-root", str(tmp_path)])
+    monkeypatch.setattr(queue.runtime, "resolve_gpus", lambda _: [{"uuid": "GPU-fixture"}])
+    monkeypatch.setattr(queue.runtime, "host_available_bytes", lambda: 100 * runtime.GIB)
+    monkeypatch.setattr(queue.shutil, "disk_usage", lambda _: type("Disk", (), {"free": 100 * runtime.GIB})())
+    callbacks = []
+    monkeypatch.setattr(queue.signal, "signal", lambda _, callback: callbacks.append(callback))
+    monkeypatch.setattr(queue.time, "sleep", lambda _: None)
+    class Sampler:
+        count = 0
+        def __init__(self, _):
+            pass
+        def start(self):
+            return self
+        def close(self):
+            pass
+        def snapshot(self, _):
+            self.count += 1
+            return {"observed_monotonic": self.count, "utilization_gpu": 29.9, "memory_free_mib": 1000}
+    monkeypatch.setattr(queue.runtime, "GpuSampler", Sampler)
+    def busy_probe(_):
+        callbacks[0]()
+        return {"utilization_gpu": 30, "memory_free_mib": 1000}
+    monkeypatch.setattr(queue.runtime, "gpu_snapshot", busy_probe)
+    monkeypatch.setattr(queue.runtime, "run_process", lambda *a, **kw: pytest.fail("busy GPU launched"))
+    monkeypatch.setattr(queue, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    assert queue.main() == 1
+    assert runtime.read_json(tmp_path / "queue_state.json")[0]["attempt"] == 0
+
+
+def test_exiting_empty_argv_is_not_a_live_ownership_mismatch(tmp_path, monkeypatch):
+    pid = 987654321
+    command = ["python", "--out-dir", str(tmp_path / "output")]
+    leader = {"pid": pid, "pgid": pid, "session_id": pid, "start_ticks": 123,
+              "command": command, "state": "R"}
+    launch = {**leader, "folder": str(tmp_path), "observed_command": command,
+              "boot_id": runtime._boot_id()}
+    empty = {**leader, "command": []}
+    monkeypatch.setattr(runtime, "_process_table", lambda: {pid: empty})
+    observations = iter([empty, empty, {**empty, "state": "Z"}, {**empty, "state": "Z"}])
+    monkeypatch.setattr(runtime, "proc_identity", lambda _: next(observations))
+    assert runtime._owned_snapshot(launch, {pid: leader}) == {}
+    monkeypatch.setattr(runtime, "proc_identity", lambda _: {**leader, "command": ["foreign"]})
+    with pytest.raises(runtime.OwnershipError, match="argv changed"):
+        runtime._owned_snapshot(launch, {pid: leader})
+
+
+@pytest.mark.parametrize("architecture", ["GraphSAGE", "GIN"])
+def test_bounded_full_neighbor_inference_preserves_logits(architecture, monkeypatch):
+    import torch
+    from src.models import baselines
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(13)
+        model = getattr(baselines, architecture)(4, 3, hidden=7, layers=2, dropout=0.5).eval()
+        features = torch.randn(9, 4)
+        edges = torch.tensor([[1, 2, 2, 3, 4, 5, 5, 6, 7, 0],
+                              [0, 0, 0, 1, 1, 2, 2, 2, 3, 0]])
+        expected = model(features, edges).detach()
+        monkeypatch.setattr(baselines, "_MESSAGE_BYTES", 32)
+        with torch.no_grad():
+            actual = model(features, edges)
+            isolated = model(features, torch.empty((2, 0), dtype=torch.long))
+        torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-6)
+        torch.testing.assert_close(actual[8], isolated[8], rtol=0, atol=0)
+
+
+def test_progap_preparation_preserves_topology_with_auxiliary_indices():
+    if not Path(records.PROGAP_PYTHON).is_file():
+        pytest.skip("requires the separately pinned ProGAP environment")
+    code = """
+import torch
+from torch_geometric.data import Data
+from torch_geometric.transforms import ToSparseTensor
+import inductive_adapter
+edges = torch.tensor([[0, 1, 2, 0, 1], [2, 0, 1, 1, 2]])
+data = Data(x=torch.arange(9).reshape(3, 3).float(), y=torch.tensor([0, 1, 0]),
+            edge_index=edges, train_edge_index=edges.clone(),
+            edge_weight=torch.tensor([1., 2., 3., 4., 5.]),
+            eval_mask=torch.tensor([True, False, True]))
+reference = ToSparseTensor(layout=torch.sparse_csr)(
+    Data(edge_index=edges, edge_weight=data.edge_weight, num_nodes=3))
+actual = inductive_adapter._prepare(data)
+torch.testing.assert_close(actual.adj_t.to_dense(), reference.adj_t.to_dense())
+torch.testing.assert_close(actual.x, data.x)
+assert torch.equal(actual.eval_mask, data.eval_mask)
+assert torch.equal(data.edge_index, edges)
+"""
+    subprocess.run([records.PROGAP_PYTHON, "-c", code], check=True, timeout=60,
+                   cwd=Path(__file__).resolve().parents[1] / "third_party/ProGAP")
+
+
+def test_normal_exit_allows_inflight_telemetry_to_settle(tmp_path):
+    command, folder = _command(tmp_path, "import time\ntime.sleep(0.3)\n")
+    outcome = runtime.run_process(command, folder, dict(os.environ), threading.Event(),
+                                  policy={"hard_seconds": None},
+                                  on_sample=lambda _: time.sleep(2.5))
+    assert outcome["returncode"] == 0
+    assert outcome["status"] == "completed" and outcome["owned_process_exited"]

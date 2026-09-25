@@ -56,6 +56,8 @@ class DPGNNConfig:
     bootstrap_confidence: float = 0.95
     bootstrap_resamples: int = 1000
     bootstrap_seed: int = 0
+    weight_decay: float = 0.0
+    delta: float | None = None
 
     def __post_init__(self) -> None:
         BootstrapConfig(
@@ -89,6 +91,11 @@ class PartitionedDPGNN:
             raise ValueError("clip must be positive and finite")
         if not isfinite(config.dropout) or not 0.0 <= config.dropout < 1.0:
             raise ValueError("dropout must be finite and in [0, 1)")
+        if not isfinite(config.weight_decay) or config.weight_decay < 0:
+            raise ValueError("weight_decay must be finite and nonnegative")
+        if config.delta is not None and (
+                not isfinite(config.delta) or not 0 < config.delta < 1):
+            raise ValueError("delta must be finite and in (0, 1)")
         if config.max_degree < 1:
             raise ValueError("max_degree must be positive")
         if config.max_subgraph_nodes < 1:
@@ -202,7 +209,8 @@ class PartitionedDPGNN:
                 x.size(1), self.config.latent_size, outputs,
                 dropout=self.config.dropout).to(self.device)
             private_model = _PaddedOneHopGCN(model)
-        adam = torch.optim.Adam(model.parameters(), lr=self.config.learning_rate)
+        adam = torch.optim.Adam(model.parameters(), lr=self.config.learning_rate,
+                                weight_decay=self.config.weight_decay)
         private_module = GradSampleModule(
             private_model, batch_first=True, loss_reduction="mean", strict=True)
         root_generator = torch.Generator().manual_seed(self.config.seed + 2)
@@ -244,7 +252,7 @@ class PartitionedDPGNN:
         private_module.to_standard_module()
         assert best_state is not None
         model.load_state_dict(best_state)
-        delta = 1.0 / (10 * num_nodes)
+        delta = self.config.delta if self.config.delta is not None else 1.0 / (10 * num_nodes)
         metric = ("r2" if self.config.regression
                   else "auroc" if self.config.binary
                   else "micro_f1" if self.config.multilabel

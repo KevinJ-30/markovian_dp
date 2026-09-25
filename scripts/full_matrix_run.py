@@ -17,6 +17,7 @@ import math
 import os
 from pathlib import Path
 import random
+import resource
 import shutil
 import sys
 import time
@@ -50,11 +51,19 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--out-dir", required=True, type=Path, help="new, unoccupied per-cell directory")
     cli.add_argument("--epsilon", type=float, help="required for private methods; rejected otherwise")
     cli.add_argument("--p2", type=float, help="required only for SparseGNN")
+    cli.add_argument("--sparse-radius", type=int, default=1,
+                     help="SparseExpand radius (positive integer; SparseGNN only)")
+    cli.add_argument("--sparse-degree-cap", type=int, default=10,
+                     help="SparseGNN preprocessing outgoing-degree cap; not the fixed incoming sampling cap")
     cli.add_argument("--progap-python", help="ProGAP interpreter (default: this Python executable)")
     cli.add_argument("--bootstrap-resamples", type=int, default=1000,
                      help="final-test node bootstrap resamples at 95%% confidence; 0 disables")
     cli.add_argument("--split-root", type=Path, default=REPO_ROOT / "data" / "inductive_splits",
                      help="common seed-0 split cache (default: repository data/inductive_splits)")
+    cli.add_argument("--prepared-protocol", type=Path,
+                     help="immutable prepared partition manifest for a campaign")
+    cli.add_argument("--campaign-request", type=Path,
+                     help="hash-bound per-attempt campaign request")
     return cli
 
 
@@ -64,6 +73,13 @@ def _check_args(args: argparse.Namespace) -> None:
     for name in ("batch_size", "epochs", "mlp_hidden", "gnn_hidden"):
         if getattr(args, name) < 1:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
+    for name in ("sparse_radius", "sparse_degree_cap"):
+        value = getattr(args, name)
+        if type(value) is not int or value < 1:
+            raise ValueError(f"--{name.replace('_', '-')} must be a positive integer")
+    sparse_override = args.sparse_radius != 1 or args.sparse_degree_cap != 10
+    if sparse_override and not args.method.startswith("sparse_"):
+        raise ValueError("--sparse-radius and --sparse-degree-cap overrides are supported only by SparseGNN")
     if not 0 <= args.seed < 2**32:
         raise ValueError("--seed must be in [0, 2**32)")
     if not math.isfinite(args.dropout) or not 0 <= args.dropout < 1:
@@ -82,6 +98,13 @@ def _check_args(args: argparse.Namespace) -> None:
         raise ValueError("--p2 is supported only by SparseGNN")
     if args.progap_python is not None and args.method != "progap":
         raise ValueError("--progap-python is supported only by ProGAP")
+    if (args.prepared_protocol is None) != (args.campaign_request is None):
+        raise ValueError("--prepared-protocol and --campaign-request must be supplied together")
+    if args.prepared_protocol is not None:
+        if sparse_override:
+            raise ValueError("prepared campaigns do not support SparseGNN radius or degree-cap overrides")
+        args.prepared_protocol = args.prepared_protocol.expanduser().resolve()
+        args.campaign_request = args.campaign_request.expanduser().resolve()
     args.dataset = args.dataset.lower()
     args.out_dir = args.out_dir.expanduser().resolve()
     args.split_root = args.split_root.expanduser().resolve()
@@ -163,6 +186,7 @@ def _baseline(args, split, task, batch, delta):
     options = {
         "method": args.method, "hidden_size": args.mlp_hidden if args.method in {"mlp", "dp_mlp"} else args.gnn_hidden,
         "learning_rate": args.lr, "batch_size": batch, "epochs": args.epochs,
+        "weight_decay": 5e-4,
         "dropout": args.dropout, "seed": args.seed, **_task_options(task), **_bootstrap(args),
     }
     calibration = None
@@ -196,6 +220,7 @@ def _dpar(args, split, task, batch, delta):
         target_epsilon=args.epsilon, target_delta=delta, dp_ppr=True, dp_sgd=True,
         hidden_size=args.gnn_hidden, learning_rate=args.lr, batch_size=batch,
         epochs=args.epochs, dropout=args.dropout, seed=args.seed,
+        weight_decay=5e-4,
         **_task_options(task), **_bootstrap(args),
     )
     result = DPARTrainer(config, device=args.device).fit(split)
@@ -268,6 +293,7 @@ def _dpgnn(args, split, task, batch, delta):
         num_classes=split.num_classes, architecture="gin" if args.method.endswith("gin") else "graphsage",
         latent_size=args.gnn_hidden, learning_rate=args.lr, dropout=args.dropout,
         batch_size=batch, steps=steps, evaluate_every=interval,
+        weight_decay=5e-4, delta=delta,
         noise_multiplier=calibration["noise_multiplier"], max_degree=max_degree,
         seed=args.seed, **_task_options(task), **_bootstrap(args),
     )
@@ -286,7 +312,7 @@ def _dpgnn(args, split, task, batch, delta):
                        "noise_std": 2 * max_terms * config.noise_multiplier * config.clip},
     }
     return result, {**asdict(config), "epochs": args.epochs, "optimizer": "adam",
-                    "weight_decay": 0.0, "max_terms": max_terms}
+                    "max_terms": max_terms}
 
 
 def _sparse_evaluation_graph(split, device):
@@ -314,7 +340,7 @@ def _sparse(args, split, task, batch, delta):
     from src.models.bootstrap import BootstrapConfig
     from src.privacy.accounting import calibrate_sparsegnn_noise
     from src.processing.graphs import max_degrees, preprocess_edges
-    from src.processing.sparse_expand import build_adjacency
+    from src.processing.sparse_expand import MAX_INCOMING_EDGES, build_adjacency
     from src.training.sparse_gnn import train_sparse_gnn
 
     if task["binary"]:
@@ -332,7 +358,8 @@ def _sparse(args, split, task, batch, delta):
     aggr = "gin" if args.method.endswith("gin") else "mean"
     generator = torch.Generator().manual_seed(args.seed + 20_000)
     train_edges = preprocess_edges(
-        split.train.data.edge_index, population, max_in_degree=10, max_out_degree=10,
+        split.train.data.edge_index, population,
+        max_in_degree=10, max_out_degree=args.sparse_degree_cap,
         degree_cap_mode="directed", add_self_loops=False, generator=generator,
     )
     achieved_degrees = max_degrees(train_edges, population)
@@ -344,7 +371,7 @@ def _sparse(args, split, task, batch, delta):
     )
     calibration = calibrate_sparsegnn_noise(
         target_epsilon=args.epsilon, target_delta=delta, p1=p1, p2=args.p2,
-        r=1, K_in=10, K_out=10, steps=steps, clip=1.0,
+        r=args.sparse_radius, K_in=10, K_out=args.sparse_degree_cap, steps=steps, clip=1.0,
         grid=1e-3, sigma_rtol=1e-3, sigma_atol=1e-6, union_safe=False,
     )
     extra = {} if any(task[name] for name in ("binary", "multilabel", "regression")) else {
@@ -355,10 +382,11 @@ def _sparse(args, split, task, batch, delta):
         hidden=args.gnn_hidden, num_layers=2, dropout=args.dropout,
         aggr=aggr, device=torch.device(args.device), **extra,
     )
-    mechanism.build_optimizer(lr=args.lr, weight_decay=0.0, kind="adam")
+    weight_decay = 5e-4
+    mechanism.build_optimizer(lr=args.lr, weight_decay=weight_decay, kind="adam")
     evaluation = _sparse_evaluation_graph(split, args.device)
     result = train_sparse_gnn(
-        mechanism, train, evaluation, p1=p1, p2=args.p2, r=1, T=steps,
+        mechanism, train, evaluation, p1=p1, p2=args.p2, r=args.sparse_radius, T=steps,
         adj=adjacency, direction="in", dp=True, clip=1.0,
         sigma=calibration.noise_multiplier, seed=args.seed, eval_every=interval,
         track_every=0, bootstrap=BootstrapConfig(
@@ -370,18 +398,20 @@ def _sparse(args, split, task, batch, delta):
         "accountant": "src.privacy.accounting.sparsegnn_mixture_weights.chi1",
         "noise_multiplier": calibration.noise_multiplier,
         "sampling_probability": p1, "composition_count": steps,
-        "parameters": {"p1": p1, "p2": args.p2, "r": 1, "K_in": 10, "K_out": 10,
+        "parameters": {"p1": p1, "p2": args.p2, "r": args.sparse_radius,
+                       "K_in": 10, "K_out": args.sparse_degree_cap,
                        "chi": 1, "union_safe": False, "grid": 1e-3,
                        "qualification": "Retains the repository's current chi=1 accounting policy; no union-graph correction."},
     }
     parameters = {
         "architecture": aggr, "hidden": args.gnn_hidden, "layers": 2,
         "lr": args.lr, "batch_size": batch, "epochs": args.epochs, "steps": steps,
-        "dropout": args.dropout, "optimizer": "adam", "weight_decay": 0.0,
-        "p1": p1, "p2": args.p2, "r": 1, "clip": 1.0,
-        "sigma": calibration.noise_multiplier, "K_in": 10, "K_out": 10,
+        "dropout": args.dropout, "optimizer": "adam", "weight_decay": weight_decay,
+        "p1": p1, "p2": args.p2, "r": args.sparse_radius, "clip": 1.0,
+        "sigma": calibration.noise_multiplier, "K_in": 10, "K_out": args.sparse_degree_cap,
         "cap_mode": "directed", "cap_seed": args.seed + 20_000, "direction": "in",
         "cap_semantics": "outgoing arcs capped; incoming degree unrestricted",
+        "incoming_sampling_cap": MAX_INCOMING_EDGES,
         "K_in_achieved": achieved_degrees[0], "K_out_achieved": achieved_degrees[1],
         "chi": 1, "union_safe": False, "accounting_grid": 1e-3,
         "calibration_rtol": 1e-3, "calibration_atol": 1e-6,
@@ -483,6 +513,11 @@ def _privacy_pair(result, private, target, delta):
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
+    worker_started = time.perf_counter()
+    binding = None
+    if args.campaign_request is not None:
+        from scripts.full_matrix_records import validate_worker_request
+        binding = validate_worker_request(args)
     import torch
 
     device = torch.device(args.device)
@@ -497,11 +532,23 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     args.device = str(device)
     random.seed(args.seed)
     torch.manual_seed(args.seed)
-    dataset, split, task, strategy = _load_split(args.dataset, args.split_root)
+    load_started = time.perf_counter()
+    if binding is not None:
+        from scripts.full_matrix_records import load_prepared_protocol
+        dataset, split, task, strategy = load_prepared_protocol(args.prepared_protocol)
+    else:
+        from scripts.full_matrix_runtime import file_lock, json_hash
+        with file_lock(args.split_root / f".load-{json_hash(args.dataset)[:16]}.lock"):
+            dataset, split, task, strategy = _load_split(args.dataset, args.split_root)
+    loading_seconds = time.perf_counter() - load_started
     population = int(split.train.data.num_nodes)
     batch = min(args.batch_size, population)
-    delta = 1.0 / (10 * population)
+    delta = 1.0 / population
     interval = math.ceil(population / batch)
+    if device.type == "cuda":
+        # The allocator peak covers the whole backend, including calibration,
+        # training, checkpoint selection and final evaluation, but not loading.
+        torch.cuda.reset_peak_memory_stats(device)
     started = time.perf_counter()
     if args.method in {"mlp", "dp_mlp", "graphsage", "gin"}:
         native, parameters = _baseline(args, split, task, batch, delta)
@@ -514,24 +561,32 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     else:
         native, parameters = _progap(args, split, task, batch, delta)
     duration = time.perf_counter() - started
+    resources = {
+        "peak_cuda_allocated_bytes": (
+            int(torch.cuda.max_memory_allocated(device)) if device.type == "cuda" else None),
+        "peak_cuda_allocated_scope": (
+            "runner-process PyTorch allocator on the selected device from backend start "
+            "through final evaluation; excludes child processes and non-PyTorch allocations"),
+        "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+                          * (1 if sys.platform == "darwin" else 1024),
+        "peak_rss_scope": (
+            "runner-process lifetime high-water RSS through backend completion, including "
+            "data loading; excludes child processes"),
+    }
     private = args.method not in NONPRIVATE
     actual_epsilon, actual_delta = _privacy_pair(native, private, args.epsilon, delta)
     metric = task["primary_metric"]
     test = _metric_value(native, metric)
-    validation = _metric_value(native, metric, validation=True)
     if "selection" not in native:
-        native["selection"] = {
-            "metric": metric, "validation_score": validation,
-            "policy": "first_strict_validation_max_per_stage" if args.method == "progap" else "first_strict_validation_max",
-            "evaluate_every": parameters.get("evaluate_every", interval),
-            "checkpoint_index": None,
-            "checkpoint_index_note": "backend does not export the selected epoch",
-        }
+        raise ValueError(f"{args.method}: backend omitted validation checkpoint selection")
     selection = {**native["selection"], "split": "validation", "early_stopping": False,
-                 "epochs_requested": args.epochs, "epochs_completed": args.epochs}
+                 "epochs_requested": args.epochs}
+    # Report the score that selected this checkpoint, not a re-evaluation whose
+    # GPU reduction order can perturb ranking metrics at floating-point ties.
+    validation = float(selection["validation_score"])
+    selection.setdefault("epochs_completed", args.epochs)
     if args.method == "progap":
-        selection.update(stages=3, epochs_per_stage=args.epochs,
-                         epochs_completed=3 * args.epochs, final_test_stage=2)
+        selection.update(stages=3, epochs_per_stage=args.epochs, final_test_stage=2)
     steps = parameters.get("steps", args.epochs * interval)
     parameters.setdefault("steps", steps)
     parameters.setdefault("evaluate_every", interval)
@@ -551,6 +606,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "split_file": str(split.path), "domain_split": split.domain_split,
         "domain_split_id": split.domain_split_id, "train_nodes": population,
     }
+    identity["weight_decay"] = parameters["weight_decay"]
+    if binding is not None:
+        identity.update({key: binding[key] for key in (
+            "request_key", "campaign_manifest_sha256", "prepared_fingerprint",
+            "source_fingerprint", "attempt_number")})
     config = {**identity, "parameters": parameters, "task": task,
               "requested": {key: str(value) if isinstance(value, Path) else value
                             for key, value in vars(args).items()},
@@ -565,6 +625,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "selection": selection, "test_confidence_intervals": native.get("test_confidence_intervals", {}),
         "status": "completed", "completed_epochs": args.epochs,
         "calibration_and_training_seconds": duration,
+        "loading_seconds": loading_seconds,
+        "worker_wall_seconds": time.perf_counter() - worker_started,
+        "native_timing": native.get("timing"),
+        "resources": resources,
     }
     # Only one canonical hyperparameter mapping enters the summary parser. The
     # native config stays nested in result.json rather than conflicting aliases.
@@ -584,22 +648,47 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                          if isinstance(value, (dict, list)) else value for key, value in row.items()})
     temporary.replace(args.out_dir / "result.csv")
     return {"output": str(args.out_dir / "result.csv"), "metric": metric,
-            "test_metric": result["test_metric"], "epsilon": actual_epsilon, "delta": actual_delta}
+            "test_metric": result["test_metric"], "epsilon": actual_epsilon, "delta": actual_delta,
+            "request_key": identity.get("request_key"),
+            "campaign_manifest_sha256": identity.get("campaign_manifest_sha256")}
 
 
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
+    sys.path.insert(0, str(REPO_ROOT))
+    created = False
     try:
         _check_args(args)
         # mkdir is exclusive even if another worker races the initial guard.
         args.out_dir.mkdir(parents=True, exist_ok=False)
-        sys.path.insert(0, str(REPO_ROOT))
+        created = True
         os.chdir(REPO_ROOT)
         summary = run(args)
-    except (OSError, ValueError, RuntimeError, ImportError) as error:
-        print(f"full_matrix_run: {type(error).__name__}: {error}", file=sys.stderr)
-        return 1
-    print(json.dumps(summary, sort_keys=True, allow_nan=False))
+        print(json.dumps(summary, sort_keys=True, allow_nan=False), flush=True)
+        from scripts.full_matrix_runtime import atomic_json, sha256, utc_now
+        atomic_json(args.out_dir / "worker_exit.json", {
+            "status": "completed", "request_key": summary["request_key"],
+            "campaign_manifest_sha256": summary["campaign_manifest_sha256"],
+            "completed_utc": utc_now(),
+            "artifact_sha256": {name: sha256(args.out_dir / name)
+                               for name in ("config.json", "result.json", "result.csv")},
+        })
+    except Exception as error:
+        import traceback
+        traceback.print_exc()
+        cuda_oom = type(error).__name__ == "OutOfMemoryError"
+        host_oom = isinstance(error, MemoryError)
+        kind = "cuda_oom" if cuda_oom else "host_oom" if host_oom else "runtime_error"
+        if created:
+            try:
+                from scripts.full_matrix_runtime import atomic_json
+                atomic_json(args.out_dir / "worker_error.json", {
+                    "kind": kind, "exception_class": type(error).__name__,
+                    "message": str(error),
+                })
+            except OSError as record_error:
+                print(f"Unable to publish worker error: {record_error}", file=sys.stderr)
+        return 86 if cuda_oom or host_oom else 1
     return 0
 
 
