@@ -11,7 +11,8 @@ from dp_accounting import GaussianDpEvent
 from dp_accounting.rdp import RdpAccountant
 
 from src.models.baselines import (
-    _OneHopGCN, _OneHopGraphSAGE, _PaddedOneHopGCN, _PaddedOneHopGraphSAGE,
+    _OneHopGCN, _OneHopGIN, _OneHopGraphSAGE,
+    _PaddedOneHopGCN, _PaddedOneHopGIN, _PaddedOneHopGraphSAGE,
 )
 from src.processing.dpgnn import iter_dpgnn_batches
 from src.processing.sparse_expand import build_adjacency
@@ -66,17 +67,58 @@ def test_padded_root_logits_match_explicit_one_hop_stars(one_hop_stars):
     torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
 
 
-def test_padded_graphsage_logits_match_explicit_one_hop_stars(one_hop_stars):
+@pytest.mark.parametrize("model_type,padded_type", [
+    (_OneHopGraphSAGE, _PaddedOneHopGraphSAGE),
+    (_OneHopGIN, _PaddedOneHopGIN),
+])
+def test_padded_neighbour_logits_match_explicit_one_hop_stars(
+        one_hop_stars, model_type, padded_type):
     _, features, node_mask, _, stars = one_hop_stars
-    model = _OneHopGraphSAGE(inputs=3, hidden=5, classes=2, dropout=0.0)
+    model = model_type(inputs=3, hidden=5, classes=2, dropout=0.0)
     with torch.no_grad():
         expected = torch.stack([_explicit_star_logits(model, star) for star in stars])
-        actual = _PaddedOneHopGraphSAGE(model)(features, node_mask)
+        actual = padded_type(model)(features, node_mask)
     torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
 
 
-def test_opacus_grad_samples_match_explicit_per_root_autograd(one_hop_stars):
-    model, features, node_mask, labels, stars = one_hop_stars
+def test_gin_sums_neighbours_and_root_once_and_ignores_padding():
+    model = _OneHopGIN(inputs=2, hidden=2, classes=2, dropout=0.0)
+    with torch.no_grad():
+        for layer in (model.mlp[0], model.mlp[2], model.decoder):
+            layer.weight.copy_(torch.eye(2))
+            layer.bias.zero_()
+    x = torch.tensor([[1.0, 2.0], [3.0, 5.0], [7.0, 11.0]])
+    # Duplicate self-loops must not change epsilon=0; root 2 is isolated.
+    edges = torch.tensor([[0, 0, 0, 0, 1, 1, 2], [0, 0, 1, 2, 1, 0, 2]])
+    expected = torch.tensor([[11.0, 18.0], [4.0, 7.0], [7.0, 11.0]])
+    torch.testing.assert_close(model(x, edges, torch.ones(edges.size(1))), expected)
+    mask = torch.tensor([[True, True, True], [True, True, False], [True, False, False]])
+    features = torch.stack((x, x[[1, 0, 2]], x[[2, 0, 1]]))
+    features = features.masked_fill(~mask.unsqueeze(-1), float("nan")).requires_grad_()
+    logits = _PaddedOneHopGIN(model)(features, mask)
+    torch.testing.assert_close(logits, expected)
+    logits.sum().backward()
+    torch.testing.assert_close(features.grad, mask.unsqueeze(-1).expand_as(features).float())
+
+
+@pytest.mark.parametrize("model_type,padded_type", [
+    (_OneHopGCN, _PaddedOneHopGCN),
+    (_OneHopGraphSAGE, _PaddedOneHopGraphSAGE),
+    (_OneHopGIN, _PaddedOneHopGIN),
+])
+@pytest.mark.parametrize("device", [
+    "cpu",
+    pytest.param("cuda", marks=pytest.mark.skipif(
+        not torch.cuda.is_available(), reason="CUDA is unavailable")),
+])
+def test_opacus_grad_samples_match_explicit_per_root_autograd(
+        one_hop_stars, model_type, padded_type, device):
+    _, features, node_mask, labels, stars = one_hop_stars
+    model = model_type(inputs=3, hidden=5, classes=2, dropout=0.0).to(device)
+    # Nonzero padding must not alter shared parameter gradients.
+    features = features.masked_fill(~node_mask.unsqueeze(-1), 1234.0).to(device)
+    node_mask, labels = node_mask.to(device), labels.to(device)
+    stars = [star.to(device) for star in stars]
     parameters = dict(model.named_parameters())
     gradients = {name: [] for name in parameters}
     for star, label in zip(stars, labels):
@@ -87,7 +129,7 @@ def test_opacus_grad_samples_match_explicit_per_root_autograd(one_hop_stars):
             gradients[name].append(gradient)
 
     wrapped = GradSampleModule(
-        _PaddedOneHopGCN(model), batch_first=True, loss_reduction="mean", strict=True)
+        padded_type(model), batch_first=True, loss_reduction="mean", strict=True)
     try:
         F.cross_entropy(wrapped(features, node_mask), labels).backward()
         # Inspect the original model's parameters: the private view must train
@@ -103,6 +145,7 @@ def test_opacus_grad_samples_match_explicit_per_root_autograd(one_hop_stars):
 @pytest.mark.parametrize("model_type,padded_type", [
     (_OneHopGCN, _PaddedOneHopGCN),
     (_OneHopGraphSAGE, _PaddedOneHopGraphSAGE),
+    (_OneHopGIN, _PaddedOneHopGIN),
 ])
 @pytest.mark.parametrize("dropout", [0.0, 0.5])
 def test_hidden_dropout_matches_full_and_padded_training_and_evaluation(
@@ -152,6 +195,7 @@ def test_hidden_dropout_matches_full_and_padded_training_and_evaluation(
 @pytest.mark.parametrize("model_type,padded_type", [
     (_OneHopGCN, _PaddedOneHopGCN),
     (_OneHopGraphSAGE, _PaddedOneHopGraphSAGE),
+    (_OneHopGIN, _PaddedOneHopGIN),
 ])
 def test_dropout_opacus_grad_samples_match_per_root_autograd(
         one_hop_stars, model_type, padded_type):
@@ -459,13 +503,14 @@ def test_regression_evaluate_scores_only_selected_targets_with_negative_r2():
     assert trainer.evaluate(FixedModel(), data, seed=0) == pytest.approx(-9.0)
 
 
+@pytest.mark.parametrize("architecture", ["graphsage", "gin"])
 @pytest.mark.parametrize("candidates,undefined,selected_step,validation_score,test_score", [
     ((3.0, 3.0, 4.0), False, 2, -4.0, 1.0),
     ((4.0, 3.0, 2.0), False, 5, -1.0, 0.0),
     ((3.0, 2.0, 4.0), True, 2, None, 1.0),
 ])
 def test_fit_restores_validation_selected_model_for_test_and_bootstrap(
-        candidates, undefined, selected_step, validation_score, test_score):
+        candidates, undefined, selected_step, validation_score, test_score, architecture):
     edges = torch.empty((2, 0), dtype=torch.long)
     train = SimpleNamespace(
         num_nodes=2, x=torch.ones(2, 1), y=torch.tensor([0.0, 2.0]),
@@ -501,7 +546,8 @@ def test_fit_restores_validation_selected_model_for_test_and_bootstrap(
     config = DPGNNConfig(
         num_classes=1, regression=True, steps=5, batch_size=2,
         noise_multiplier=1.0, evaluate_every=2, seed=17,
-        latent_size=3, bootstrap_resamples=20)
+        latent_size=128, learning_rate=0.001, architecture=architecture,
+        bootstrap_resamples=20)
     trainer = ControlledDPGNN(config)
     trainer.validation_steps = []
     result = trainer.fit(train, val, test)

@@ -247,3 +247,51 @@ class _PaddedOneHopGraphSAGE(nn.Module):
             + self.neighbour_encoder(neighbours))
         hidden = F.dropout(hidden, p=self.dropout, training=self.training)
         return self.decoder(hidden)
+
+
+class _OneHopGIN(nn.Module):
+    """One-hop GIN with sum aggregation, fixed epsilon=0, and a ReLU MLP."""
+
+    def __init__(self, inputs: int, hidden: int, classes: int, dropout: float = 0.5):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(inputs, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, hidden),
+        )
+        self.decoder = nn.Linear(hidden, classes)
+        self.dropout = dropout
+
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor,
+                edge_weight: torch.Tensor) -> torch.Tensor:
+        del edge_weight
+        # DP-GNN arcs point from each root to its neighbours. The sampler adds
+        # self-loops; exclude them so the fixed-epsilon root is counted once.
+        aggregated = x.clone()
+        if edge_index.numel():
+            senders, receivers = edge_index
+            nonself = senders != receivers
+            aggregated.index_add_(0, senders[nonself], x[receivers[nonself]])
+        hidden = F.relu(self.mlp(aggregated))
+        hidden = F.dropout(hidden, p=self.dropout, training=self.training)
+        return self.decoder(hidden)
+
+
+class _PaddedOneHopGIN(nn.Module):
+    """Root-only padded-star GIN sharing the full-graph MLP and decoder."""
+
+    def __init__(self, model: _OneHopGIN):
+        super().__init__()
+        self.mlp = model.mlp
+        self.decoder = model.decoder
+        self.dropout = model.dropout
+
+    def forward(
+        self, features: torch.Tensor, node_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        # Root-first stars already contain the root exactly once. Mask before
+        # the MLP so padding cannot contribute to outputs or per-root gradients.
+        aggregated = features.masked_fill(~node_mask.unsqueeze(-1), 0).sum(dim=1)
+        hidden = F.relu(self.mlp(aggregated))
+        hidden = F.dropout(hidden, p=self.dropout, training=self.training)
+        return self.decoder(hidden)

@@ -11,6 +11,8 @@ study-specific figure recipes have been removed.
 | `setup_graphsaint.sh` | Extract and check manually downloaded GraphSAINT datasets. |
 | `calibrate_grid.py` | Emit noise multipliers for a grid of privacy targets. |
 | `ceiling_fullbatch.py` | Run a non-private full-batch classification comparison. |
+| `full_matrix.sh` | Run the complete sequential final-experiment grid, then export best-test bootstrap summaries. |
+| `full_matrix_run.py` | Execute one matrix cell with method-specific calibration and normalized CSV/JSON results. |
 | `summarize_sweep.py` | Select a validation-best step and report seed-averaged test results; one configuration per child directory. |
 | `summarize_matched_eps.py` | Summarize matched-budget studies using their expected directory naming conventions. |
 | `summarize_results.py` | Combine arbitrary result CSVs into CSV/Markdown tables using stored bootstrap CIs or seed mean ± sample SD; optional best-test selection and named regimes. |
@@ -19,6 +21,72 @@ study-specific figure recipes have been removed.
 
 The Python utilities expose `--help`. GraphSAINT setup accepts an input ZIP
 directory and an optional destination; see the root README.
+
+### Full final-experiment matrix
+
+Preview without loading data, creating outputs, or allocating a GPU:
+
+```bash
+bash scripts/full_matrix.sh --dry-run
+```
+
+Run from the repository root with the appropriate Python environments:
+
+```bash
+PYTHON=python PROGAP_PYTHON=/path/to/progap/bin/python \
+  bash scripts/full_matrix.sh
+```
+
+`PROGAP_PYTHON` defaults to `PYTHON`; use a separate environment if the retained
+ProGAP implementation's dependencies differ. Dataset assets and training
+dependencies must already be available. The launcher is sequential, defaults to
+`DEVICE=cuda`, performs no GPU scheduling, stops on failure, and refuses existing
+run directories. Use a fresh `OUT_ROOT` for a new campaign.
+
+The default grid contains **1,848 runs per seed**: non-private MLP/GraphSAGE/GIN,
+private DP-MLP/ProGAP/DPAR/DP-GNN-SAGE/DP-GNN-GIN/SparseGNN-SAGE/SparseGNN-GIN,
+learning rates `0.01 0.001`, batches `256 1024`, epochs `10 20`, private epsilon
+targets `2 8`, and SparseGNN-only `p2=0.5 0.1`. Hidden sizes are 64 for MLP/DP-MLP
+and 128 for all graph methods; dropout is 0.5. The default training seed is 0.
+All methods use validation-selected final test results and 95% node-bootstrap CIs
+with 1,000 resamples.
+
+The 11 protocols are `ogbn-arxiv`, `ogbn-products`, `reddit`, `facebook`,
+`saint-reddit`, `saint-yelp`, `saint-flickr`, `saint-amazon`, `twitch-allbut2`,
+`facebook100-allbut2`, and `mag-allbut2`. The last three train on all registered
+domains except the validation/test pair: respectively `engb/es`,
+`cornell5/penn94`, and `cn/de`. Splits remain fixed at seed 0 across training seeds.
+
+Private noise is calibrated per configuration at `delta=1/(10*N_train)`.
+SparseGNN uses `p1=min(batch_size,N_train)/N_train`, `r=1`, directed outgoing
+degree cap 10, clip 1, and the current chi=1 accountant. SparseGNN and DP-GNN
+use `E*ceil(N_train/effective_batch)` updates and validate each such epoch.
+ProGAP retains its native **E epochs per stage**, three stages, and drop-last
+batch convention. DPAR retains its native defaults: `ppr_num=70` and
+`sampled_train_rate=0.09`, with unchanged native privacy accounting. With 70
+released roots, requested batch sizes 256 and 1024 both give effective batches
+of 70 and one update per epoch; smaller sampled graphs use fewer roots.
+Actual root counts, effective batches, updates, and calibration are recorded.
+
+Outputs default to `results/full_matrix/`: isolated
+`runs/<dataset>/<method>/<privacy>/<regime>/seed<seed>/` directories contain
+`config.json`, `result.json`, and `result.csv`; `logs/` contains per-run logs.
+After every run succeeds, the launcher writes `summary.csv` and `summary.md`.
+Regenerate those tables independently, including from a partially completed
+campaign's successful runs:
+
+```bash
+python scripts/summarize_results.py 'results/full_matrix/runs/**/result.csv' \
+  --bootstrap --best --out results/full_matrix/summary
+```
+
+The summary selects best test results across the grid within each comparable
+dataset/privacy/method-backbone cell; it labels test-selection bias. To inspect
+every configuration instead, omit `--best`.
+Space-separated environment overrides `DATASETS`, `METHODS`, `EPSILONS`,
+`SEEDS`, `LEARNING_RATES`, `BATCH_SIZES`, `EPOCHS`, and `P2_VALUES` can restrict or
+extend the grid. `BOOTSTRAP_RESAMPLES` controls the final-test bootstrap count.
+See `bash scripts/full_matrix.sh --help` for the complete launch interface.
 
 ### Result tables
 

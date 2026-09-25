@@ -60,9 +60,7 @@ Thumbs.db
 
 # Experiment runtime outputs
 results/
-saved/
-experiments/*.png
-sparsification_experiments/results/
+reports/
 
 # Vendored upstream runtime outputs
 third_party/**/data_records/

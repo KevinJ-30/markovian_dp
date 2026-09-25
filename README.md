@@ -547,7 +547,7 @@ replacement draws in Google's executable implementation.
 Method `parameters` accept:
 - `clip` (default `1.0`): global L2 bound `C` on each root's complete gradient.
 - `dropout` (default `0.5`): hidden-activation dropout immediately before the
-  decoder in both GCN and GraphSAGE, including private padded batches. Disabled
+  decoder in GCN, GraphSAGE, and GIN, including private padded batches. Disabled
   during evaluation; set `0.0` to disable it during training as well.
 - `max_private_batch_nodes` (default `8192`): physical padded-slot budget.
   Chunking preserves one noise addition and one Adam update per logical batch;
@@ -555,9 +555,10 @@ Method `parameters` accept:
 - `batch_size`: positive logical batch size `B`, no larger than training size `N`.
 - `noise_multiplier`: sensitivity-normalized multiplier `lambda`.
 - `architecture` (default `graphsage`): `graphsage` uses separate root and
-  mean-neighbor transforms; `gcn` selects the original one-hop model. This
-  changes only the clipped per-root model, so sampling and privacy accounting
-  are unchanged.
+  mean-neighbor transforms; `gcn` selects the original one-hop model; `gin`
+  sums the root and non-self neighbors with fixed epsilon=0, then applies a
+  two-layer ReLU MLP. This changes only the clipped per-root model, so sampling
+  and privacy accounting are unchanged.
 
 For `M = min(K+1, N)`, Opacus adds isotropic Gaussian noise with standard deviation
 `2*M*C*lambda` to the clipped sum, then divides by `B`. Its internal multiplier

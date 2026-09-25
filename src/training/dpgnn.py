@@ -19,7 +19,8 @@ from opacus.grad_sample import GradSampleModule
 from opacus.optimizers import DPOptimizer
 
 from src.models.baselines import (
-    _OneHopGCN, _OneHopGraphSAGE, _PaddedOneHopGCN, _PaddedOneHopGraphSAGE,
+    _OneHopGCN, _OneHopGIN, _OneHopGraphSAGE,
+    _PaddedOneHopGCN, _PaddedOneHopGIN, _PaddedOneHopGraphSAGE,
 )
 from src.models.bootstrap import BootstrapConfig, BootstrapMetrics
 from src.models.objectives import _metric_rows, _task_loss, _task_metric
@@ -94,8 +95,8 @@ class PartitionedDPGNN:
             raise ValueError("max_subgraph_nodes must be positive")
         if config.max_private_batch_nodes < 1:
             raise ValueError("max_private_batch_nodes must be positive")
-        if config.architecture not in {"gcn", "graphsage"}:
-            raise ValueError("architecture must be 'gcn' or 'graphsage'")
+        if config.architecture not in {"gcn", "gin", "graphsage"}:
+            raise ValueError("architecture must be 'gcn', 'gin', or 'graphsage'")
         self.config = config
         self.device = torch.device(device)
 
@@ -191,6 +192,11 @@ class PartitionedDPGNN:
                 x.size(1), self.config.latent_size, outputs,
                 dropout=self.config.dropout).to(self.device)
             private_model = _PaddedOneHopGraphSAGE(model)
+        elif self.config.architecture == "gin":
+            model = _OneHopGIN(
+                x.size(1), self.config.latent_size, outputs,
+                dropout=self.config.dropout).to(self.device)
+            private_model = _PaddedOneHopGIN(model)
         else:
             model = _OneHopGCN(
                 x.size(1), self.config.latent_size, outputs,
