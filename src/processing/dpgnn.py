@@ -1,4 +1,4 @@
-"""DP-GNN degree sampling and root-first one-hop physical batches."""
+"""DP-GNN degree sampling and complete root-local physical batches."""
 
 from typing import Any, Iterable
 
@@ -53,24 +53,29 @@ def iter_dpgnn_batches(
     adjacency: SparseAdjacency,
     x: torch.Tensor,
     y: torch.Tensor,
-    max_subgraph_nodes: int,
     max_padded_nodes: int,
     device: torch.device,
+    radius: int = 1,
 ) -> Iterable[PaddedRootedBatch]:
-    """Gather ordered stars from sorted non-self outgoing CPU CSR adjacency.
+    """Gather complete outgoing neighborhoods without a semantic size cap.
 
-    Features and labels already reside on ``device``. Only the selected chunk's
-    indices and masks cross devices; an oversized star is yielded on its own.
+    ``max_padded_nodes`` controls physical chunks, not receptive fields: an
+    oversized root is yielded intact on its own. Radius one retains the
+    vectorized star representation; deeper batches also carry local arcs.
     """
-    if max_subgraph_nodes < 1:
-        raise ValueError("max_subgraph_nodes must be positive")
+    if type(radius) is not int or radius < 1:
+        raise ValueError("radius must be a positive integer")
     if max_padded_nodes < 1:
         raise ValueError("max_padded_nodes must be positive")
+    if radius > 1:
+        yield from _iter_multihop_batches(
+            roots, adjacency=adjacency, x=x, y=y, radius=radius,
+            max_padded_nodes=max_padded_nodes, device=device)
+        return
 
     roots = roots.detach().to(device="cpu", dtype=torch.long)
     starts = adjacency.rowptr[roots]
-    neighbor_counts = (adjacency.rowptr[roots + 1] - starts).clamp(
-        max=max_subgraph_nodes - 1)
+    neighbor_counts = adjacency.rowptr[roots + 1] - starts
     star_sizes = (neighbor_counts + 1).tolist()
     chunk_start = 0
     while chunk_start < len(star_sizes):
@@ -116,3 +121,68 @@ def iter_dpgnn_batches(
             loss_mask=torch.ones(chunk_count, dtype=torch.bool, device=device),
         )
         chunk_start = chunk_end
+
+
+def _iter_multihop_batches(
+    roots: torch.Tensor, *, adjacency: SparseAdjacency, x: torch.Tensor,
+    y: torch.Tensor, radius: int, max_padded_nodes: int, device: torch.device,
+) -> Iterable[PaddedRootedBatch]:
+    """BFS deduplicates vertices while keeping every dependency arc.
+
+    Only vertices at distance < radius need outgoing arcs: the final layer
+    at the root cannot depend on an update at the outer boundary.
+    """
+    rowptr, col = adjacency.rowptr.numpy(), adjacency.col.numpy()
+
+    def neighborhood(root: int):
+        nodes, indices, edges = [root], {root: 0}, []
+        frontier = [root]
+        for _ in range(radius):
+            following = []
+            for node in frontier:
+                sender = indices[node]
+                for neighbor in col[rowptr[node]:rowptr[node + 1]].tolist():
+                    if neighbor not in indices:
+                        indices[neighbor] = len(nodes)
+                        nodes.append(neighbor)
+                        following.append(neighbor)
+                    edges.append((sender, indices[neighbor]))
+            frontier = following
+            if not frontier:
+                break
+        return nodes, edges
+
+    def pack(graphs):
+        count = len(graphs)
+        width = max(len(nodes) for nodes, _ in graphs)
+        edge_width = max(len(edges) for _, edges in graphs)
+        ids = torch.zeros((count, width), dtype=torch.long)
+        mask = torch.zeros((count, width), dtype=torch.bool)
+        edges = torch.zeros((count, 2, edge_width), dtype=torch.long)
+        edge_mask = torch.zeros((count, edge_width), dtype=torch.bool)
+        for index, (nodes, arcs) in enumerate(graphs):
+            ids[index, :len(nodes)] = torch.tensor(nodes, dtype=torch.long)
+            mask[index, :len(nodes)] = True
+            if arcs:
+                edges[index, :, :len(arcs)] = torch.tensor(arcs, dtype=torch.long).t()
+                edge_mask[index, :len(arcs)] = True
+        ids, mask = ids.to(device), mask.to(device)
+        features = x[ids].masked_fill(~mask.unsqueeze(-1), 0)
+        return PaddedRootedBatch(
+            roots=ids[:, 0], node_ids=ids, features=features, node_mask=mask,
+            edge_index=edges.to(device), edge_mask=edge_mask.to(device),
+            root_index=torch.zeros(count, dtype=torch.long, device=device),
+            labels=y[ids[:, 0]],
+            loss_mask=torch.ones(count, dtype=torch.bool, device=device))
+
+    pending, width = [], 0
+    for root in roots.detach().cpu().tolist():
+        graph = neighborhood(root)
+        next_width = max(width, len(graph[0]))
+        if pending and (len(pending) + 1) * next_width > max_padded_nodes:
+            yield pack(pending)
+            pending, width = [], 0
+        pending.append(graph)
+        width = max(width, len(graph[0]))
+    if pending:
+        yield pack(pending)

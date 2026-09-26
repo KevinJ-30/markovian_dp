@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Validate and plot completed SparseExpand ablations without launching training.
 
-Usage: python scripts/sparse_ablation.py --ofat-root ROOT [--out-dir NEW_DIRECTORY]
+Usage: python scripts/sparse_ablation.py --ofat-root ROOT [--depth-root ROOT]
+                                      [--out-dir NEW_DIRECTORY]
 
-All 60 epsilon-8, seed-0 OFAT runs must be present and valid. Test error bars
-use each validation-selected checkpoint's stored 95% node-percentile bootstrap
-interval: test-node uncertainty, not training randomness. One comparison chart
-per backend groups dataset bars in three horizontal parameter panels. Resource
-and sampled-size observations remain in the CSV exports, not the figures.
+All 60 epsilon-8, seed-0 OFAT runs must be present and valid. An optional
+depth-baseline root adds all 27 DP-GNN/ProGAP runs. Test error bars use each
+validation-selected checkpoint's stored 95% node-percentile bootstrap interval:
+test-node uncertainty, not training randomness. Depth comparisons use lines;
+the other two parameter panels retain grouped SGNN bars. Resource and sampled-
+size observations remain in the CSV exports, not the figures.
 """
 from __future__ import annotations
 
@@ -23,7 +25,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from scripts.full_matrix_records import BOOTSTRAP, _verify_selection
+from scripts.full_matrix_records import BOOTSTRAP, _expected_parameters, _verify_selection
 from scripts.sparse_ablation_grid import configurations, run_relative_path
 
 CONFIG_KEYS = ("protocol", "method", "epsilon", "lr", "batch_size", "epochs", "seed", "p2", "r", "K_out")
@@ -40,6 +42,8 @@ POLICY = {
     "checkpoint": "Best validation-primary-metric checkpoint; no test-based selection or configuration ranking.",
     "per_run_interval": "95% node-percentile bootstrap interval, 1000 resamples, bootstrap seed 0.",
     "uncertainty": "Test-node bootstrap uncertainty conditional on the validation-selected checkpoint; not uncertainty from training randomness. There are no independent training-seed replicates or across-run averages.",
+    "depth_comparison": "The x coordinate is SGNN expansion radius (fixed two-layer network), DP-GNN message-passing radius, or ProGAP progressive aggregation depth. These are not identical architectures or training schedules.",
+    "dpgnn_accounting": "DP-GNN radius-dependent influence is conditional on the fixed sampled topology and node features/labels adjacency; it does not establish a raw-topology node-deletion guarantee.",
     "diagnostics": "Resource and sampled-size observations are research diagnostics, not additional DP releases covered by epsilon.",
     "missing_values": "Empty CSV fields are unavailable, never zero-imputed. Missing CPU CUDA measurements are explicitly marked and not plotted.",
     "resource_scope": "Calibration/training duration excludes data loading. CUDA allocated-memory peak covers backend calibration/training; RSS is runner-process lifetime high-water mark including loading. These are process/allocation measures, not total machine memory.",
@@ -131,10 +135,12 @@ def read_manifest(root, study):
     manifest = read_json(path)
     same(manifest["schema_version"], 1, f"{path}: schema_version")
     same(manifest["study"], study, f"{path}: study")
-    for name, value in {"hidden": 128, "dropout": 0.5, "layers": 2, "K_in": 10,
-                        "chi": 1, "union_safe": False, "split_seed": 0,
-                        "bootstrap_resamples": 1000, "bootstrap_confidence": 0.95,
-                        "bootstrap_seed": 0}.items():
+    fixed = {"hidden": 128, "dropout": 0.5, "split_seed": 0,
+             "bootstrap_resamples": 1000, "bootstrap_confidence": 0.95,
+             "bootstrap_seed": 0}
+    if study == "ofat":
+        fixed.update(layers=2, K_in=10, chi=1, union_safe=False)
+    for name, value in fixed.items():
         same(manifest["fixed"][name], value, f"{path}: fixed {name}")
     entries = manifest["configurations"]
     require(isinstance(entries, list), f"{path}: configurations must be a list")
@@ -172,6 +178,10 @@ def read_manifest(root, study):
                      "src/training/sparse_gnn.py", "src/processing/sparse_expand.py",
                      "src/processing/graphs.py", "src/privacy/accounting.py"):
         require(required in source_hashes, f"{path}: missing required source commitment {required}")
+    if study == "depth-baselines":
+        for required in ("src/training/dpgnn.py", "src/processing/dpgnn.py",
+                         "src/privacy/dpgnn.py", "third_party/ProGAP/inductive_adapter.py"):
+            require(required in source_hashes, f"{path}: missing baseline source commitment {required}")
     invocations = manifest.get("invocations")
     require(isinstance(invocations, list) and len(invocations) == len(entries),
             f"{path}: exact per-run invocation evidence is missing or incomplete")
@@ -247,6 +257,8 @@ def verify_csv(path, result):
 
 def read_run(bundle, expected):
     root, study = bundle["root"], bundle["study"]
+    sparse = expected["method"].startswith("sparse_")
+    progap = expected["method"] == "progap"
     state = None if bundle["queue_states"] is None else bundle["queue_states"][config_key(expected)]
     if state is None:
         directory = owned_path(root, expected["run_dir"])
@@ -275,8 +287,9 @@ def read_run(bundle, expected):
         same(task[name], value, f"task {name}")
     population = integer(config["train_nodes"], "train_nodes", minimum=1)
     batch = min(population, expected["batch_size"])
-    interval = math.ceil(population / batch)
-    steps = expected["epochs"] * interval
+    interval = population // batch if progap else math.ceil(population / batch)
+    stages = expected["r"] + 1 if progap else 1
+    steps = stages * expected["epochs"] * interval
     delta = 1 / population
     identity = {
         "protocol": expected["protocol"], "dataset": dataset, "method": expected["method"],
@@ -285,8 +298,8 @@ def read_run(bundle, expected):
         "requested_batch_size": expected["batch_size"], "batch_size": batch,
         "effective_batch_size": batch, "hidden": 128, "dropout": 0.5, "dp": True,
         "metric": metric, "split_seed": 0, "split_strategy": strategy, "split": f"{strategy}:seed0",
-        "train_nodes": population, "steps": steps, "weight_decay": 5e-4,
-        "architecture": "gin" if expected["method"] == "sparse_gin" else "graphsage",
+        "train_nodes": population, "steps": steps, "weight_decay": 0.0 if progap else 5e-4,
+        "architecture": "progap" if progap else "gin" if expected["method"].endswith("gin") else "graphsage",
     }
     for name, value in identity.items():
         same(config[name], value, f"config {name}")
@@ -294,13 +307,17 @@ def read_run(bundle, expected):
     for name in ("domain_split", "domain_split_id", "split_file", "device", "epsilon", "delta"):
         same(config[name], result[name], f"config/result {name}")
     requested = config["requested"]
-    for name, value in {
+    requested_values = {
         "dataset": expected["protocol"], "method": expected["method"], "epsilon": expected["epsilon"],
         "lr": expected["lr"], "batch_size": expected["batch_size"], "epochs": expected["epochs"],
-        "seed": expected["seed"], "p2": expected["p2"], "sparse_radius": expected["r"],
-        "sparse_degree_cap": expected["K_out"], "gnn_hidden": 128, "dropout": 0.5,
+        "seed": expected["seed"], "p2": expected["p2"], "gnn_hidden": 128, "dropout": 0.5,
         "bootstrap_resamples": 1000,
-    }.items():
+    }
+    if sparse:
+        requested_values.update(sparse_radius=expected["r"], sparse_degree_cap=expected["K_out"])
+    else:
+        requested_values["progap_depth" if progap else "dpgnn_radius"] = expected["r"]
+    for name, value in requested_values.items():
         same(requested[name], value, f"requested {name}")
     parameters, native = result["parameters"], result["native_result"]
     fixed_parameters = {
@@ -316,12 +333,14 @@ def read_run(bundle, expected):
         "calibration_atol": 1e-6, "bootstrap_confidence": 0.95, "bootstrap_resamples": 1000,
         "bootstrap_seed": 0, "binary": binary, "multilabel": multilabel, "regression": False,
         "metric_ignore_label": task["metric_ignore_label"],
-    }
+    } if sparse else _expected_parameters(
+        {**expected, "dropout": 0.5, "gnn_hidden": 128, "mlp_hidden": 64}, population)
     for name, value in fixed_parameters.items():
         same(parameters[name], value, f"actual parameter {name}")
-    require(integer(parameters["K_out_achieved"], "K_out_achieved") <= expected["K_out"],
-            "achieved outgoing degree exceeds preprocessing cap")
-    integer(parameters["K_in_achieved"], "K_in_achieved")
+    if sparse:
+        require(integer(parameters["K_out_achieved"], "K_out_achieved") <= expected["K_out"],
+                "achieved outgoing degree exceeds preprocessing cap")
+        integer(parameters["K_in_achieved"], "K_in_achieved")
     for name in ("test_metric", "validation_metric", f"test_{metric}"):
         finite(result[name], name, minimum=0, maximum=1)
     same(result[f"test_{metric}"], result["test_metric"], "primary score")
@@ -330,26 +349,49 @@ def read_run(bundle, expected):
     require(score_key is not None, "native test primary metric is absent")
     same(native[score_key], result["test_metric"], "native test primary metric")
     _verify_selection({**expected, "task": task}, result, parameters)
-    privacy = native["privacy"]
-    same(privacy["accountant"], "src.privacy.accounting.sparsegnn_mixture_weights.chi1", "accountant")
-    same(privacy["composition_count"], steps, "accounted full training schedule")
+    privacy = native["privacy"]["total"] if progap else native["privacy"]
+    if sparse:
+        same(privacy["accountant"], "src.privacy.accounting.sparsegnn_mixture_weights.chi1", "accountant")
+        for name, value in {"p1": batch / population, "p2": expected["p2"], "r": expected["r"],
+                            "K_in": 10, "K_out": expected["K_out"], "chi": 1,
+                            "union_safe": False, "grid": 1e-3}.items():
+            same(privacy["parameters"][name], value, f"accounting parameter {name}")
+    elif progap:
+        same(privacy["accountant"], "upstream.ProGAP.ComposedNoisyMechanism", "accountant")
+        for name, value in {"depth": expected["r"], "max_degree": 5,
+                            "batch_size": batch, "train_nodes": population,
+                            "component_coefficients": [expected["r"], stages]}.items():
+            same(privacy["parameters"][name], value, f"accounting parameter {name}")
+    else:
+        same(privacy["accountant"], "src.privacy.dpgnn.multiterm_dpsgd_epsilon", "accountant")
+        same(privacy["parameters"]["max_terms"], parameters["max_terms"], "accounted sensitivity")
+        same(privacy["parameters"]["radius"], expected["r"], "accounted DP-GNN radius")
+        same(privacy["parameters"]["max_degree"], 5, "accounted max degree")
+        same(privacy["parameters"]["sampling"], "uniform_without_replacement", "accounted sampling")
+        same(privacy["parameters"]["opacus_noise_multiplier"],
+             2 * parameters["max_terms"] * parameters["noise_multiplier"], "effective noise multiplier")
+    same(privacy["composition_count"], expected["r"] + stages if progap else steps,
+         "accounted full training schedule")
     same(privacy["sampling_probability"], batch / population, "accounted root sampling probability")
-    for name, value in {"p1": batch / population, "p2": expected["p2"], "r": expected["r"],
-                        "K_in": 10, "K_out": expected["K_out"], "chi": 1,
-                        "union_safe": False, "grid": 1e-3}.items():
-        same(privacy["parameters"][name], value, f"accounting parameter {name}")
     epsilon = finite(privacy["epsilon"], "actual epsilon", minimum=0, maximum=expected["epsilon"] + 1e-6)
     same(privacy["delta"], delta, "actual delta")
     same(result["epsilon"], epsilon, "result actual epsilon")
     same(result["delta"], delta, "result actual delta")
-    sigma = finite(parameters["sigma"], "noise multiplier", minimum=0)
+    sigma = finite(privacy["noise_multiplier"], "noise multiplier", minimum=0)
     require(sigma > 0, "noise multiplier must be positive")
-    same(privacy["noise_multiplier"], sigma, "accounted noise multiplier")
     calibration = native["calibration"]
-    for name, value in {"noise_multiplier": sigma, "epsilon": epsilon, "target_epsilon": expected["epsilon"],
-                        "delta": delta}.items():
+    calibration_values = (
+        {"noise_std": sigma, "achieved_epsilon": epsilon,
+         "target_epsilon": expected["epsilon"], "target_delta": delta}
+        if progap else
+        {"noise_multiplier": sigma, "epsilon" if sparse else "achieved_epsilon": epsilon,
+         "target_epsilon": expected["epsilon"], "delta" if sparse else "target_delta": delta})
+    for name, value in calibration_values.items():
         same(calibration[name], value, f"noise calibration {name}")
-    integer(calibration["evaluations"], "calibration evaluations", minimum=1)
+    if not progap:
+        same(parameters["sigma" if sparse else "noise_multiplier"], sigma, "training noise multiplier")
+    if sparse:
+        integer(calibration["evaluations"], "calibration evaluations", minimum=1)
     ci = result["test_confidence_intervals"]
     same(ci, native["test_confidence_intervals"], "native/result confidence intervals")
     for name, value in BOOTSTRAP.items():
@@ -371,8 +413,9 @@ def read_run(bundle, expected):
     if device == "cpu":
         same(cuda, None, "CPU CUDA memory must be unavailable, not zero")
     else:
-        integer(cuda, "peak CUDA allocated bytes", minimum=1)
-    sampling = native["sampling_statistics"]
+        integer(cuda, "peak CUDA allocated bytes", minimum=0 if progap else 1)
+    sampling = native.get("sampling_statistics", {
+        "count": 0, "mean_nodes": None, "mean_edges": None, "max_nodes": 0, "max_edges": 0})
     count = integer(sampling["count"], "sampled subgraph count")
     for kind in ("nodes", "edges"):
         maximum = integer(sampling[f"max_{kind}"], f"max sampled {kind}")
@@ -394,13 +437,18 @@ def read_run(bundle, expected):
         hashes[str(launch_path)] = sha256(launch_path)
     require(isinstance(actual_argv, list) and all(isinstance(arg, str) for arg in actual_argv),
             "actual worker command must be a string list")
-    for flag, value in {
+    command_values = {
         "--dataset": expected["protocol"], "--method": expected["method"], "--lr": expected["lr"],
         "--batch-size": expected["batch_size"], "--epochs": expected["epochs"], "--seed": expected["seed"],
-        "--epsilon": expected["epsilon"], "--p2": expected["p2"], "--sparse-radius": expected["r"],
-        "--sparse-degree-cap": expected["K_out"], "--gnn-hidden": 128, "--dropout": 0.5,
+        "--epsilon": expected["epsilon"], "--gnn-hidden": 128, "--dropout": 0.5,
         "--bootstrap-resamples": 1000,
-    }.items():
+    }
+    if sparse:
+        command_values.update({"--p2": expected["p2"], "--sparse-radius": expected["r"],
+                               "--sparse-degree-cap": expected["K_out"]})
+    else:
+        command_values["--progap-depth" if progap else "--dpgnn-radius"] = expected["r"]
+    for flag, value in command_values.items():
         same(actual_argv.count(flag), 1, f"worker command {flag} occurrence count")
         position = actual_argv.index(flag) + 1
         require(position < len(actual_argv), f"worker command value missing for {flag}")
@@ -415,7 +463,9 @@ def read_run(bundle, expected):
     row = {
         **{name: expected[name] for name in CONFIG_KEYS}, "study": study, "metric": metric,
         "actual_epsilon": epsilon, "delta": delta, "effective_batch_size": batch,
-        "hidden": 128, "layers": 2, "dropout": 0.5, "K_in": 10, "chi": 1, "union_safe": False,
+        "hidden": 128, "layers": 2 if sparse else None, "dropout": 0.5,
+        "K_in": 10 if sparse else None, "chi": 1 if sparse else None,
+        "union_safe": False if sparse else None,
         "device": result["device"], "selected_step": result["selection"]["step"],
         "selected_epoch": result["selection"].get("epoch", result["selection"]["step"] // interval),
         "validation_metric": result["validation_metric"], "test_metric": result["test_metric"],
@@ -449,11 +499,12 @@ def relationship_curves(rows):
     curves = []
     for protocol, method, epsilon in dict.fromkeys((row["protocol"], row["method"], row["epsilon"]) for row in rows):
         subset = [row for row in rows if (row["protocol"], row["method"], row["epsilon"]) == (protocol, method, epsilon)]
-        for parameter, fixed, expected_values in (
+        sweeps = (
             ("r", {"p2": 0.5, "K_out": 10}, (1, 2, 3)),
             ("p2", {"r": 1, "K_out": 10}, (0.05, 0.1, 0.25, 0.5, 1.0)),
             ("K_out", {"r": 1, "p2": 0.5}, (5, 10, 20, 40)),
-        ):
+        ) if method.startswith("sparse_") else (("r", {}, (1, 2, 3)),)
+        for parameter, fixed, expected_values in sweeps:
             selected = sorted((row for row in subset if all(row[key] == value for key, value in fixed.items())),
                               key=lambda row: row[parameter])
             same(tuple(row[parameter] for row in selected), expected_values,
@@ -478,6 +529,7 @@ def draw_figures(curves, out_dir):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.patches import Patch
+    from matplotlib.lines import Line2D
 
     plt.rcParams.update({"font.family": "serif", "font.size": 18,
                          "axes.labelsize": 22, "axes.titlesize": 21,
@@ -489,7 +541,7 @@ def draw_figures(curves, out_dir):
         ("twitch-allbut2", "Twitch", COLORS[2]),
     )
     parameters = (
-        ("r", "Expansion depth $r$"),
+        ("r", "Expansion / propagation depth"),
         ("p2", "Edge-retention probability $p_2$"),
         ("K_out", r"Outgoing-degree cap $K_{\mathrm{out}}$"),
     )
@@ -497,42 +549,60 @@ def draw_figures(curves, out_dir):
     for method, backend in (("sparse_sage", "SAGE"), ("sparse_gin", "GIN")):
         epsilons = {row["epsilon"] for row in curves if row["method"] == method}
         require(len(epsilons) == 1, f"expected one privacy parameter for {backend}")
-        epsilon = next(iter(epsilons))
-        figure, axes = plt.subplots(1, 3, figsize=(16.5, 5.5), sharey=True)
+        figure, axes = plt.subplots(1, 3, figsize=(18.7, 3.6), sharey=True)
+        families = [(method, "SGNN", "-")]
+        for baseline, label, style in (
+            ("progap", "ProGAP", "--"),
+            ("dp_gnn_gin" if backend == "GIN" else "dp_gnn_sage", "DP-GNN", ":"),
+        ):
+            if any(row["method"] == baseline for row in curves):
+                families.append((baseline, label, style))
         width = 0.24
-        for ax, (parameter, xlabel) in zip(axes, parameters):
+        for ax, (parameter, xlabel), panel_label in zip(axes, parameters, ("(a)", "(b)", "(c)")):
             for dataset_index, (protocol, _, color) in enumerate(datasets):
-                selected = sorted(
-                    (row for row in curves if row["method"] == method
-                     and row["protocol"] == protocol and row["curve_parameter"] == parameter),
-                    key=lambda row: row["curve_value"])
-                centers = list(range(len(selected)))
-                xs = [center + (dataset_index - 1) * width for center in centers]
-                ax.bar(xs, [row["test_metric"] for row in selected], width=width,
-                       color=color, edgecolor="white", linewidth=0.6,
-                       zorder=3)
-                for x, row in zip(xs, selected):
-                    # Draw absolute stored endpoints: percentile intervals need
-                    # not bracket the empirical score, even for bar charts.
-                    lower, upper = row["bootstrap_ci_lower"], row["bootstrap_ci_upper"]
-                    ax.vlines(x, lower, upper, color="0.15", linewidth=1.6, zorder=4)
-                    ax.hlines((lower, upper), x - width * 0.25, x + width * 0.25,
-                              color="0.15", linewidth=1.6, zorder=4)
-            ax.set_xticks(centers, [f"{row['curve_value']:g}" for row in selected])
-            ax.set(xlabel=xlabel, ylim=(0, 1),
-                   xlim=(-0.6, len(selected) - 0.4))
+                panel_methods = families if parameter == "r" else [(method, "SGNN", "-")]
+                for curve_method, _, style in panel_methods:
+                    selected = sorted(
+                        (row for row in curves if row["method"] == curve_method
+                         and row["protocol"] == protocol and row["curve_parameter"] == parameter),
+                        key=lambda row: row["curve_value"])
+                    require(bool(selected), f"missing curve: {curve_method}/{protocol}/{parameter}")
+                    centers = list(range(len(selected)))
+                    if parameter == "r":
+                        xs = [row["curve_value"] for row in selected]
+                        ax.plot(xs, [row["test_metric"] for row in selected],
+                                color=color, linestyle=style, linewidth=3, alpha=1,
+                                marker="o", markersize=4, zorder=3)
+                    else:
+                        xs = [center + (dataset_index - 1) * width for center in centers]
+                        ax.bar(xs, [row["test_metric"] for row in selected], width=width,
+                               color=color, edgecolor="white", linewidth=0.6, zorder=3)
+                        for x, row in zip(xs, selected):
+                            # Absolute endpoints need not bracket the empirical score.
+                            lower, upper = row["bootstrap_ci_lower"], row["bootstrap_ci_upper"]
+                            ax.vlines(x, lower, upper, color="0.15", linewidth=1.3, zorder=4)
+                            ax.hlines((lower, upper), x - width * 0.25, x + width * 0.25,
+                                      color="0.15", linewidth=1.3, zorder=4)
+            if parameter == "r":
+                ax.set_xticks((1, 2, 3))
+                ax.set_xlim(0.85, 3.15)
+            else:
+                ax.set_xticks(centers, [f"{row['curve_value']:g}" for row in selected])
+                ax.set_xlim(-0.6, len(selected) - 0.4)
+            ax.set(xlabel=xlabel, ylim=(0, 1))
+            ax.text(0.025, 0.95, panel_label, transform=ax.transAxes,
+                    ha="left", va="top", fontsize=18, fontweight="bold")
             ax.set_axisbelow(True)
             ax.grid(which="major", color="0.88", linewidth=0.6)
             ax.spines[["top", "right"]].set_visible(False)
         axes[0].set_ylabel("Test metric")
-        header = Patch(facecolor="none", edgecolor="none",
-                       label=rf"Base Model: {backend}   Privacy: $\epsilon={epsilon:g}$")
-        figure.legend(handles=[header, *[Patch(facecolor=color, label=label)
-                                        for _, label, color in datasets]],
-                      loc="lower center", bbox_to_anchor=(0.5, 0.80), borderaxespad=0,
-                      ncol=4, fontsize=17, frameon=True, fancybox=True,
-                      columnspacing=1.4, facecolor="white", edgecolor="0.8", framealpha=0.8)
-        figure.subplots_adjust(left=0.06, right=0.985, bottom=0.20, top=0.78, wspace=0.12)
+        figure.legend(
+            handles=[*[Patch(facecolor=color, label=label) for _, label, color in datasets],
+                     *[Line2D([], [], color="0.2", linestyle=style, linewidth=3, alpha=1, label=label)
+                       for _, label, style in families]],
+            loc="center left", bbox_to_anchor=(0.005, 0.55), borderaxespad=0,
+            ncol=1, fontsize=14, frameon=False, handlelength=2.4)
+        figure.subplots_adjust(left=0.175, right=0.99, bottom=0.24, top=0.84, wspace=0.12)
         for extension in ("png", "pdf"):
             path = out_dir / f"ablation_{backend.lower()}.{extension}"
             metadata = ({"CreationDate": None, "ModDate": None} if extension == "pdf"
@@ -546,8 +616,10 @@ def draw_figures(curves, out_dir):
 def parser():
     cli = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     cli.add_argument("--ofat-root", required=True, type=Path)
+    cli.add_argument("--depth-root", type=Path,
+                     help="complete 27-run DP-GNN/ProGAP depth-baseline study")
     cli.add_argument("--out-dir", type=Path,
-                     help="fresh figure/data directory (default: OFAT_ROOT/figures)")
+                     help="fresh figure/data directory (default: DEPTH_ROOT/figures, else OFAT_ROOT/figures)")
     return cli
 
 
@@ -556,32 +628,39 @@ def main(argv=None):
     args = cli.parse_args(argv)
     argument_values = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
     root = args.ofat_root.expanduser().absolute()
-    out_dir = args.out_dir.expanduser().absolute() if args.out_dir else root / "figures"
+    depth_root = args.depth_root.expanduser().absolute() if args.depth_root else None
+    out_dir = args.out_dir.expanduser().absolute() if args.out_dir else (depth_root or root) / "figures"
     argument_values["out_dir"] = str(out_dir)
     try:
         require(not out_dir.exists() and not out_dir.is_symlink(), f"output directory already exists: {out_dir}; refusing overwrite")
-        require(root.is_dir(), f"input root is not a directory: {root}")
-        require(not root.resolve().is_relative_to(out_dir.resolve()),
-                f"output directory cannot replace the input root or its ancestors: {root}")
-        bundle = read_manifest(root, "ofat")
-        rows, all_hashes, errors, split_signatures = [], dict(bundle["hashes"]), [], {}
-        for entry in bundle["entries"]:
-            try:
-                row, hashes, signature = read_run(bundle, entry)
-                if entry["protocol"] in split_signatures:
-                    same(signature, split_signatures[entry["protocol"]], "incompatible dataset/task/split evidence across runs")
-                else:
-                    split_signatures[entry["protocol"]] = signature
-                rows.append(row)
-                all_hashes.update(hashes)
-            except (OSError, ValueError, KeyError, TypeError, OverflowError) as error:
-                errors.append(f"{root / entry['run_dir']}: {type(error).__name__}: {error}")
+        inputs = [(root, "ofat")] + ([(depth_root, "depth-baselines")] if depth_root else [])
+        bundles = []
+        rows, all_hashes, errors, split_signatures = [], {}, [], {}
+        for input_root, study in inputs:
+            require(input_root.is_dir(), f"input root is not a directory: {input_root}")
+            require(not input_root.resolve().is_relative_to(out_dir.resolve()),
+                    f"output directory cannot replace the input root or its ancestors: {input_root}")
+            bundle = read_manifest(input_root, study)
+            bundles.append(bundle)
+            all_hashes.update(bundle["hashes"])
+            for entry in bundle["entries"]:
+                try:
+                    row, hashes, signature = read_run(bundle, entry)
+                    if entry["protocol"] in split_signatures:
+                        same(signature, split_signatures[entry["protocol"]],
+                             "incompatible dataset/task/split evidence across runs")
+                    else:
+                        split_signatures[entry["protocol"]] = signature
+                    rows.append(row)
+                    all_hashes.update(hashes)
+                except (OSError, ValueError, KeyError, TypeError, OverflowError) as error:
+                    errors.append(f"{input_root / entry['run_dir']}: {type(error).__name__}: {error}")
         if errors:
             details = "\n".join(errors[:20])
             omitted = f"\n... {len(errors) - 20} additional invalid/incomplete runs" if len(errors) > 20 else ""
             raise ValueError(f"strict analysis rejected {len(errors)} invalid/incomplete runs; {len(rows)} valid. "
                              f"No output was written.\n{details}{omitted}")
-        same(len(rows), 60, "complete validated run count")
+        same(len(rows), 87 if depth_root else 60, "complete validated run count")
         same(len({config_key(row) for row in rows}), len(rows), "unique configuration count")
         curves = relationship_curves(rows)
         # Resolve plotting dependencies before reserving the fresh output directory.
@@ -594,22 +673,24 @@ def main(argv=None):
         source_paths = [Path(__file__).resolve(), ROOT / "scripts/sparse_ablation_grid.py",
                         ROOT / "scripts/full_matrix_records.py", ROOT / "scripts/full_matrix_runtime.py"]
         provenance = {
-            "schema_version": 1, "analysis": "SparseExpand OFAT", "completeness": "strict_complete",
+            "schema_version": 1, "analysis": "SparseExpand OFAT and depth comparisons" if depth_root else "SparseExpand OFAT",
+            "completeness": "strict_complete",
             "arguments": argument_values, "argv": list(sys.argv if argv is None else [str(Path(__file__)), *argv]),
             "input_run_count": len(rows), "curve_row_count": len(curves),
-            "curve_membership": "The one shared anchor is referenced in each of the three OFAT curves; no additional training run or averaging.",
-            "input_root": str(root), "input_sha256": dict(sorted(all_hashes.items())),
+            "curve_membership": "The SGNN anchor is referenced in three OFAT curves. Each baseline run appears once in the depth data; ProGAP is shared between backend figures. No averaging.",
+            "input_root": str(root), "depth_root": str(depth_root) if depth_root else None,
+            "input_sha256": dict(sorted(all_hashes.items())),
             "plot_code_sha256": sha256(Path(__file__)),
             "analysis_source_sha256": {str(path.relative_to(ROOT)): sha256(path) for path in source_paths},
             "versions": {"python": platform.python_version(), **versions},
             "policy": POLICY, "split_evidence": split_signatures,
-            "manifest_provenance": bundle["manifest"]["provenance"],
+            "manifest_provenance": {bundle["study"]: bundle["manifest"]["provenance"] for bundle in bundles},
             "output_sha256": {path.name: sha256(path) for path in [out_dir / "per_run.csv", out_dir / "curves.csv", *figures]},
         }
         with (out_dir / "provenance.json").open("x") as stream:
             json.dump(provenance, stream, indent=2, sort_keys=True, allow_nan=False)
             stream.write("\n")
-        print(f"Validated {len(rows)} runs; {len(curves)} OFAT curve points; {len(figures)} PNG/PDF files: {out_dir}")
+        print(f"Validated {len(rows)} runs; {len(curves)} curve points; {len(figures)} PNG/PDF files: {out_dir}")
         print("Metric bars: stored 95% node-bootstrap intervals, not training-randomness uncertainty.")
         print(POLICY["accounting"])
         return 0

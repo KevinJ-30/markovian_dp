@@ -155,15 +155,15 @@ def test_root_sampling_rejects_invalid_population_or_batch(num_nodes, batch_size
         sample_dpgnn_roots(num_nodes, batch_size, generator=torch.Generator())
 
 
-def test_gather_preserves_order_repeated_roots_truncation_and_star_orientation():
+def test_gather_preserves_order_repeated_roots_and_complete_star_orientation():
     adjacency, x, y = _gather_fixture()
     roots = torch.tensor([5, 0, 6, 2, 0, 1])
     batches = list(iter_dpgnn_batches(
-        roots, adjacency=adjacency, x=x, y=y, max_subgraph_nodes=3,
+        roots, adjacency=adjacency, x=x, y=y,
         max_padded_nodes=100, device=torch.device("cpu")))
     assert len(batches) == 1
     batch = batches[0]
-    expected_nodes = [[5], [0, 1, 2], [6], [2, 4, 6], [0, 1, 2], [1, 2]]
+    expected_nodes = [[5], [0, 1, 2, 3, 4], [6], [2, 4, 6], [0, 1, 2, 3, 4], [1, 2]]
     assert torch.equal(batch.roots, roots)
     assert torch.equal(batch.labels, y[roots])
     assert batch.root_index.tolist() == [0] * len(expected_nodes)
@@ -184,7 +184,7 @@ def test_gather_uses_ordered_padded_slot_budget_and_preserves_oversized_star(bud
     adjacency, x, y = _gather_fixture()
     roots = torch.tensor([5, 1, 2, 0, 6, 1])
     batches = list(iter_dpgnn_batches(
-        roots, adjacency=adjacency, x=x, y=y, max_subgraph_nodes=100,
+        roots, adjacency=adjacency, x=x, y=y,
         max_padded_nodes=budget, device=torch.device("cpu")))
     # At budget 6, real sizes 1+2+3 would fit, but three padded stars cost 9.
     assert [batch.roots.tolist() for batch in batches] == [[5, 1], [2], [0], [6, 1]]
@@ -201,7 +201,7 @@ def test_empty_csr_gathers_isolated_repeated_roots_without_sentinel():
     y = torch.tensor([1, 0, 1])
     roots = torch.tensor([2, 0, 2])
     batches = list(iter_dpgnn_batches(
-        roots, adjacency=adjacency, x=x, y=y, max_subgraph_nodes=100,
+        roots, adjacency=adjacency, x=x, y=y,
         max_padded_nodes=3, device=torch.device("cpu")))
     assert len(batches) == 1
     batch = batches[0]
@@ -213,15 +213,6 @@ def test_empty_csr_gathers_isolated_repeated_roots_without_sentinel():
     assert torch.equal(batch.edge_index, torch.zeros((3, 2, 1), dtype=torch.long))
 
 
-def test_root_only_cap_ignores_existing_neighbors():
-    adjacency, x, y = _gather_fixture()
-    roots = torch.tensor([0, 2])
-    batch, = iter_dpgnn_batches(
-        roots, adjacency=adjacency, x=x, y=y, max_subgraph_nodes=1,
-        max_padded_nodes=2, device=torch.device("cpu"))
-    assert torch.equal(batch.node_ids, roots.unsqueeze(1))
-    assert torch.equal(batch.features, x[roots].unsqueeze(1))
-    assert batch.edge_index.tolist() == [[[0], [0]], [[0], [0]]]
 
 
 def test_empty_roots_yield_no_batches_even_for_empty_graph():
@@ -229,17 +220,17 @@ def test_empty_roots_yield_no_batches_even_for_empty_graph():
     batches = list(iter_dpgnn_batches(
         torch.empty(0, dtype=torch.long), adjacency=adjacency,
         x=torch.empty((0, 2)), y=torch.empty(0, dtype=torch.long),
-        max_subgraph_nodes=3, max_padded_nodes=3, device=torch.device("cpu")))
+        max_padded_nodes=3, device=torch.device("cpu")))
     assert batches == []
 
 
-@pytest.mark.parametrize("subgraph_limit,slot_limit", [(0, 4), (4, 0)])
-def test_gather_rejects_nonpositive_limits(subgraph_limit, slot_limit):
+@pytest.mark.parametrize("radius,slot_limit", [(0, 4), (1, 0)])
+def test_gather_rejects_nonpositive_limits(radius, slot_limit):
     adjacency, x, y = _gather_fixture()
     with pytest.raises(ValueError):
         list(iter_dpgnn_batches(
             torch.tensor([0]), adjacency=adjacency, x=x, y=y,
-            max_subgraph_nodes=subgraph_limit, max_padded_nodes=slot_limit,
+            radius=radius, max_padded_nodes=slot_limit,
             device=torch.device("cpu")))
 
 
@@ -253,12 +244,8 @@ def test_incoming_degree_bound_limits_participation_not_root_star_size(monkeypat
     y = torch.zeros(5, dtype=torch.long)
     batch, = iter_dpgnn_batches(
         torch.arange(5), adjacency=adjacency, x=x, y=y,
-        max_subgraph_nodes=100, max_padded_nodes=25, device=torch.device("cpu"))
+        max_padded_nodes=25, device=torch.device("cpu"))
     assert batch.node_ids[0, batch.node_mask[0]].tolist() == [0, 1, 2, 3, 4]
     occurrences = torch.bincount(batch.node_ids[batch.node_mask], minlength=5)
     assert occurrences.tolist() == [1, 2, 2, 2, 2]
     assert bool((occurrences <= 2).all())
-    truncated, = iter_dpgnn_batches(
-        torch.tensor([0]), adjacency=adjacency, x=x, y=y,
-        max_subgraph_nodes=3, max_padded_nodes=3, device=torch.device("cpu"))
-    assert truncated.node_ids.tolist() == [[0, 1, 2]]

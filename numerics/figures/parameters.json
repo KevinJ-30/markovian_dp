@@ -924,7 +924,7 @@
     "https://github.com/google-research/google-research/blob/master/differentially_private_gnns/privacy_accountants.py"
   ],
   "source_sha256": {
-    "numerics/compare.py": "1e2ea88316dbc05ae738b484ceeff276aa1e0e771cd1fe79bc1725442c4f0cb8",
+    "numerics/compare.py": "eb542e1260acf31eb14d56904c403a19126674fcad6d94dd5839cc00e21a5b39",
     "src/privacy/accounting.py": "c8f14b3a37e81b766eb4fb7cc73d4428968b3b568d260f353723bde27420f1b2",
     "src/privacy/privacy_loss.py": "00daf2d66e9e2e9679d7c4040caa694dedf768fcaadc8b0f26bb1e4957704501"
   },

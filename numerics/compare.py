@@ -260,7 +260,7 @@ def main():
     handles, labels = axes[0].get_legend_handles_labels()
     overview.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.99),
                     ncol=6, fontsize=17)
-    overview.subplots_adjust(left=0.04, right=0.98, bottom=0.19, top=0.77, wspace=0.22)
+    overview.subplots_adjust(left=0.04, right=0.98, bottom=0.19, top=0.77, wspace=0.32)
     for extension in ("png", "pdf", "svg"):
         overview.savefig(args.out_dir / f"comparison.{extension}", dpi=180,
                          bbox_inches="tight", pad_inches=0.15)

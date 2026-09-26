@@ -55,6 +55,10 @@ def parser() -> argparse.ArgumentParser:
                      help="SparseExpand radius (positive integer; SparseGNN only)")
     cli.add_argument("--sparse-degree-cap", type=int, default=10,
                      help="SparseGNN preprocessing outgoing-degree cap; not the fixed incoming sampling cap")
+    cli.add_argument("--dpgnn-radius", type=int, default=1,
+                     help="DP-GNN message-passing radius (positive integer; DP-GNN only)")
+    cli.add_argument("--progap-depth", type=int, default=2,
+                     help="ProGAP propagation depth (positive integer; ProGAP only)")
     cli.add_argument("--progap-python", help="ProGAP interpreter (default: this Python executable)")
     cli.add_argument("--bootstrap-resamples", type=int, default=1000,
                      help="final-test node bootstrap resamples at 95%% confidence; 0 disables")
@@ -73,13 +77,17 @@ def _check_args(args: argparse.Namespace) -> None:
     for name in ("batch_size", "epochs", "mlp_hidden", "gnn_hidden"):
         if getattr(args, name) < 1:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
-    for name in ("sparse_radius", "sparse_degree_cap"):
+    for name in ("sparse_radius", "sparse_degree_cap", "dpgnn_radius", "progap_depth"):
         value = getattr(args, name)
         if type(value) is not int or value < 1:
             raise ValueError(f"--{name.replace('_', '-')} must be a positive integer")
     sparse_override = args.sparse_radius != 1 or args.sparse_degree_cap != 10
     if sparse_override and not args.method.startswith("sparse_"):
         raise ValueError("--sparse-radius and --sparse-degree-cap overrides are supported only by SparseGNN")
+    if args.dpgnn_radius != 1 and not args.method.startswith("dp_gnn_"):
+        raise ValueError("--dpgnn-radius overrides are supported only by DP-GNN")
+    if args.progap_depth != 2 and args.method != "progap":
+        raise ValueError("--progap-depth overrides are supported only by ProGAP")
     if not 0 <= args.seed < 2**32:
         raise ValueError("--seed must be in [0, 2**32)")
     if not math.isfinite(args.dropout) or not 0 <= args.dropout < 1:
@@ -284,7 +292,7 @@ def _dpgnn(args, split, task, batch, delta):
     interval = math.ceil(population / batch)
     steps = args.epochs * interval
     max_degree = 5
-    max_terms = min(max_terms_per_node(max_degree), population)
+    max_terms = min(max_terms_per_node(max_degree, args.dpgnn_radius), population)
     calibration = _dpgnn_noise(
         target_epsilon=args.epsilon, delta=delta, population=population,
         batch=batch, steps=steps, max_terms=max_terms,
@@ -295,6 +303,7 @@ def _dpgnn(args, split, task, batch, delta):
         batch_size=batch, steps=steps, evaluate_every=interval,
         weight_decay=5e-4, delta=delta,
         noise_multiplier=calibration["noise_multiplier"], max_degree=max_degree,
+        radius=args.dpgnn_radius,
         seed=args.seed, **_task_options(task), **_bootstrap(args),
     )
     result = PartitionedDPGNN(config, device=args.device).fit(
@@ -306,7 +315,11 @@ def _dpgnn(args, split, task, batch, delta):
         "accountant": "src.privacy.dpgnn.multiterm_dpsgd_epsilon",
         "noise_multiplier": config.noise_multiplier,
         "sampling_probability": batch / population, "composition_count": steps,
+        "scope": result["privacy_scope"],
         "parameters": {"max_terms": max_terms, "max_degree": max_degree,
+                       "radius": config.radius,
+                       "max_terms_bound": "sum(max_degree**hop for hop in range(radius+1))",
+                       "neighborhood": "complete_outgoing_radius",
                        "sampling": "uniform_without_replacement",
                        "opacus_noise_multiplier": 2 * max_terms * config.noise_multiplier,
                        "noise_std": 2 * max_terms * config.noise_multiplier * config.clip},
@@ -432,7 +445,7 @@ def _progap(args, split, task, batch, delta):
         "target_epsilon": args.epsilon, "target_delta": delta,
         "epochs": args.epochs, "batch_size": batch, "hidden_dim": args.gnn_hidden,
         "learning_rate": args.lr, "dropout": args.dropout, "multilabel": task["multilabel"],
-        "depth": 2, "max_degree": 5, "max_grad_norm": 1.0,
+        "depth": args.progap_depth, "max_degree": 5, "max_grad_norm": 1.0,
         "optimizer": "adam", "weight_decay": 0.0, "eval_chunk_size": 16384,
     }
     config = {
@@ -443,9 +456,10 @@ def _progap(args, split, task, batch, delta):
     result = UpstreamBaseline("progap", config).run(split)
     population = int(split.train.data.num_nodes)
     interval = population // batch
+    stages = args.progap_depth + 1
     parameters = {
-        **options, "stages": 3, "epochs_total": 3 * args.epochs,
-        "steps": 3 * args.epochs * interval, "evaluate_every": interval,
+        **options, "stages": stages, "epochs_total": stages * args.epochs,
+        "steps": stages * args.epochs * interval, "evaluate_every": interval,
         "epoch_schedule": "native_drop_last_per_stage",
         "accounted_sgd_steps_per_stage": args.epochs * population // batch,
         "base_layers": 1, "head_layers": 1, "activation": "selu", "jk": "cat",
@@ -586,7 +600,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     validation = float(selection["validation_score"])
     selection.setdefault("epochs_completed", args.epochs)
     if args.method == "progap":
-        selection.update(stages=3, epochs_per_stage=args.epochs, final_test_stage=2)
+        selection.update(stages=parameters["stages"], epochs_per_stage=args.epochs,
+                         final_test_stage=parameters["depth"])
     steps = parameters.get("steps", args.epochs * interval)
     parameters.setdefault("steps", steps)
     parameters.setdefault("evaluate_every", interval)

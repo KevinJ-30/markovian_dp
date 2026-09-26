@@ -423,18 +423,23 @@ def _expected_parameters(row: dict, n: int) -> dict:
                       sgd_clip=1.0, inference_steps=2, target_delta=1.0 / n,
                       target_epsilon=row["epsilon"], dp_ppr=True, dp_sgd=True)
     elif method == "progap":
-        common.update(hidden_dim=row["gnn_hidden"], learning_rate=row["lr"], depth=2, stages=3,
-                      epochs_total=3 * epochs, max_degree=5, max_grad_norm=1.0,
-                      steps=3 * epochs * (n // batch), evaluate_every=n // batch,
+        depth = row["r"] if row.get("r") is not None else 2
+        stages = depth + 1
+        common.update(hidden_dim=row["gnn_hidden"], learning_rate=row["lr"], depth=depth, stages=stages,
+                      epochs_total=stages * epochs, max_degree=5, max_grad_norm=1.0,
+                      steps=stages * epochs * (n // batch), evaluate_every=n // batch,
                       accounted_sgd_steps_per_stage=epochs * n // batch, base_layers=1, head_layers=1,
                       activation="selu", jk="cat", batch_norm=True, layerwise=False,
                       eval_chunk_size=16384, target_delta=1.0 / n, target_epsilon=row["epsilon"],
                       normalization="upstream_ModuleValidator.fix", epoch_schedule="native_drop_last_per_stage")
     elif method.startswith("dp_gnn_"):
+        from src.privacy.dpgnn import max_terms_per_node
+        radius = row["r"] if row.get("r") is not None else 1
         common.update(latent_size=row["gnn_hidden"], learning_rate=row["lr"], max_degree=5,
-                      clip=1.0, max_subgraph_nodes=100, max_private_batch_nodes=8192,
+                      clip=1.0, radius=radius, max_private_batch_nodes=8192,
                       architecture="gin" if method.endswith("gin") else "graphsage", delta=1.0 / n,
-                      steps=epochs * interval, evaluate_every=interval, max_terms=min(6, n))
+                      steps=epochs * interval, evaluate_every=interval,
+                      max_terms=min(max_terms_per_node(5, radius), n))
     else:
         common.update(hidden=row["gnn_hidden"], layers=2, lr=row["lr"],
                       architecture="gin" if method.endswith("gin") else "mean",
@@ -680,6 +685,12 @@ def validate_worker_request(args: argparse.Namespace) -> dict:
     _same(Path(args.prepared_protocol).absolute(), Path(registered["prepared_manifest"]), "prepared worker argument")
     for key in ("method", "lr", "batch_size", "epochs", "seed", "dropout", "mlp_hidden", "gnn_hidden", "epsilon", "p2"):
         _same(getattr(args, key), registered[key], f"worker argument {key}")
+    _same(args.dpgnn_radius,
+          registered["r"] if registered["method"].startswith("dp_gnn_") and registered.get("r") is not None else 1,
+          "worker DP-GNN radius")
+    _same(args.progap_depth,
+          registered["r"] if registered["method"] == "progap" and registered.get("r") is not None else 2,
+          "worker ProGAP depth")
     _same(args.dataset, registered["protocol"], "worker protocol")
     _same(args.bootstrap_resamples, 1000, "worker bootstrap")
     _same(str(args.device).split(":")[0], manifest["device"], "worker device")
@@ -737,13 +748,16 @@ def _verify_selection(request: dict, result: dict, parameters: dict) -> None:
             _same(updates, steps, "full optimizer update schedule")
             _same(selected_step, epoch * interval, "selected epoch step")
     elif method == "progap":
-        _same(selection["stages"], 3, "ProGAP stage count")
-        _same(selection["completed_stage_epochs"], 3 * epochs, "ProGAP completed stage epochs")
+        count = parameters["stages"]
+        _same(count, parameters["depth"] + 1, "ProGAP depth/stages")
+        _same(selection["stages"], count, "ProGAP stage count")
+        _same(selection["final_test_stage"], parameters["depth"], "ProGAP final test stage")
+        _same(selection["completed_stage_epochs"], count * epochs, "ProGAP completed stage epochs")
         _same(selection["completed_updates"], steps, "ProGAP completed updates")
         _same(native["completed_updates"], steps, "ProGAP native completed updates")
-        _same(native["epochs_completed"], 3 * epochs, "ProGAP native completed epochs")
+        _same(native["epochs_completed"], count * epochs, "ProGAP native completed epochs")
         stages = selection["stage_selections"]
-        _same(len(stages), 3, "ProGAP checkpoint count")
+        _same(len(stages), count, "ProGAP checkpoint count")
         for stage, checkpoint in enumerate(stages):
             _same(checkpoint["stage"], stage, "ProGAP stage index")
             _same(checkpoint["epochs_completed"], epochs, "ProGAP stage full schedule")
@@ -825,13 +839,22 @@ def _verify_science(request: dict, config: dict, result: dict, prepared: dict) -
             _require(_finite(privacy["noise_multiplier"], "noise multiplier") > 0, "noise must be positive")
         if method.startswith("dp_gnn_"):
             private = native["privacy"]["parameters"]
-            _same(private["max_terms"], min(6, n), "effective DP-GNN sensitivity terms")
-            _same(private["opacus_noise_multiplier"], 2 * min(6, n) * parameters["noise_multiplier"],
+            from src.privacy.dpgnn import max_terms_per_node
+            max_terms = min(max_terms_per_node(parameters["max_degree"], parameters["radius"]), n)
+            _same(private["radius"], parameters["radius"], "DP-GNN accounted radius")
+            _same(private["max_terms"], max_terms, "effective DP-GNN sensitivity terms")
+            _same(native["privacy"]["scope"], "fixed_sampled_topology_node_features_and_labels",
+                  "DP-GNN privacy scope")
+            _same(private["neighborhood"], "complete_outgoing_radius", "DP-GNN neighborhood")
+            _same(private["opacus_noise_multiplier"], 2 * max_terms * parameters["noise_multiplier"],
                   "sensitivity-normalized Opacus multiplier")
         if method == "progap":
             privacy = native["privacy"]["total"]
-            _same(privacy["parameters"]["component_coefficients"], [2, 3], "native ProGAP NAP/SGD composition")
-            _same(privacy["composition_count"], 5, "native ProGAP component composition count")
+            depth = parameters["depth"]
+            _same(privacy["parameters"]["depth"], depth, "native ProGAP accounted depth")
+            _same(privacy["parameters"]["component_coefficients"], [depth, depth + 1],
+                  "native ProGAP NAP/SGD composition")
+            _same(privacy["composition_count"], 2 * depth + 1, "native ProGAP component composition count")
             _same(privacy["sampling_probability"], batch / n, "ProGAP accounted sample rate")
             _same(privacy["parameters"]["effective_delta"], request["delta"], "ProGAP effective delta")
             _require(_finite(privacy["noise_multiplier"], "ProGAP noise") > 0, "ProGAP noise must be positive")

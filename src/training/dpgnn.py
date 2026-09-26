@@ -1,7 +1,7 @@
 """First-party DP-GNN training for graph-disjoint experiment partitions.
 
-DP-GNN's bounded-degree graph sampler supplies fixed one-hop stars. Opacus
-globally clips per-root gradients and adds isotropic Gaussian noise before
+DP-GNN's bounded-incoming-degree sampler supplies complete rooted neighborhoods.
+Opacus globally clips per-root gradients and adds isotropic Gaussian noise before
 Adam updates. Uniform without-replacement root batches match the separate
 multi-term hypergeometric RDP accountant.
 """
@@ -22,6 +22,7 @@ from src.models.baselines import (
     _OneHopGCN, _OneHopGIN, _OneHopGraphSAGE,
     _PaddedOneHopGCN, _PaddedOneHopGIN, _PaddedOneHopGraphSAGE,
 )
+from src.models.dpgnn import _MultiHopDPGNN, _PaddedMultiHopDPGNN
 from src.models.bootstrap import BootstrapConfig, BootstrapMetrics
 from src.models.objectives import _metric_rows, _task_loss, _task_metric
 from src.processing.dpgnn import (
@@ -41,10 +42,10 @@ class DPGNNConfig:
     evaluate_every: int = 0
     seed: int = 0
     max_degree: int = 5
+    radius: int = 1
     latent_size: int = 100
     learning_rate: float = 3e-3
     clip: float = 1.0
-    max_subgraph_nodes: int = 100
     max_private_batch_nodes: int = 8192
     multilabel: bool = False
     # Loss/metric only; epsilon is unchanged.
@@ -98,8 +99,9 @@ class PartitionedDPGNN:
             raise ValueError("delta must be finite and in (0, 1)")
         if config.max_degree < 1:
             raise ValueError("max_degree must be positive")
-        if config.max_subgraph_nodes < 1:
-            raise ValueError("max_subgraph_nodes must be positive")
+        max_terms_per_node(config.max_degree, config.radius)
+        if config.radius > 1 and config.architecture == "gcn":
+            raise ValueError("multi-hop DP-GNN supports graphsage and gin")
         if config.max_private_batch_nodes < 1:
             raise ValueError("max_private_batch_nodes must be positive")
         if config.architecture not in {"gcn", "gin", "graphsage"}:
@@ -128,7 +130,12 @@ class PartitionedDPGNN:
         current = next(batches)
         while True:
             following = next(batches, None)
-            logits = model(current.features, current.node_mask)
+            logits = (
+                model(current.features, current.node_mask,
+                      current.edge_index, current.edge_mask)
+                if self.config.radius > 1 else
+                model(current.features, current.node_mask)
+            )
             if self.config.regression:
                 # One mean over roots, so Opacus keeps the per-sample axis.
                 _task_loss(
@@ -180,7 +187,8 @@ class PartitionedDPGNN:
             raise ValueError("training partition must contain at least one node")
         if self.config.batch_size > num_nodes:
             raise ValueError("batch_size must not exceed the number of training nodes")
-        max_terms = min(max_terms_per_node(self.config.max_degree), num_nodes)
+        max_terms = min(
+            max_terms_per_node(self.config.max_degree, self.config.radius), num_nodes)
         torch.manual_seed(self.config.seed)
         # Training only needs CPU CSR; do not copy full-graph edges to the GPU.
         edge_index = sample_training_edges(
@@ -194,7 +202,13 @@ class PartitionedDPGNN:
         )
         x, labels = train.x.to(self.device), train.y.to(self.device, dtype=label_dtype)
         outputs = 1 if (self.config.binary or self.config.regression) else self.config.num_classes
-        if self.config.architecture == "graphsage":
+        if self.config.radius > 1:
+            model = _MultiHopDPGNN(
+                x.size(1), self.config.latent_size, outputs,
+                radius=self.config.radius, architecture=self.config.architecture,
+                dropout=self.config.dropout).to(self.device)
+            private_model = _PaddedMultiHopDPGNN(model)
+        elif self.config.architecture == "graphsage":
             model = _OneHopGraphSAGE(
                 x.size(1), self.config.latent_size, outputs,
                 dropout=self.config.dropout).to(self.device)
@@ -231,7 +245,7 @@ class PartitionedDPGNN:
                 num_nodes, self.config.batch_size, generator=root_generator)
             batches = iter_dpgnn_batches(
                 roots, adjacency=adjacency, x=x, y=labels,
-                max_subgraph_nodes=self.config.max_subgraph_nodes,
+                radius=self.config.radius,
                 max_padded_nodes=self.config.max_private_batch_nodes, device=self.device)
             self._private_step(private_module, optimizer, batches)
             if step % evaluate_every == 0 or step == self.config.steps:
@@ -272,6 +286,9 @@ class PartitionedDPGNN:
         result = {
             "model": model,
             "architecture": self.config.architecture,
+            "radius": self.config.radius,
+            "max_terms": max_terms,
+            "privacy_scope": "fixed_sampled_topology_node_features_and_labels",
             # Keys are metric-named; publish the name so callers can resolve.
             "metric": metric,
             "selection": {

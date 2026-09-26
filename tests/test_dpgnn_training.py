@@ -35,13 +35,12 @@ def one_hop_stars():
         [0.9, -1.2, 0.1],
         [-0.2, 0.7, -0.9],
     ])
-    # Root 0 is truncated to three nodes; root 4 is isolated. Repeating root 0
-    # exercises root order and multiplicity independently of production sampling.
+    # An isolated root and a repeated root exercise independent loss terms.
     full_stars = ([0, 1, 2, 3, 4], [4], [1, 3], [0, 1, 2, 3, 4])
-    max_subgraph_nodes = 3
-    stars = [x[ids[:max_subgraph_nodes]] for ids in full_stars]
-    features = torch.zeros(len(stars), max_subgraph_nodes, x.size(1))
-    node_mask = torch.zeros(len(stars), max_subgraph_nodes, dtype=torch.bool)
+    stars = [x[ids] for ids in full_stars]
+    width = max(map(len, stars))
+    features = torch.zeros(len(stars), width, x.size(1))
+    node_mask = torch.zeros(len(stars), width, dtype=torch.bool)
     for index, star in enumerate(stars):
         features[index, :len(star)] = star
         node_mask[index, :len(star)] = True
@@ -316,7 +315,7 @@ def test_private_step_matches_global_clipping_and_real_noise(
             y[roots], clip=clip, noise_std=2 * max_terms * clip * optimizer_lambda,
             generator=torch.Generator().manual_seed(noise_seed))
         trainer._private_step(wrapped, optimizer, iter_dpgnn_batches(
-            roots, adjacency=adjacency, x=x, y=y, max_subgraph_nodes=6,
+            roots, adjacency=adjacency, x=x, y=y,
             max_padded_nodes=100, device=torch.device("cpu")))
         _assert_adam_matches(model, adam, reference, reference_adam, step=1)
     finally:
@@ -373,7 +372,7 @@ def test_noisy_adam_updates_are_independent_of_unequal_physical_chunks(
             for model, adam, wrapped, optimizer, budget in zip(
                     models, adams, wrappers, optimizers, (100, 4)):
                 batches = list(iter_dpgnn_batches(
-                    roots, adjacency=adjacency, x=x, y=y, max_subgraph_nodes=6,
+                    roots, adjacency=adjacency, x=x, y=y,
                     max_padded_nodes=budget, device=device))
                 assert [batch.batch_size for batch in batches] == (
                     [4] if budget == 100 else chunk_sizes)

@@ -48,6 +48,63 @@ class CIUnavailable(ValueError):
     """The primary bootstrap interval could not be estimated."""
 
 
+def _verify_depth_baseline(row: dict, config: dict, result: dict) -> None:
+    """Bind a baseline depth cell to its executed schedule and native accountant."""
+    from scripts.full_matrix_run import _privacy_pair
+
+    method, parameters, native = row['method'], result['parameters'], result['native_result']
+    population = config['train_nodes']
+    records._require(type(population) is int and population > 0, 'invalid training population')
+    batch = min(row['batch_size'], population)
+    delta = 1.0 / population
+    for key, expected in records._expected_parameters(row, population).items():
+        records._same(parameters[key], expected, f'baseline parameter {key}')
+    for key, expected in {
+        'train_nodes': population, 'batch_size': batch, 'effective_batch_size': batch,
+        'steps': parameters['steps'], 'target_delta': delta, 'split_seed': 0, 'dp': True,
+        'weight_decay': 0.0 if method == 'progap' else 5e-4,
+    }.items():
+        records._same(config[key], expected, f'baseline config {key}')
+        records._same(result[key], expected, f'baseline result {key}')
+    records._require(type(parameters['steps']) is int and parameters['steps'] > 0,
+                     'invalid baseline update schedule')
+    epsilon, actual_delta = _privacy_pair(native, True, row['epsilon'], delta)
+    for actual in (config, result):
+        records._same(actual['epsilon'], epsilon, 'baseline actual epsilon')
+        records._same(actual['delta'], actual_delta, 'baseline actual delta')
+    calibration = native['calibration']
+    records._same(calibration['target_epsilon'], row['epsilon'], 'baseline calibration epsilon')
+    records._same(calibration['target_delta'], delta, 'baseline calibration delta')
+    records._same(calibration['achieved_epsilon'], epsilon, 'baseline calibrated epsilon')
+    privacy = native['privacy']['total'] if method == 'progap' else native['privacy']
+    records._same(privacy['sampling_probability'], batch / population, 'baseline accounted sample rate')
+    records._require(records._finite(privacy['noise_multiplier'], 'baseline noise') > 0,
+                     'baseline noise must be positive')
+    private = privacy['parameters']
+    records._same(private['max_degree'], 5, 'baseline accountant degree bound')
+    if method == 'progap':
+        depth = row.get('r', 2)
+        records._same(private['depth'], depth, 'ProGAP accountant depth')
+        records._same(private['component_coefficients'], [depth, depth + 1],
+                      'ProGAP NAP/SGD composition')
+        records._same(privacy['composition_count'], 2 * depth + 1, 'ProGAP component count')
+        records._same(private['batch_size'], batch, 'ProGAP accountant batch size')
+        records._same(private['train_nodes'], population, 'ProGAP accountant population')
+        records._same(private['effective_delta'], delta, 'ProGAP effective delta')
+        records._same(config['epoch_semantics'], 'per_stage_native_drop_last', 'ProGAP epoch schedule')
+    else:
+        records._same(private['radius'], row.get('r', 1), 'DP-GNN accountant radius')
+        records._same(private['max_terms'], parameters['max_terms'], 'DP-GNN sensitivity terms')
+        records._same(private['opacus_noise_multiplier'],
+                      2 * parameters['max_terms'] * parameters['noise_multiplier'],
+                      'DP-GNN sensitivity-normalized noise')
+        records._same(privacy['noise_multiplier'], parameters['noise_multiplier'], 'DP-GNN noise')
+        records._same(privacy['composition_count'], parameters['steps'], 'DP-GNN accounted steps')
+        records._same(config['epoch_semantics'], 'training_population_expected_pass', 'DP-GNN epoch schedule')
+    records._same(result['test_confidence_intervals'], native['test_confidence_intervals'],
+                  'baseline native confidence intervals')
+
+
 def _read_completed_output(row: dict, state: dict) -> dict:
     output = Path(state['output'])
     marker = runtime.read_json(output / 'worker_exit.json')
@@ -70,6 +127,8 @@ def _read_completed_output(row: dict, state: dict) -> dict:
         records._same(parameters['p2'], row['p2'], 'SparseGNN p2')
         records._same(parameters['r'], row.get('r', 1), 'SparseGNN radius')
         records._same(parameters['K_out'], row.get('K_out', 10), 'SparseGNN outgoing cap')
+    elif 'r' in row:
+        _verify_depth_baseline(row, config, result)
     metric = config['task']['primary_metric']
     records._same(config['metric'], metric, 'config primary metric')
     records._same(result['metric'], metric, 'result primary metric')
@@ -171,25 +230,50 @@ def tables(root, rows, states):
     temporary.replace(root / 'summary.md')
 
 
-def _ablation_rows(root: Path, *, report_only: bool) -> list[dict]:
+def _ablation_rows(root: Path, *, report_only: bool, study: str = 'ofat') -> list[dict]:
     from scripts import sparse_ablation_grid as grid
 
     path = root / 'manifest.json'
-    configurations = grid.configurations('ofat')
+    configurations = grid.configurations(study)
     expected = [{**config, 'run_dir': grid.run_relative_path(config)}
                 for config in configurations]
     if path.exists():
         manifest = runtime.read_json(path)
         records._same(manifest['schema_version'], 1, 'ablation manifest version')
-        records._same(manifest['study'], 'ofat', 'ablation study')
+        records._same(manifest['study'], study, 'ablation study')
         records._same(manifest['configurations'], expected, 'ablation configurations')
+        records._same(manifest['fixed'], grid.fixed_parameters(study), 'ablation fixed parameters')
+        records._same(manifest['provenance']['out_root'], str(root), 'ablation owned root')
+        records._same(manifest['device'], 'cuda', 'ablation queue device')
+        records._require(Path(manifest['python']).is_absolute(), 'ablation interpreter must be absolute')
+        invocations = [
+            {'run_dir': grid.run_relative_path(config),
+             'argv': grid.worker_command(config, root / grid.run_relative_path(config),
+                                         manifest['python'], manifest['device']),
+             'log': str(Path('logs') / Path(grid.run_relative_path(config)).relative_to('runs')) + '.log'}
+            for config in configurations
+        ]
+        records._same(manifest['invocations'], invocations, 'ablation manifest invocations')
+        hashes = manifest['source_sha256']
+        records._require(isinstance(hashes, dict) and bool(hashes), 'missing ablation source hashes')
+        if study == 'depth-baselines':
+            records._require('third_party/ProGAP/inductive_adapter.py' in hashes,
+                             'missing upstream ProGAP source commitment')
+        for relative, digest in hashes.items():
+            source = Path(relative)
+            records._require(not source.is_absolute() and '..' not in source.parts,
+                             'ablation source path escapes snapshot')
+            snapshot = root / 'source_snapshot' / source
+            grid._reject_symlinks(snapshot)
+            records._same(runtime.sha256(snapshot), digest, f'ablation source snapshot {relative}')
         if not report_only:
+            records._same(manifest['python'], sys.executable, 'ablation resume interpreter')
             records._same(manifest['source_sha256'], grid.source_hashes(),
                           'ablation sources changed; use a fresh output root')
     else:
         if report_only or any(entry.name != 'queue.lock' for entry in root.iterdir()):
             raise ValueError('ablation requires a fresh root or its existing manifest')
-        manifest = grid.make_manifest(root, sys.executable, 'cuda')
+        manifest = grid.make_manifest(root, sys.executable, 'cuda', study)
         runtime.atomic_json(path, manifest)
     rows = []
     for config in configurations:
@@ -206,22 +290,26 @@ def main():
     cli.add_argument('--gpus', default='auto')
     cli.add_argument('--batch-size', type=int, choices=(256, 1024), default=1024,
                      help='requested batch size for every configuration (default: 1024)')
-    cli.add_argument('--ablation-ofat', action='store_true',
-                     help='run the fixed 60-cell SparseExpand one-factor study (requires --batch-size 256)')
+    ablation = cli.add_mutually_exclusive_group()
+    ablation.add_argument('--ablation-ofat', action='store_true',
+                          help='fixed 60-cell SparseExpand one-factor study (requires --batch-size 256)')
+    ablation.add_argument('--ablation-depth-baselines', action='store_true',
+                          help='fixed 27-cell DP-GNN/ProGAP depth study (requires --batch-size 256)')
     mode = cli.add_mutually_exclusive_group()
     mode.add_argument('--retry-failed', action='store_true')
     mode.add_argument('--report-only', action='store_true')
     args = cli.parse_args()
-    if args.ablation_ofat and args.batch_size != 256:
-        cli.error('--ablation-ofat requires --batch-size 256')
+    study = 'ofat' if args.ablation_ofat else 'depth-baselines' if args.ablation_depth_baselines else None
+    if study and args.batch_size != 256:
+        cli.error(f'--ablation-{study} requires --batch-size 256')
     root = args.out_root.absolute()
-    if args.ablation_ofat:
+    if study:
         from scripts import sparse_ablation_grid as grid
         grid._reject_symlinks(root)
         if root.exists():
             if not (root / 'manifest.json').is_file():
                 cli.error('ablation output root is occupied; use a fresh root')
-            if runtime.read_json(root / 'manifest.json').get('study') != 'ofat':
+            if runtime.read_json(root / 'manifest.json').get('study') != study:
                 cli.error('output root belongs to a different study')
         else:
             grid._fresh_root(root)
@@ -233,7 +321,7 @@ def main():
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, lambda *_: stop.set())
     with runtime.file_lock(root / 'queue.lock', nonblocking=True):
-        rows = (_ablation_rows(root, report_only=args.report_only) if args.ablation_ofat
+        rows = (_ablation_rows(root, report_only=args.report_only, study=study) if study
                 else records.enumerate_grid(batch_size=args.batch_size))
         registry = root / 'requests.json'
         if registry.exists():
@@ -249,7 +337,7 @@ def main():
         if args.report_only:
             tables(root, rows, states)
             runtime.atomic_json(state_path, states)
-            expected_count = 60 if args.ablation_ofat else 336
+            expected_count = {'ofat': 60, 'depth-baselines': 27}.get(study, 336)
             return 0 if len(rows) == expected_count and all(state['status'] == 'completed' for state in states) else 1
         # The first wave spreads loaders across datasets rather than racing one cache.
         groups = [[i for i, row in enumerate(rows) if row['protocol'] == protocol]
@@ -260,6 +348,10 @@ def main():
             state = states[index]
             status = outcome['status']
             if status in ('completed', 'recovered_committed'):
+                if study:
+                    records._same(grid.source_hashes(),
+                                  runtime.read_json(root / 'manifest.json')['source_sha256'],
+                                  'ablation sources changed during training')
                 output = Path(state['folder']) / 'output'
                 state.update(output=str(output))
                 _validate_completed(rows[index], state)
@@ -349,7 +441,7 @@ def main():
                                 break
                             if shutil.disk_usage(root).free < 50 * runtime.GIB:
                                 break
-                            if args.ablation_ofat:
+                            if study:
                                 records._same(grid.source_hashes(),
                                               runtime.read_json(root / 'manifest.json')['source_sha256'],
                                               'ablation sources changed before launch')

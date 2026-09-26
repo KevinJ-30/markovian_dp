@@ -64,11 +64,49 @@ with the same root; diagnose cleanly exited failures before `--retry-failed`.
 `--report-only` validates completed outputs without launching training.
 Changed source fingerprints require a fresh training study, not mixed versions.
 
+To extend a completed SGNN study with **27 depth-baseline runs**, use the same
+supervised pathway with `OFAT_ROOT` pointing to the completed 60-run study:
+
+```bash
+PYTHON=/usr/scratch/asaha92/envs/graph_subsampling/bin/python GPUS=auto \
+  OFAT_ROOT=results/sparse_ablation_ofat_supervised_20260925 \
+  OUT_ROOT=results/sparse_ablation_depth_supervised_20260925 \
+  bash scripts/sparse_ablation_paper.sh
+```
+
+This runs DP-GNN-SAGE and DP-GNN-GIN at radius `{1,2,3}` and ProGAP at depth
+`{1,2,3}` on the same three datasets. Epsilon 8, seed 0, batch 256, LR 0.01,
+hidden 128, dropout 0.5, and 20 epochs remain fixed. ProGAP uses the existing
+separate interpreter configured by `full_matrix_records.PROGAP_PYTHON`; its
+20 epochs apply **per stage**, and depth `d` trains `d+1` stages. DP-GNN uses
+20 training-population epochs at each radius. Both baselines retain degree
+bound 5 and recalibrate noise for the complete requested schedule.
+
+The original SGNN study is read-only. The new root gets its own manifest,
+source snapshot, attempts, accepted runs, tables, and comparative figures.
+`--dry-run` prints all 27 baseline worker commands without launching them.
+Resume/report/retry this study with
+`full_matrix_queue.py --ablation-depth-baselines --batch-size 256 --out-root OUT_ROOT`;
+add `--report-only` or, after diagnosing failed attempts, `--retry-failed`.
+
+Re-render a completed comparison without training:
+
+```bash
+python scripts/sparse_ablation.py \
+  --ofat-root results/sparse_ablation_ofat_supervised_20260925 \
+  --depth-root results/sparse_ablation_depth_supervised_20260925 \
+  --out-dir results/sparse_ablation_depth_supervised_20260925/figures_rebuilt
+```
+
+`--depth-root` requires all 27 baseline runs and verifies matching dataset/task/
+partition evidence across both studies. Its default output is `DEPTH_ROOT/figures`.
+
 The renderer consumes that **same run folder**, without retraining:
 
 ```bash
 python scripts/sparse_ablation.py \
-  --ofat-root results/sparse_ablation_ofat_supervised_20260925
+  --ofat-root results/sparse_ablation_ofat_supervised_20260925 \
+  --out-dir results/sparse_ablation_ofat_supervised_20260925/figures_compact
 ```
 
 Layout:
@@ -95,27 +133,48 @@ The supervised queue retains immutable `attempts/` and publishes relative
 Keep the entire folder when archiving. Historical source snapshots and invocation
 paths remain unchanged evidence, even if the current renderer has moved.
 
-Each backend gets one chart with **three horizontally arranged grouped bar
-panels**: radius, probability, and outgoing cap. Each parameter label has three
-dataset-colored bars, identified by a shared legend; there is no chart title.
+Each backend gets three horizontal panels: **(a) depth lines**, **(b) probability
+bars**, and **(c) outgoing-cap bars**, with labels inside the upper-left corners.
+Dataset colors are shared across all panels. In panel (a), SGNN is solid,
+ProGAP dashed, and DP-GNN dotted; the latter matches the SAGE/GIN backend, while
+the same ProGAP runs appear in both figures. Without `--depth-root`, only SGNN
+depth curves appear. Depth lines are fully opaque and 3 points wide, with no
+uncertainty whiskers. Panels (b)/(c) remain SGNN-only grouped bars with intervals.
+The shared legend sits to the left and contains only dataset colors and method
+line styles; backend and privacy headings are omitted. Backend identity remains
+in the filenames and privacy settings in the CSV/provenance. The compact canvas
+is 18.7 × 3.6 inches (before tight cropping), with a shared 0–1 metric scale.
 The y-axis reads "Test metric": accuracy for ogbn-arxiv, micro-F1 for Yelp, and
-AUROC for Twitch. These different metrics are not averaged. Bars retain the exact stored
-95% node-bootstrap endpoints (1,000 resamples, bootstrap seed 0) from each
-validation-selected checkpoint. They quantify test-node uncertainty, not
-training-seed variability or dependence between graph nodes.
+AUROC for Twitch. These different metrics are not averaged. Bar panels show the
+exact stored 95% node-bootstrap endpoints (1,000 resamples, bootstrap seed 0)
+from each validation-selected checkpoint. Depth-panel intervals are omitted
+visually but retained in the CSV exports. These intervals quantify test-node
+uncertainty, not training-seed variability or dependence between graph nodes.
 
-`per_run.csv` retains all 60 runs; `curves.csv` contains 72 plotted points because
-the anchor is referenced in all three parameter panels, without extra training.
+Depth has method-specific meaning: SGNN changes expansion radius while retaining
+its two-layer network; DP-GNN changes actual message-passing depth; ProGAP changes
+progressive aggregation depth and stage count. These are not equal architectures
+or equal training schedules. DP-GNN's influence bound is
+`min(N_train, 1 + K + ... + K^r)` (6/31/156 for K=5 before population clipping),
+conditional on a fixed sampled topology. It does not establish a raw-topology
+node-deletion guarantee or account for data-dependent preprocessing.
+
+`per_run.csv` retains all 60 SGNN runs (87 with depth baselines); `curves.csv`
+contains 72 SGNN points (99 with baselines), because the SGNN anchor is referenced
+in all three parameter panels without extra training. ProGAP curve records are
+stored once and reused visually in both backend figures.
 Both preserve peak process RSS, peak CUDA allocation, calibration/training time,
 sampled-node/edge statistics, raw result paths, and exact intervals. Diagnostics
 are retained as data, not separate plots or additional DP releases. CUDA memory
-is allocator peak, RSS is process-lifetime high-water mark, and CPU CUDA values
-are unavailable rather than zero. Timing includes calibration, training, and
-final evaluation but excludes loading.
+is runner-process allocator peak, RSS is runner-process lifetime high-water mark,
+and CPU CUDA values are unavailable rather than zero. ProGAP trains in a child
+process, so these runner metrics do not measure its child-process memory usage.
+Timing includes calibration, training, and final evaluation but excludes loading.
 
 The renderer verifies manifests, artifact hashes, actual settings, and checkpoint
 selection. It never overwrites a figure directory. For another reconstruction,
-pass `--out-dir OUT_ROOT/figures_rebuilt`. Provenance records input/output hashes,
+pass a fresh `--out-dir`, as in the `figures_compact` example above; choose a new
+directory name for subsequent renders. Provenance records input/output hashes,
 analysis sources, and versions. Existing full-matrix studies and original raw
 ablation outputs are never rewritten.
 

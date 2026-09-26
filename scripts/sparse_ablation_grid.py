@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Canonical SparseExpand ablations and fresh-root sequential execution (stdlib only)."""
+"""Canonical graph ablations and fresh-root sequential execution (stdlib only)."""
 from __future__ import annotations
 
 import argparse
@@ -19,6 +19,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOCOLS = ("ogbn-arxiv", "saint-yelp", "twitch-allbut2")
 METHODS = ("sparse_sage", "sparse_gin")
+BASELINE_METHODS = ("dp_gnn_sage", "dp_gnn_gin", "progap")
 EPSILONS = (8,)
 SEEDS = (0,)
 RADII = (1, 2, 3)
@@ -30,6 +31,12 @@ ACCOUNTING_POLICY = (
     "do not establish a union-safe accounting claim. Every configuration is "
     "recalibrated at target epsilon=8."
 )
+BASELINE_ACCOUNTING_POLICY = (
+    "Each depth is calibrated independently at target epsilon=8. DP-GNN uses "
+    "radius-dependent bounded-degree sensitivity; ProGAP composes depth NAP "
+    "releases and depth+1 native DP-SGD stages. Epsilon is per run, not a "
+    "composed guarantee for the study."
+)
 UNCERTAINTY = (
     "The 95% intervals are stored node-bootstrap intervals (1000 resamples, "
     "bootstrap seed 0) for each validation-selected checkpoint, not uncertainty "
@@ -38,20 +45,25 @@ UNCERTAINTY = (
 
 
 def configurations(study: str = "ofat") -> list[dict[str, Any]]:
-    """Return the fixed 60-cell OFAT grid without duplicate anchor runs."""
-    if study != "ofat":
+    """Return 60 distinct SparseExpand OFAT cells or 27 baseline depth cells."""
+    if study == "ofat":
+        methods = METHODS
+        settings = list(dict.fromkeys(
+            [(r, ANCHOR["p2"], ANCHOR["K_out"]) for r in RADII]
+            + [(ANCHOR["r"], p2, ANCHOR["K_out"]) for p2 in P2_VALUES]
+            + [(ANCHOR["r"], ANCHOR["p2"], cap) for cap in DEGREE_CAPS]
+        ))
+    elif study == "depth-baselines":
+        methods = BASELINE_METHODS
+        settings = [(depth, None, None) for depth in RADII]
+    else:
         raise ValueError(f"unknown ablation study: {study!r}")
-    settings = list(dict.fromkeys(
-        [(r, ANCHOR["p2"], ANCHOR["K_out"]) for r in RADII]
-        + [(ANCHOR["r"], p2, ANCHOR["K_out"]) for p2 in P2_VALUES]
-        + [(ANCHOR["r"], ANCHOR["p2"], cap) for cap in DEGREE_CAPS]
-    ))
     return [
         {"protocol": protocol, "method": method, "epsilon": epsilon,
          "lr": 0.01, "batch_size": 256, "epochs": 20, "seed": seed,
          "p2": p2, "r": radius, "K_out": cap}
         for protocol in PROTOCOLS
-        for method in METHODS
+        for method in methods
         for epsilon in EPSILONS
         for radius, p2, cap in settings
         for seed in SEEDS
@@ -60,8 +72,15 @@ def configurations(study: str = "ofat") -> list[dict[str, Any]]:
 
 def run_relative_path(config: dict[str, Any]) -> str:
     """Return a deterministic, study-independent path unique to a configuration."""
-    regime = (f"lr{config['lr']:g}_b{config['batch_size']}_e{config['epochs']}"
-              f"_r{config['r']}_p2{config['p2']:g}_Kout{config['K_out']}")
+    regime = f"lr{config['lr']:g}_b{config['batch_size']}_e{config['epochs']}"
+    if config["method"].startswith("sparse_"):
+        regime += f"_r{config['r']}_p2{config['p2']:g}_Kout{config['K_out']}"
+    elif config["method"].startswith("dp_gnn_"):
+        regime += f"_r{config['r']}"
+    elif config["method"] == "progap":
+        regime += f"_depth{config['r']}"
+    else:
+        raise ValueError(f"unknown ablation method: {config['method']!r}")
     return str(Path("runs") / config["protocol"] / config["method"]
                / f"eps{config['epsilon']:g}" / regime / f"seed{config['seed']}")
 
@@ -69,7 +88,7 @@ def run_relative_path(config: dict[str, Any]) -> str:
 def worker_command(config: dict[str, Any], run_dir: Path, python: str,
                    device: str) -> list[str]:
     """Build the exact worker argv for either a sequential run or queue attempt."""
-    return [
+    command = [
         str(python), "-u", "-B", str(REPO_ROOT / "scripts/full_matrix_run.py"),
         "--dataset", config["protocol"], "--method", config["method"],
         "--lr", str(config["lr"]), "--batch-size", str(config["batch_size"]),
@@ -77,8 +96,22 @@ def worker_command(config: dict[str, Any], run_dir: Path, python: str,
         "--dropout", "0.5", "--mlp-hidden", "64", "--gnn-hidden", "128",
         "--device", device, "--out-dir", str(run_dir),
         "--bootstrap-resamples", "1000", "--epsilon", str(config["epsilon"]),
-        "--p2", str(config["p2"]), "--sparse-radius", str(config["r"]),
-        "--sparse-degree-cap", str(config["K_out"]),
+    ]
+    if config["method"].startswith("sparse_"):
+        return command + [
+            "--p2", str(config["p2"]), "--sparse-radius", str(config["r"]),
+            "--sparse-degree-cap", str(config["K_out"]),
+        ]
+    if config["method"].startswith("dp_gnn_"):
+        return command + ["--dpgnn-radius", str(config["r"])]
+    if config["method"] != "progap":
+        raise ValueError(f"unknown ablation method: {config['method']!r}")
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from scripts.full_matrix_records import PROGAP_PYTHON
+
+    return command + [
+        "--progap-depth", str(config["r"]), "--progap-python", PROGAP_PYTHON,
     ]
 
 
@@ -112,7 +145,10 @@ def source_hashes() -> dict[str, str]:
         "sparse_ablation_paper.sh",
     )]
     paths.append(REPO_ROOT / "scripts/sparse_ablation.py")
-    paths += list((REPO_ROOT / "src").rglob("*.py"))
+    paths += [path for source in (REPO_ROOT / "src", REPO_ROOT / "third_party/ProGAP")
+              for path in source.rglob("*.py")
+              if not any(part.startswith(".") or part == "__pycache__"
+                         for part in path.relative_to(source).parts)]
     return {str(path.relative_to(REPO_ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
             for path in sorted(paths)}
 
@@ -148,12 +184,26 @@ def _environment() -> dict[str, Any]:
     }
 
 
-def make_manifest(root: Path, python: str, device: str) -> dict[str, Any]:
+def fixed_parameters(study: str = "ofat") -> dict[str, Any]:
+    """Return manifest invariants without assigning sparse-only knobs to baselines."""
+    common = {"hidden": 128, "dropout": 0.5, "split_seed": 0,
+              "bootstrap_resamples": 1000, "bootstrap_confidence": 0.95,
+              "bootstrap_seed": 0}
+    if study == "ofat":
+        return {**common, "layers": 2, "K_in": 10, "chi": 1, "union_safe": False}
+    if study == "depth-baselines":
+        return {**common, "dpgnn_max_degree": 5, "progap_max_degree": 5}
+    raise ValueError(f"unknown ablation study: {study!r}")
+
+
+def make_manifest(root: Path, python: str, device: str,
+                  study: str = "ofat") -> dict[str, Any]:
     """Snapshot sources in a fresh owned root and return the unpublished manifest.
 
     The caller owns root creation/locking and must publish manifest.json before
     launching any workers. Existing manifests and source snapshots are refused.
     """
+    configs = configurations(study)
     root = Path(os.path.abspath(root))
     _reject_symlinks(root)
     if not root.is_dir():
@@ -166,9 +216,9 @@ def make_manifest(root: Path, python: str, device: str) -> dict[str, Any]:
     environment = _environment()
     (root / "source_snapshot").mkdir(exist_ok=False)
     _snapshot_sources(root, hashes)
-    configs = configurations()
+    fixed = fixed_parameters(study)
     return {
-        "schema_version": 1, "study": "ofat", "python": str(python), "device": device,
+        "schema_version": 1, "study": study, "python": str(python), "device": device,
         "source_sha256": hashes,
         "configurations": [{**config, "run_dir": run_relative_path(config)} for config in configs],
         "invocations": [
@@ -177,11 +227,8 @@ def make_manifest(root: Path, python: str, device: str) -> dict[str, Any]:
              "log": str(Path("logs") / Path(run_relative_path(config)).relative_to("runs")) + ".log"}
             for config in configs
         ],
-        "fixed": {"hidden": 128, "dropout": 0.5, "layers": 2, "K_in": 10,
-                  "chi": 1, "union_safe": False, "split_seed": 0,
-                  "bootstrap_resamples": 1000, "bootstrap_confidence": 0.95,
-                  "bootstrap_seed": 0},
-        "accounting_policy": ACCOUNTING_POLICY,
+        "fixed": fixed,
+        "accounting_policy": ACCOUNTING_POLICY if study == "ofat" else BASELINE_ACCOUNTING_POLICY,
         "uncertainty": UNCERTAINTY,
         "provenance": {
             "created_utc": datetime.now(timezone.utc).isoformat(),
@@ -204,18 +251,26 @@ def _run(command: list[str], log: Path) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     cli = argparse.ArgumentParser(description=__doc__)
-    cli.add_argument("--study", default="ofat", choices=("ofat",))
+    cli.add_argument("--study", default="ofat", choices=("ofat", "depth-baselines"))
+    cli.add_argument("--ofat-root", type=Path,
+                     help="completed immutable SparseExpand root for baseline comparison")
     cli.add_argument("--out-root", type=Path,
                      help="new output root, relative to the repository if not absolute")
     cli.add_argument("--device", default=os.environ.get("DEVICE", "cuda"))
     cli.add_argument("--dry-run", action="store_true",
                      help="print exact commands; no writes, training, or training imports")
     args = cli.parse_args(argv)
+    if args.study == "depth-baselines" and args.ofat_root is None:
+        cli.error("--study depth-baselines requires --ofat-root")
+    if args.study == "ofat" and args.ofat_root is not None:
+        cli.error("--ofat-root is supported only by --study depth-baselines")
     try:
         root = _fresh_root(args.out_root or Path(
             os.environ.get("OUT_ROOT", f"results/sparse_ablation_{args.study}")))
         analysis = [sys.executable, "-B", str(REPO_ROOT / "scripts/sparse_ablation.py"),
-                    "--ofat-root", str(root)]
+                    "--ofat-root", str(args.ofat_root or root)]
+        if args.study == "depth-baselines":
+            analysis += ["--depth-root", str(root)]
         if args.dry_run:
             configs = configurations(args.study)
             for config in configs:
@@ -228,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
         # Exclusive creation rejects races as well as existing/dangling roots.
         _reject_symlinks(root)
         root.mkdir(parents=True, exist_ok=False)
-        manifest = make_manifest(root, sys.executable, args.device)
+        manifest = make_manifest(root, sys.executable, args.device, args.study)
         configs = manifest["configurations"]
         invocations = manifest["invocations"]
         hashes = manifest["source_sha256"]

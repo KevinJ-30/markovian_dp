@@ -14,7 +14,7 @@ src/
     graphs.py             separate training-graph selection
     sparse_expand.py      SparseExpand, root sampling, degree capping
     padded.py             lossless root-first private batch representation
-    dpgnn.py              DP-GNN degree sampling and padded one-hop batches
+    dpgnn.py              DP-GNN degree sampling and complete rooted batches
   models/
     base_mechanism.py      g0 interface, optimizer, and evaluation helpers
     *_mechanism.py        task-specific networks and mechanisms
@@ -538,38 +538,49 @@ python -m src.experiments.run --config configs/cora_ml_dp_gnn_smoke.json \
 Its training partition is sampled once: incoming arcs are retained independently
 with probability `min(1, K/(2*d))`, selected neighbors are deduplicated, and an
 entire incoming list is discarded if it exceeds `K`. Each update draws a fresh
-fixed-size root batch **without replacement**, then gathers cached one-hop stars.
+fixed-size root batch **without replacement**, then gathers complete radius-`r`
+outgoing neighborhoods (default `r=1`). The incoming degree bound controls how
+many roots one node can influence; it does not cap a root's outgoing neighborhood.
 This follows the subset sampling in the
 [DP-GNN paper's Algorithm 4](https://arxiv.org/html/2111.15521), rather than the
 replacement draws in Google's executable implementation.
 
-Method `parameters` accept:
+The direct trainer accepts `DPGNNConfig(radius=r)` for actual GraphSAGE/GIN
+message-passing depth; the ablation worker exposes it as `--dpgnn-radius`.
+GCN and the manifest-based comparison adapter remain one-hop.
+
+Method `parameters` for the manifest-based adapter accept:
 - `clip` (default `1.0`): global L2 bound `C` on each root's complete gradient.
-- `dropout` (default `0.5`): hidden-activation dropout immediately before the
-  decoder in GCN, GraphSAGE, and GIN, including private padded batches. Disabled
-  during evaluation; set `0.0` to disable it during training as well.
+- `dropout` (default `0.5`): hidden-activation dropout before the decoder for
+  one-hop models and after each message-passing layer for deeper SAGE/GIN.
+  Disabled during evaluation; set `0.0` to disable it during training as well.
 - `max_private_batch_nodes` (default `8192`): physical padded-slot budget.
   Chunking preserves one noise addition and one Adam update per logical batch;
-  a single oversized star is processed alone.
+  a single oversized neighborhood is processed alone, never silently truncated.
 - `batch_size`: positive logical batch size `B`, no larger than training size `N`.
 - `noise_multiplier`: sensitivity-normalized multiplier `lambda`.
 - `architecture` (default `graphsage`): `graphsage` uses separate root and
   mean-neighbor transforms; `gcn` selects the original one-hop model; `gin`
   sums the root and non-self neighbors with fixed epsilon=0, then applies a
-  two-layer ReLU MLP. This changes only the clipped per-root model, so sampling
-  and privacy accounting are unchanged.
+  two-layer ReLU MLP at each hop. Radius one retains the existing one-hop models;
+  larger radii stack real neighborhood aggregations and recalibrate sensitivity.
 
-For `M = min(K+1, N)`, Opacus adds isotropic Gaussian noise with standard deviation
+For `M = min(1 + K + ... + K^r, N)`, Opacus adds isotropic Gaussian noise with standard deviation
 `2*M*C*lambda` to the clipped sum, then divides by `B`. Its internal multiplier
 is therefore `2*M*lambda`, **not** the value passed to the hypergeometric multi-term
 RDP accountant in `src/privacy/dpgnn.py`. No SparseGNN PLD or generic Opacus
 accountant is used. The former per-parameter percentile clipping and manual
 noise path have been removed.
 
-Graph-disjoint partitions, one-hop architecture, training-star truncation, and
-the sampled full-partition evaluation are unchanged. DP-GNN now uses
-`evaluate_every` for validation-best selection with a fixed validation graph
-seed, restores training mode after each validation, and evaluates/bootstraps
+The influence bound is conditional on a fixed sampled topology and adjacency
+in node features/labels. It does not establish privacy for raw-graph node
+deletion or the data-dependent edge preprocessing. At `K=5`, radii 1, 2, and 3
+give bounds 6, 31, and 156 before population clipping.
+
+Graph-disjoint partitions and sampled full-partition evaluation are retained.
+Root neighborhoods are complete; the former silent 100-node truncation is removed.
+DP-GNN uses `evaluate_every` for validation-best selection with a fixed validation
+graph seed, restores training mode after each validation, and evaluates/bootstraps
 test once from the restored model. Historical results are not rewritten.
 
 The direct trainer also accepts `DPGNNConfig(multilabel=True)` for multi-hot
