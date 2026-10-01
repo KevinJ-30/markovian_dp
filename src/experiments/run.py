@@ -1,7 +1,7 @@
 """Configuration-driven runner for graph-disjoint inductive experiments.
 
 Example:
-    python -m src.experiments.run --config configs/inductive_smoke.json
+    python -m src.experiments.run --config /path/to/config.json
 """
 
 from __future__ import annotations

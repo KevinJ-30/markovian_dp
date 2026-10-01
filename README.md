@@ -220,13 +220,25 @@ validation R² even when all checkpoints have negative scores. Results declare
 `metric: "r2"`; legacy accuracy/macro-F1 result fields carry that same R².
 The adapter requires at least two scored nodes for a defined evaluation.
 
-For example, reuse the existing ProGAP smoke configuration and its configured
-ProGAP Python environment:
+For example, save this configuration outside the repository:
+
+```json
+{
+  "dataset": "hm-prices",
+  "method": "progap",
+  "device": "auto",
+  "source_dir": "third_party/ProGAP",
+  "command": ["/path/to/progap/python", "inductive_adapter.py"],
+  "parameters": {
+    "target_epsilon": 8.0, "target_delta": 0.0005, "epochs": 1,
+    "batch_size": 32, "max_degree": 5, "depth": 1
+  }
+}
+```
 
 ```bash
-python -m src.experiments.run \
-  --config configs/cora_ml_progap_smoke.json --dataset hm-prices \
-  --out results/inductive/hm-prices/progap.json
+python -m src.experiments.run --config /path/to/progap-graphland.json \
+    --out results/inductive/hm-prices/progap.json
 ```
 
 Use `--dataset avazu-ctr` for CTR. ProGAP's `epochs` applies **per progressive
@@ -530,9 +542,25 @@ for very little signal.
 
 DP-GNN is a separate learner, not SparseGNN with different sampling flags:
 
+Create a configuration outside the repository, for example
+`/tmp/dpgnn-smoke.json`:
+
+```json
+{
+  "dataset": "cora-ml",
+  "method": "dp_gnn",
+  "seed": 0,
+  "device": "cpu",
+  "parameters": {
+    "steps": 1, "batch_size": 32, "noise_multiplier": 2.0,
+    "clip": 1.0, "architecture": "graphsage"
+  }
+}
+```
+
 ```bash
-python -m src.experiments.run --config configs/cora_ml_dp_gnn_smoke.json \
-    --out /tmp/dpgnn-smoke.json
+python -m src.experiments.run --config /tmp/dpgnn-smoke.json \
+    --out /tmp/dpgnn-smoke-result.json
 ```
 
 Its training partition is sampled once: incoming arcs are retained independently
