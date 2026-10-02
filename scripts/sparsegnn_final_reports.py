@@ -40,9 +40,9 @@ SELECTION_SCOPE = {
     "reason": "User requested final sweep using completed 10- and 20-epoch tuning only",
 }
 QUALIFICATIONS = (
-    "**Accounting and selection limitations.** SparseGNN uses an **experimental repository "
-    "path-bound χ=1 estimate, not an established ordinary-degree union-safe DP guarantee** "
-    "(`repository_path_bound_chi1`, `union_safe=false`). DPAR retains its repository/upstream "
+    "**Accounting and selection limitations.** Historical SparseGNN runs use an **experimental repository "
+    "path-bound estimate, not an established ordinary-degree union-safe DP guarantee** "
+    "(`union_safe=false`). DPAR retains its repository/upstream "
     "separate PPR+SGD composition qualification, not an independently established node-level "
     "privacy guarantee. Epsilon/delta describe individual runs, not a composed guarantee for "
     "the revised 16-candidate test-selected sweep, the original 24-candidate requests, repeated "

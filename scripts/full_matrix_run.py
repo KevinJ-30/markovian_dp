@@ -435,13 +435,13 @@ def _sparse(args, split, task, batch, delta):
     result["calibration"] = calibration.as_dict()
     result["privacy"] = {
         "epsilon": calibration.epsilon, "delta": calibration.delta,
-        "accountant": "src.privacy.accounting.sparsegnn_mixture_weights.chi2",
+        "accountant": "src.privacy.accounting.sparsegnn_mixture_weights",
         "noise_multiplier": calibration.noise_multiplier,
         "sampling_probability": p1, "composition_count": steps,
         "parameters": {"p1": p1, "p2": args.p2, "r": args.sparse_radius,
                        "K_in": 10, "K_out": args.sparse_degree_cap,
-                       "chi": 2, "grid": 1e-3,
-                       "qualification": "Uses the repository's fixed chi=2 mixture formula; this setting alone does not establish a privacy guarantee."},
+                       "grid": 1e-3,
+                       "qualification": "Uses the repository's mixture formula, not an independently established privacy guarantee."},
     }
     parameters = {
         "architecture": aggr, "hidden": args.gnn_hidden, "layers": 2,
@@ -453,7 +453,7 @@ def _sparse(args, split, task, batch, delta):
         "cap_semantics": "outgoing arcs capped; incoming degree unrestricted",
         "incoming_sampling_cap": MAX_INCOMING_EDGES,
         "K_in_achieved": achieved_degrees[0], "K_out_achieved": achieved_degrees[1],
-        "chi": 2, "accounting_grid": 1e-3,
+        "accounting_grid": 1e-3,
         "calibration_rtol": 1e-3, "calibration_atol": 1e-6,
         "evaluate_every": interval, "max_private_batch_nodes": mechanism.max_private_batch_nodes,
         **_task_options(task), **_bootstrap(args),

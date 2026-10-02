@@ -476,17 +476,15 @@ the in-expansion shell law. The private optimizer is likewise separate from
 accounting—Opacus computes per-root gradients, clips at `C`, and injects noise
 with standard deviation `sigma*C`; no generic Opacus accountant is attached.
 
-Under in-expansion, accounting uses fixed `chi=2`: the root shell has size one
-and non-root shells have size `2*K_out^d` (not `(2*K_out)^d`). The **out**-degree
+Under in-expansion, accounting uses a root shell of size one
+and non-root shells of size `2*K_out^d` (not `(2*K_out)^d`). The **out**-degree
 cap therefore prices the guarantee. Utility only sees `E[min(deg, K)]`, which
 saturates: on a heavy-tailed degree distribution a generous cap costs a great
 deal of epsilon for very little signal.
 
-Accounting APIs and CLIs no longer offer a legacy shell-policy switch.
-New calibration-cache entries and experiment metadata identify the fixed
-chi=2 policy. Historical results are not relabeled: their epsilon must be
-recomputed at the recorded noise, or noise recalibrated and training rerun
-to meet the original target epsilon.
+Historical results are not relabeled: their epsilon must be recomputed under
+the current formula at the recorded noise, or noise recalibrated and training
+rerun to meet the original target epsilon.
 
 ## DP-GNN baseline
 

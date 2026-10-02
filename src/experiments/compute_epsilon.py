@@ -91,7 +91,6 @@ def main():
         row["epsilon_naive_opacus"] = f"{naive_cache[(key, step)]:.5f}"
         row["delta"] = f"{args.delta:g}"
         row["epsilon_grid"] = f"{args.grid:g}"
-        row["chi"] = 2
 
     fieldnames = list(rows[0])
     for row in rows[1:]:

@@ -30,7 +30,7 @@ INTERPRETATION = {
     "configuration_selection": "highest validation score within protocol/method/epsilon; ties use immutable request ordinal; test scores never select configurations",
     "checkpoint_selection": "first strict validation-primary-metric maximum; no early stopping",
     "uncertainty": "one training seed (0), no bootstrap; no across-seed uncertainty or confidence intervals",
-    "privacy": "per-run epsilon is not a composed privacy guarantee for the sweep or retries; SparseGNN uses the repository's fixed chi=2 mixture formula, not an independently established guarantee",
+    "privacy": "per-run epsilon is not a composed privacy guarantee for the sweep or retries; SparseGNN uses the repository's mixture formula, not an independently established guarantee",
     "gpu_ownership": "GPUs 4-7 only; at most two jobs/GPU, sharing only after a successful full-lifecycle memory profile; cooperative leases cannot reserve against unrelated users",
     "scope": "280 initial configurations only; adaptive rounds disabled; historical missingness-target FB results are not comparable",
 }

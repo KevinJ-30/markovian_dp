@@ -36,7 +36,7 @@ TASKS = {
 }
 COLORS = ("#0072B2", "#009E73", "#D55E00", "#CC79A7", "#56B4E9", "#E69F00")
 POLICY = {
-    "accounting": "Uses the repository's fixed chi=2 mixture formula. This setting alone does not establish a privacy guarantee.",
+    "accounting": "Uses the repository's mixture formula, not an independently established privacy guarantee.",
     "p2_equals_one": "p2=1 removes Bernoulli edge thinning only: outgoing-degree preprocessing, root sampling, finite radius, and the incoming expansion cap of 20 remain. It is not full-graph training.",
     "degree_caps": "K_out is the outgoing preprocessing cap. K_in=10 remains an accounting input, not an incoming preprocessing cap; incoming preprocessing degree is unrestricted.",
     "checkpoint": "Best validation-primary-metric checkpoint; no test-based selection or configuration ranking.",
@@ -139,7 +139,7 @@ def read_manifest(root, study):
              "bootstrap_resamples": 1000, "bootstrap_confidence": 0.95,
              "bootstrap_seed": 0}
     if study == "ofat":
-        fixed.update(layers=2, K_in=10, chi=2)
+        fixed.update(layers=2, K_in=10)
     for name, value in fixed.items():
         same(manifest["fixed"][name], value, f"{path}: fixed {name}")
     entries = manifest["configurations"]
@@ -327,7 +327,7 @@ def read_run(bundle, expected):
         "dropout": 0.5, "optimizer": "adam", "weight_decay": 5e-4,
         "p1": batch / population, "p2": expected["p2"], "r": expected["r"],
         "K_in": 10, "K_out": expected["K_out"], "clip": 1.0, "cap_mode": "directed",
-        "cap_seed": expected["seed"] + 20_000, "direction": "in", "chi": 2,
+        "cap_seed": expected["seed"] + 20_000, "direction": "in",
         "incoming_sampling_cap": 20,
         "accounting_grid": 1e-3, "calibration_rtol": 1e-3,
         "calibration_atol": 1e-6, "bootstrap_confidence": 0.95, "bootstrap_resamples": 1000,
@@ -351,9 +351,9 @@ def read_run(bundle, expected):
     _verify_selection({**expected, "task": task}, result, parameters)
     privacy = native["privacy"]["total"] if progap else native["privacy"]
     if sparse:
-        same(privacy["accountant"], "src.privacy.accounting.sparsegnn_mixture_weights.chi2", "accountant")
+        same(privacy["accountant"], "src.privacy.accounting.sparsegnn_mixture_weights", "accountant")
         for name, value in {"p1": batch / population, "p2": expected["p2"], "r": expected["r"],
-                            "K_in": 10, "K_out": expected["K_out"], "chi": 2,
+                            "K_in": 10, "K_out": expected["K_out"],
                             "grid": 1e-3}.items():
             same(privacy["parameters"][name], value, f"accounting parameter {name}")
     elif progap:
@@ -464,7 +464,7 @@ def read_run(bundle, expected):
         **{name: expected[name] for name in CONFIG_KEYS}, "study": study, "metric": metric,
         "actual_epsilon": epsilon, "delta": delta, "effective_batch_size": batch,
         "hidden": 128, "layers": 2 if sparse else None, "dropout": 0.5,
-        "K_in": 10 if sparse else None, "chi": 2 if sparse else None,
+        "K_in": 10 if sparse else None,
         "device": result["device"], "selected_step": result["selection"]["step"],
         "selected_epoch": result["selection"].get("epoch", result["selection"]["step"] // interval),
         "validation_metric": result["validation_metric"], "test_metric": result["test_metric"],

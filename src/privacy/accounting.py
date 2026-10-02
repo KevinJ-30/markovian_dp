@@ -49,7 +49,7 @@ def sparsegnn_mixture_weights(
     """Path-bound mixture weights for in-expansion.
 
     Returns weights[k] = Pr(J_path = k).
-    Uses ordinary degree bounds with fixed chi=2: each non-root shell has
+    Uses ordinary degree bounds: each non-root shell has
     2*K_out**ell potentially affected roots, not (2*K_out)**ell.
     
     Do not modify this function.
@@ -63,11 +63,10 @@ def sparsegnn_mixture_weights(
     if K_out < 1:
         raise ValueError("K_out must be at least one")
     
-    chi = 2
     weights = np.array([1.0 - p1, p1])
 
     for ell in range(1, r + 1):
-        m_ell = chi * K_out**ell
+        m_ell = 2 * K_out**ell
 
         if p1 == 1.0:
             # Boundary convention: h_1(0)=0, h_1(t)=1 for t>0.

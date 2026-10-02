@@ -84,7 +84,7 @@ def write_parameters(args, **extra):
         sources.append(Path(sys.modules["sweep"].__file__).resolve())
     parameters = {
         **vars(args), "out_dir": str(args.out_dir), "radii": args.radii,
-        "batch_size": round(args.population * args.p1), "chi": 2,
+        "batch_size": round(args.population * args.p1),
         "orders": compare.ORDERS.tolist(),
         "root_sampling": {"daigavane": "fixed-size without replacement",
                           "ours_and_group": "Bernoulli"},

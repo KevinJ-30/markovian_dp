@@ -109,8 +109,7 @@ def main():
     for p2 in a.p2:
         for eps in a.eps:
             cell = dict(p1=a.p1, p2=p2, r=a.r, K=a.K, T=a.T, clip=a.clip,
-                        eps=eps, delta=delta, grid=a.grid,
-                        chi=2, accountant_revision='path_bound_chi2_v1')
+                        eps=eps, delta=delta, grid=a.grid)
             entry = cache_dir / f"sigma_{_cache_key(**cell)}.json" if cache_dir else None
 
             if entry is not None:

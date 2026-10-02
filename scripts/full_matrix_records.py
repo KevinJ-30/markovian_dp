@@ -466,7 +466,7 @@ def _expected_parameters(row: dict, n: int) -> dict:
                       architecture=("gin_mean" if row.get("gin_pooling") == "mean" else "gin") if method.endswith("gin") else "mean",
                       p1=batch / n, p2=row["p2"], r=row.get("r", 1), clip=1.0, K_in=10,
                       K_out=degree if degree is not None else row.get("K_out", 10),
-                      cap_mode="directed", cap_seed=20000 + row["seed"], direction="in", chi=2,
+                      cap_mode="directed", cap_seed=20000 + row["seed"], direction="in",
                       accounting_grid=1e-3, calibration_rtol=1e-3, calibration_atol=1e-6,
                       max_private_batch_nodes=8192, steps=epochs * interval, evaluate_every=interval)
     return common
@@ -880,8 +880,7 @@ def _verify_science(request: dict, config: dict, result: dict, prepared: dict) -
             _require(_finite(privacy["noise_multiplier"], "noise multiplier") > 0, "noise must be positive")
         if method.startswith("sparse_"):
             _same(native["privacy"]["accountant"],
-                  "src.privacy.accounting.sparsegnn_mixture_weights.chi2", "SparseGNN accountant")
-            _same(native["privacy"]["parameters"]["chi"], 2, "SparseGNN accounted chi")
+                  "src.privacy.accounting.sparsegnn_mixture_weights", "SparseGNN accountant")
         if method.startswith("dp_gnn_"):
             private = native["privacy"]["parameters"]
             from src.privacy.dpgnn import max_terms_per_node

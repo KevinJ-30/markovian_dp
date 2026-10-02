@@ -25,7 +25,7 @@ Anchor: radius1, p2=0.5, outgoing degree cap10. Vary one factor at a time:
   outgoing cap 5 10 20 40
 The shared anchor runs once. K_in=10 remains bookkeeping for outgoing-only
 preprocessing. Every configuration is separately calibrated with the repository's
-fixed chi=2 mixture formula; this setting alone does not establish a privacy guarantee.
+mixture formula, not an independently established privacy guarantee.
 
 Validation selects the checkpoint, never test performance. Stored 95% test
 intervals use 1000 node-bootstrap resamples with bootstrap seed0; they are not

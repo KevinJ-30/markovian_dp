@@ -36,7 +36,7 @@ configurations: batch `{256,1024}`, LR `{0.01,0.001}`, epsilon `{2,8}`, and
 SGNN-only p2 `{0.1,0.5,1}`. Training seed is **0 only**; bootstrap is disabled.
 SGNN uses 20 epochs, hidden 128, dropout 0.5, radius 1, outgoing cap 10,
 incoming sampling cap 20, clip 1, weight decay 0.0005, p1=batch/N_train, and
-the repository's chi=2 accountant. This fixed study explicitly pins ProGAP to
+the repository's mixture accountant. This fixed study explicitly pins ProGAP to
 depth 2, independently of the runner default: 20 epochs per each of three native
 stages, degree bound 10, and its existing weight decay **0**.
 Every method uses delta=1/N_train; epsilon is per run, not sweep-composed.
@@ -101,8 +101,9 @@ Batch 256, LR 0.01, 20 epochs, hidden 128, two GNN layers, dropout 0.5, and
 seed-0 splits stay fixed. Expansion depth does not change architecture depth.
 The outgoing preprocessing cap is distinct from the fixed 20-edge incoming
 sampling cap; `p2=1` is not an uncapped full-graph baseline. Noise is recalibrated
-per configuration at the dataset-specific delta using the repository's fixed
-chi=2 mixture formula. This setting alone does not establish a privacy guarantee.
+per configuration at the dataset-specific delta using the repository's mixture
+formula with non-root shells `2*K_out**ell`. This setting alone does not establish
+a privacy guarantee.
 
 Sequential execution, followed by rendering:
 
@@ -128,18 +129,16 @@ Queued resumes/retries use `full_matrix_queue.py --ablation-ofat --batch-size 25
 with the same root; diagnose cleanly exited failures before `--retry-failed`.
 `--report-only` validates completed outputs without launching training.
 Changed source fingerprints require a fresh training study, not mixed versions.
-Current campaign validation and ablation rendering require chi=2 metadata and
-reject historical chi=1 SparseGNN artifacts rather than relabeling them. Keep
-historical outputs and their source snapshots unchanged; use a fresh chi=2
-study for current rendering or depth-baseline comparisons.
+Keep historical outputs and their source snapshots unchanged; use a fresh
+study with the current accountant for rendering or depth-baseline comparisons.
 
 To extend a completed SGNN study with **27 depth-baseline runs**, use the same
-supervised pathway with `OFAT_ROOT` pointing to a completed chi=2 60-run study:
+supervised pathway with `OFAT_ROOT` pointing to a completed 60-run study:
 
 ```bash
 PYTHON=/usr/scratch/asaha92/envs/graph_subsampling/bin/python GPUS=auto \
-  OFAT_ROOT=results/sparse_ablation_ofat_chi2 \
-  OUT_ROOT=results/sparse_ablation_depth_chi2 \
+  OFAT_ROOT=results/sparse_ablation_ofat \
+  OUT_ROOT=results/sparse_ablation_depth \
   bash scripts/sparse_ablation_paper.sh
 ```
 
@@ -331,8 +330,9 @@ Splits remain fixed at seed 0 across training seeds.
 
 Private noise is calibrated per configuration at `delta=1/N_train`.
 SparseGNN uses `p1=min(batch_size,N_train)/N_train`, `r=1`, directed outgoing
-degree cap 10, clip 1, and the fixed chi=2 mixture formula. This setting alone
-does not establish a privacy guarantee. SparseGNN and DP-GNN
+degree cap 10, clip 1, and the mixture formula with non-root shells
+`2*K_out**ell`. This setting alone does not establish a privacy guarantee.
+SparseGNN and DP-GNN
 use `E*ceil(N_train/effective_batch)` updates and validate each such epoch.
 ProGAP retains its native **E epochs per stage**, three stages, and drop-last
 batch convention. DPAR retains `ppr_num=70` and `sampled_train_rate=0.09`,

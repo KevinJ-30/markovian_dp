@@ -27,9 +27,9 @@ Both pairs use the existing pessimistic PLD discretization at `--grid`;
 lower-pair curves are numerical approximations, not certified downward-rounded
 bounds.
 
-Upper curves retain fixed `chi=2` for SparseGNN and its `p2=1` group baseline.
-Regenerate figures and provenance with `python numerics/compare.py` and
-`python numerics/run_all.py`; do not relabel historical chi=1 results.
+Upper curves use non-root shells `2*K_out**ell` for SparseGNN and its `p2=1`
+group baseline. Regenerate figures and provenance with `python numerics/compare.py`
+and `python numerics/run_all.py`; do not relabel historical results.
 
 Empirical model ablations live in `scripts/`; see the
 [ablation pathway](../scripts/README.md#sparseexpand-paper-ablations).

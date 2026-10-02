@@ -225,7 +225,7 @@ def main():
     iterations = np.unique(np.concatenate(([0], np.rint(
         np.linspace(1, args.steps, min(args.steps, args.iteration_points))).astype(int))))
     parameters = {**vars(args), "out_dir": str(args.out_dir), "batch_size": batch_size,
-                  "radii": RADII, "iterations": iterations.tolist(), "chi": 2, "orders": ORDERS.tolist(),
+                  "radii": RADII, "iterations": iterations.tolist(), "orders": ORDERS.tolist(),
                   "root_sampling": {"daigavane": "fixed-size without replacement",
                                     "ours_and_group": "Bernoulli"},
                   "noise_convention": "sigma = noise_std / clipping_norm",
