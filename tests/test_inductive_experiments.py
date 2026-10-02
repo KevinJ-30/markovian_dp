@@ -573,7 +573,7 @@ def test_run_preserves_fixed_regression_partitions_across_seeds(monkeypatch, tmp
     monkeypatch.setattr(BaselineTrainer, "fit", fit)
     for seed in (0, 19):
         result = run_module.run({
-            "dataset": "hm-prices", "method": "mlp", "device": "cpu",
+            "dataset": "synthetic-regression", "method": "mlp", "device": "cpu",
             "seed": seed, "split_root": tmp_path,
             "parameters": {"epochs": 1, "hidden_size": 4, "dropout": 0.0},
         })
@@ -591,7 +591,7 @@ def test_run_rejects_resplitting_fixed_regression_targets(monkeypatch, tmp_path)
         run_module, "load_dataset", lambda *args, **kwargs: (dataset, data))
     with pytest.raises(ValueError, match="conflicts with dataset split_strategy"):
         run_module.run({
-            "dataset": "hm-prices", "method": "mlp", "device": "cpu",
+            "dataset": "synthetic-regression", "method": "mlp", "device": "cpu",
             "split_strategy": "stratified", "split_root": tmp_path,
         })
     assert not list(tmp_path.iterdir())
@@ -618,7 +618,7 @@ def test_sparse_common_split_trains_with_fixed_regression_masks(monkeypatch, tmp
 
     monkeypatch.setattr(sparse_module, "train_sparse_gnn", train)
     monkeypatch.setattr(sys, "argv", [
-        "sparse", "--dataset", "avazu-ctr", "--model", "regression_gnn",
+        "sparse", "--dataset", "synthetic-regression", "--model", "regression_gnn",
         "--common_inductive_split", "--split_seed", "19",
         "--split_root", str(tmp_path / "splits"),
         "--p1", "1", "--p2", "1", "--r", "1", "--T", "1", "--seeds", "1",
@@ -627,7 +627,7 @@ def test_sparse_common_split_trains_with_fixed_regression_masks(monkeypatch, tmp
     ])
     sparse_module.main()
 
-    with (tmp_path / "sparse_gnn_avazu-ctr_results.csv").open(newline="") as fh:
+    with (tmp_path / "sparse_gnn_synthetic-regression_results.csv").open(newline="") as fh:
         row = next(csv.DictReader(fh))
     assert row["metric"] == "r2"
     assert math.isfinite(float(row["test_acc"]))

@@ -617,6 +617,22 @@ def _signal_owned(launch: dict, recorded: dict[int, dict], signum: int) -> bool:
     return True
 
 
+def owned_attempt_pids(folder: str | Path) -> set[int]:
+    """Resolve currently verified descendants, including ProGAP's child."""
+    folder = Path(folder)
+    launch = read_json(folder / "launch.json")
+    if not launch.get("spawned", True):
+        return set()
+    recorded = _recorded_members(launch)
+    evidence = folder / "process_identities.json"
+    if evidence.exists():
+        persisted = read_json(evidence)
+        if persisted.get("boot_id") != launch["boot_id"] or persisted.get("leader_pid") != launch["pid"]:
+            raise OwnershipError("process identity evidence differs from launch")
+        recorded.update({int(row["pid"]): row for row in persisted["members"]})
+    return set(_owned_snapshot(launch, recorded))
+
+
 def terminate_owned(process: Any, launch: dict[str, Any], *, grace: float = 10.0) -> tuple[str, int | None]:
     """Terminate our verified tree, including a child surviving an exited leader.
 
@@ -662,10 +678,14 @@ def terminate_owned(process: Any, launch: dict[str, Any], *, grace: float = 10.0
 class _AttemptObserver:
     """Move /proc scanning, telemetry I/O and callbacks off the deadline thread."""
 
-    def __init__(self, launch, gpu, sampler, on_sample, poll_seconds):
+    def __init__(self, launch, gpu, sampler, on_sample, poll_seconds, co_owned_pids=None):
         self.launch, self.gpu, self.sampler = launch, gpu, sampler
         self.on_sample, self.poll_seconds = on_sample, poll_seconds
         self.recorded = _recorded_members(launch)
+        # Immutable publication lets cleanup proceed even while telemetry I/O
+        # is delayed. The observer never mutates an already published identity.
+        self.members = tuple(self.recorded.values())
+        self.co_owned_pids = co_owned_pids
         self.peak_rss: int | None = None
         self.peak_gpu: float | None = None
         self.contention = False
@@ -684,6 +704,7 @@ class _AttemptObserver:
             while not self.stop.is_set():
                 with self.lock:
                     owned = _owned_snapshot(self.launch, self.recorded)
+                    self.members = tuple(self.recorded.values())
                     now = time.monotonic()
                     if now - last_persist >= 1.0:
                         _persist_members(self.launch, self.recorded)
@@ -716,7 +737,9 @@ class _AttemptObserver:
             if all(value is not None for value in ours):
                 gpu_memory = sum(ours)
                 self.peak_gpu = max(self.peak_gpu or 0, gpu_memory)
-            contention_pids = [row["pid"] for row in processes if row["pid"] not in owned]
+            co_owned = self.co_owned_pids() if self.co_owned_pids is not None else set()
+            contention_pids = [row["pid"] for row in processes
+                               if row["pid"] not in owned and row["pid"] not in co_owned]
             self.contention |= bool(contention_pids)
         try:
             available = host_available_bytes()
@@ -823,10 +846,10 @@ def _exit_record(launch, *, status, returncode, owned, reason, observer=None, si
 
 
 def run_process(command, folder, environment, stop, *, policy=None, lease_fd=None,
-                gpu=None, sampler=None, on_sample=None) -> dict[str, Any]:
+                gpu=None, sampler=None, on_sample=None, co_owned_pids=None) -> dict[str, Any]:
     """Launch one attempt and enforce its wall deadline independently of telemetry.
 
-    The caller has just rechecked GPU idleness while holding its lease. ``stop``
+    The caller has just rechecked GPU admission while holding its lease. ``stop``
     is a threading.Event. Scientific verification is deliberately the caller's
     responsibility even after a returncode-zero, ownership-clean exit.
     """
@@ -902,7 +925,7 @@ def run_process(command, folder, environment, stop, *, policy=None, lease_fd=Non
             launch.update(command=command, observed_command=identity["command"],
                           observed_members=[identity])
             atomic_json(folder / "launch.json", launch)
-            observer = _AttemptObserver(launch, gpu, sampler, on_sample, policy["poll_seconds"])
+            observer = _AttemptObserver(launch, gpu, sampler, on_sample, policy["poll_seconds"], co_owned_pids)
             observer.start()
             while True:
                 now = time.monotonic()
@@ -934,14 +957,16 @@ def run_process(command, folder, environment, stop, *, policy=None, lease_fd=Non
             observer_closed = True
             if observer is not None:
                 observer_closed = observer.close(timeout=10.0 if returncode is not None else 2.0)
-                if observer_closed:
-                    launch["observed_members"] = list(observer.recorded.values())
+                launch["observed_members"] = list(observer.members)
+                if not observer_closed:
+                    observer.error = observer.error or "telemetry observer did not stop within bounded wait"
             if process is not None:
                 try:
                     if "pid" not in launch:
                         raise OwnershipError("worker started but initial process identity could not be captured")
-                    if not observer_closed:
-                        raise OwnershipError("process observer did not stop; ownership evidence is still changing")
+                    # Ownership cleanup uses a frozen evidence snapshot and
+                    # revalidates every lifetime itself. A slow telemetry writer
+                    # must not strand live children on the old two-second race.
                     signal_used, returncode = terminate_owned(process, launch, grace=policy["termination_grace_seconds"])
                     cleanup = True
                 except (OSError, RuntimeError, ValueError, KeyError) as error:

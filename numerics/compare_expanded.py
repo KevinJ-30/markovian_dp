@@ -21,7 +21,7 @@ def main():
     iteration_indices = {int(t): index for index, t in enumerate(iterations)}
     horizon_columns = {t: column for column, t in enumerate(appendix.HORIZONS, start=1)}
     epsilon = np.linspace(args.epsilon_min, args.epsilon_max, args.points)
-    methods = appendix.methods(args)
+    methods = compare.methods(args)
     appendix.write_parameters(
         args, radii=args.radii, horizons=list(appendix.HORIZONS),
         iterations=evaluated_iterations.tolist(), composition_iterations=iterations.tolist())

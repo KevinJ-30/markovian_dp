@@ -13,6 +13,7 @@ study-specific figure recipes have been removed.
 | `ceiling_fullbatch.py` | Run a non-private full-batch classification comparison. |
 | `full_matrix.sh` | Run the complete sequential final-experiment grid, then export best-test bootstrap summaries. |
 | `full_matrix_run.py` | Execute one matrix cell with method-specific calibration and normalized CSV/JSON results. |
+| `ideation_study.py` | Prepare/run/report the approved 280-cell, seed-0 corrected FB gender / Physics screen on GPUs 4–7. |
 | `summarize_sweep.py` | Select a validation-best step and report seed-averaged test results; one configuration per child directory. |
 | `summarize_matched_eps.py` | Summarize matched-budget studies using their expected directory naming conventions. |
 | `summarize_results.py` | Combine arbitrary result CSVs into CSV/Markdown tables using stored bootstrap CIs or seed mean ± sample SD; optional best-test selection and named regimes. |
@@ -21,6 +22,70 @@ study-specific figure recipes have been removed.
 
 The Python utilities expose `--help`. GraphSAINT setup accepts an input ZIP
 directory and an optional destination; see the root README.
+
+`full_matrix_run.py` defaults to ProGAP propagation depth **1**: two native
+training stages, each using `--epochs` (40 stage-epochs at `--epochs 20`).
+Use `--progap-depth 2` for three stages. Privacy calibration accounts for the
+requested depth; equal per-stage epochs do not make different depths compute-matched.
+
+### FB gender / Physics initial screen
+
+`ideation_study.py` seals **280 configurations**, with adaptive rounds disabled.
+Each of five protocols has 24 SGNN-SAGE, 24 SGNN-mean-GIN, and eight ProGAP
+configurations: batch `{256,1024}`, LR `{0.01,0.001}`, epsilon `{2,8}`, and
+SGNN-only p2 `{0.1,0.5,1}`. Training seed is **0 only**; bootstrap is disabled.
+SGNN uses 20 epochs, hidden 128, dropout 0.5, radius 1, outgoing cap 10,
+incoming sampling cap 20, clip 1, weight decay 0.0005, p1=batch/N_train, and
+the repository's chi=2 accountant. This fixed study explicitly pins ProGAP to
+depth 2, independently of the runner default: 20 epochs per each of three native
+stages, degree bound 10, and its existing weight decay **0**.
+Every method uses delta=1/N_train; epsilon is per run, not sweep-composed.
+
+| Protocol | Training schools / graph | N_train |
+|---|---|---:|
+| `fb100-gender-1` | Johns Hopkins | 4,762 |
+| `fb100-gender-3` | previous + Caltech, Amherst | 7,497 |
+| `fb100-gender-6` | previous + Reed, Brandeis, Princeton | 17,782 |
+| `fb100-gender-16` | all schools except Cornell and Penn | 145,535 |
+| `coauthor-physics` | seed-0 stratified 60% induced training graph | 20,696 |
+
+All FB protocols validate on Cornell (16,822 nodes) and test on Penn
+(38,815 nodes). `facebook100-gender` maps raw gender 1/2 to 0/1 and excludes
+unknown raw-0 nodes before inducing graphs. Its 13,778-column categorical
+vocabulary is fitted on all 18 raw schools, including unknown-label nodes.
+Old `facebook100` missingness-target results remain separate and incomparable.
+Physics uses raw PyG features and one shared seed-0 stratified 60/20/20
+graph-disjoint split. Mean-GIN averages **neighbors only**, then adds the root
+before the unchanged GIN MLP; fixed epsilon_GIN=0.
+
+```bash
+PYTHON=/usr/scratch/asaha92/envs/graph_subsampling/bin/python
+OUT_ROOT=results/ideation_gender_physics_initial
+$PYTHON scripts/ideation_study.py dry-run
+$PYTHON scripts/ideation_study.py prepare --out-root \"$OUT_ROOT\"
+$PYTHON scripts/ideation_study.py run --out-root \"$OUT_ROOT\" \\
+  --gpus 4,5,6,7 --max-jobs-per-gpu 2
+$PYTHON scripts/ideation_study.py report --out-root \"$OUT_ROOT\"
+$PYTHON scripts/ideation_study.py verify --out-root \"$OUT_ROOT\"
+```
+
+Use a fresh root for preparation; `run --resume` revalidates frozen source,
+packages, prepared partitions, and attempt evidence. Only physical GPUs 4–7
+are permitted. Each GPU has one controller-owned cooperative lease and at
+most two concurrent workers. Unseen shapes run alone; sharing requires a
+successful full-run peak profile for both shapes, verified owned processes,
+utilization <=70%, host capacity, 25% memory margin plus 512 MiB per job, and
+at least 10% device headroom (minimum 2 GiB). ProGAP profiles include its child
+process tree. Busy/full-memory jobs remain exclusive; unrelated jobs are never
+preempted. Profiles are relearned after OOM and reconstructed on resume.
+
+`requests.json` and `campaign_manifest.json` define the immutable initial
+screen; `queue_state.json` is progress, not scientific evidence. Reports retain
+all attempts in `attempts.csv` and per-request results/coverage in
+`results.csv`/`coverage.csv`, select configurations by
+**validation** score within protocol/method/epsilon (ordinal breaks ties),
+and report the selected final test score in `summary.csv` and `comparison.csv`.
+One seed and no bootstrap means uncertainty is unavailable, not zero.
 
 ### SparseExpand paper ablations
 
@@ -36,8 +101,8 @@ Batch 256, LR 0.01, 20 epochs, hidden 128, two GNN layers, dropout 0.5, and
 seed-0 splits stay fixed. Expansion depth does not change architecture depth.
 The outgoing preprocessing cap is distinct from the fixed 20-edge incoming
 sampling cap; `p2=1` is not an uncapped full-graph baseline. Noise is recalibrated
-per configuration at the dataset-specific delta. The current chi=1,
-`union_safe=False` accounting policy is retained, not silently corrected.
+per configuration at the dataset-specific delta using the repository's fixed
+chi=2 mixture formula. This setting alone does not establish a privacy guarantee.
 
 Sequential execution, followed by rendering:
 
@@ -63,14 +128,18 @@ Queued resumes/retries use `full_matrix_queue.py --ablation-ofat --batch-size 25
 with the same root; diagnose cleanly exited failures before `--retry-failed`.
 `--report-only` validates completed outputs without launching training.
 Changed source fingerprints require a fresh training study, not mixed versions.
+Current campaign validation and ablation rendering require chi=2 metadata and
+reject historical chi=1 SparseGNN artifacts rather than relabeling them. Keep
+historical outputs and their source snapshots unchanged; use a fresh chi=2
+study for current rendering or depth-baseline comparisons.
 
 To extend a completed SGNN study with **27 depth-baseline runs**, use the same
-supervised pathway with `OFAT_ROOT` pointing to the completed 60-run study:
+supervised pathway with `OFAT_ROOT` pointing to a completed chi=2 60-run study:
 
 ```bash
 PYTHON=/usr/scratch/asaha92/envs/graph_subsampling/bin/python GPUS=auto \
-  OFAT_ROOT=results/sparse_ablation_ofat_supervised_20260925 \
-  OUT_ROOT=results/sparse_ablation_depth_supervised_20260925 \
+  OFAT_ROOT=results/sparse_ablation_ofat_chi2 \
+  OUT_ROOT=results/sparse_ablation_depth_chi2 \
   bash scripts/sparse_ablation_paper.sh
 ```
 
@@ -180,34 +249,48 @@ ablation outputs are never rewritten.
 
 ### Full final-experiment matrix
 
-For the fixed **336-configuration** campaign, start the direct opportunistic queue:
+For the fixed **1,584-run** campaign (528 configurations, three seeds each),
+start the direct opportunistic queue in a fresh output root:
 
 ```bash
-python scripts/full_matrix_queue.py --out-root results/full_matrix_queued_YYYYMMDD
+python scripts/full_matrix_queue.py --out-root results/full_matrix_k10_s012_YYYYMMDD --gpus auto
 ```
-For a separate batch-256 study, add `--batch-size 256` and use a fresh output
-root. Supply the same flag when resuming or using `--report-only`; a mismatched
-saved grid is rejected. The default batch-1024 grid and existing results remain
-unchanged.
+
+The main matrix fixes requested batch size at 1024. Historical single-seed
+campaigns have different registries and must not be resumed with this grid.
+The separate ablation modes retain their batch-256 and bootstrap contracts.
 
 
 It admits authorized GPUs at utilization strictly below 30% with positive free
 memory, including GPUs with other workloads. Two distinct eligible samples and
 a fresh probe under the UUID lock are required. Running workers are not cancelled
-when utilization rises. Healthy workers have no wall-time limit; OOMs retain their
-attempt evidence and defer for five minutes after three attempts.
+when utilization rises. Each attempt has a **3,600-second wall deadline**,
+including loading, calibration, and training; owned processes receive termination
+and then forced cleanup after the standard grace period. Timed-out jobs retain
+their logs and artifacts, and the next pending job fills the GPU slot. OOMs
+retain their attempt evidence and defer for five minutes after three attempts.
 Reuse the same output root to resume. After diagnosing a cleanly exited failure,
 use `--retry-failed` to retry it in a new attempt directory; unresolved ownership
 remains blocked. `--report-only` validates saved commitments and regenerates tables
-without GPU discovery or process recovery, returning zero only for 336 valid results.
+without GPU discovery or process recovery, returning zero only for 1,584 valid results.
 These two flags are mutually exclusive.
 
-`summary.md`, `summary.csv`, and `results.csv` retain every configuration in registry
-order, including pending and failed rows. The summaries include validation-selected
-scores, task-specific metrics, exact stored bootstrap endpoints, actual JSON
-parameters, and original per-attempt CSV paths. No winners or rankings are selected.
-Raw attempt outputs are never rewritten by reporting. No separate
-dataset-preparation or smoke campaign is required.
+`summary.md`, `summary.csv`, and `results.csv` retain every run in registry order,
+including pending, failed, and timed-out rows, actual parameters, and original
+per-attempt CSV paths. Raw attempt outputs are never rewritten by reporting.
+The queue also publishes CSV/Markdown pairs:
+
+- `seed_summary`: mean and sample SD across available seeds for every configuration;
+  the `n` and `seeds` columns expose incomplete cohorts.
+- `best_test`: highest mean test score across configurations within each comparable
+  dataset/privacy/method cell, using only complete seed sets `0;1;2`.
+- `best_test_by_p2`: the same selection while retaining a separate SparseGNN group
+  for each `p2`; baseline methods are grouped separately.
+
+Bootstrap is disabled. Best-test selection is explicitly labeled as test-selected
+and does not provide unbiased model-selection estimates. Checkpoints within each
+training run are still selected by validation. No separate dataset-preparation
+campaign is required.
 
 The general sequential shell utility remains available:
 
@@ -230,29 +313,32 @@ dependencies must already be available. The launcher is sequential, defaults to
 `DEVICE=cuda`, performs no GPU scheduling, stops on failure, and refuses existing
 run directories. Use a fresh `OUT_ROOT` for a new campaign.
 
-The default grid contains **1,848 runs per seed**: non-private MLP/GraphSAGE/GIN,
+The default grid contains **1,584 runs total**: non-private MLP/GraphSAGE/GIN,
 private DP-MLP/ProGAP/DPAR/DP-GNN-SAGE/DP-GNN-GIN/SparseGNN-SAGE/SparseGNN-GIN,
-learning rates `0.01 0.001`, batches `256 1024`, epochs `10 20`, private epsilon
-targets `2 8`, and SparseGNN-only `p2=0.5 0.1`. Hidden sizes are 64 for MLP/DP-MLP
-and 128 for all graph methods; dropout is 0.5. The default training seed is 0.
-All methods use validation-selected final test results and 95% node-bootstrap CIs
-with 1,000 resamples.
+learning rates `0.01 0.001`, requested batch `1024`, epochs `20`, private epsilon
+targets `2 8`, seeds `0 1 2`, and SparseGNN-only `p2=0.1 0.25 0.5 0.75 1.0`.
+Hidden sizes are 64 for MLP/DP-MLP and 128 for graph methods; dropout is 0.5.
+GraphSAGE/GIN use fanout 10, SparseGNN outgoing cap 10, DP-GNN/ProGAP degree
+bound 10, and DPAR PPR `topk=10`. These controls have method-specific meanings;
+PPR top-k and neighborhood fanout are not graph-degree guarantees. MLPs have no
+graph-degree parameter. No bootstrap resampling is performed.
 
-The 11 protocols are `ogbn-arxiv`, `ogbn-products`, `reddit`, `facebook`,
-`saint-reddit`, `saint-yelp`, `saint-flickr`, `saint-amazon`, `twitch-allbut2`,
-`facebook100-allbut2`, and `mag-allbut2`. The last three train on all registered
-domains except the validation/test pair: respectively `engb/es`,
-`cornell5/penn94`, and `cn/de`. Splits remain fixed at seed 0 across training seeds.
+The eight protocols are `ogbn-arxiv`, `ogbn-products`, `saint-reddit`,
+`saint-yelp`, `saint-amazon`, `twitch-allbut2`, `facebook100-allbut2`, and
+`mag-allbut2`. The last three train on all registered domains except the
+validation/test pair: respectively `engb/es`, `cornell5/penn94`, and `cn/de`.
+Splits remain fixed at seed 0 across training seeds.
 
 Private noise is calibrated per configuration at `delta=1/N_train`.
 SparseGNN uses `p1=min(batch_size,N_train)/N_train`, `r=1`, directed outgoing
-degree cap 10, clip 1, and the current chi=1 accountant. SparseGNN and DP-GNN
+degree cap 10, clip 1, and the fixed chi=2 mixture formula. This setting alone
+does not establish a privacy guarantee. SparseGNN and DP-GNN
 use `E*ceil(N_train/effective_batch)` updates and validate each such epoch.
 ProGAP retains its native **E epochs per stage**, three stages, and drop-last
-batch convention. DPAR retains its native defaults: `ppr_num=70` and
-`sampled_train_rate=0.09`, with unchanged native privacy accounting. With 70
-released roots, requested batch sizes 256 and 1024 both give effective batches
-of 70 and one update per epoch; smaller sampled graphs use fewer roots.
+batch convention. DPAR retains `ppr_num=70` and `sampled_train_rate=0.09`,
+with unchanged native privacy accounting. Its requested batch 1024 therefore
+has an effective batch of at most 70 released roots and one update per epoch;
+smaller sampled graphs use fewer roots.
 Actual root counts, effective batches, updates, and calibration are recorded.
 
 Outputs default to `results/full_matrix/`: isolated
@@ -264,12 +350,14 @@ campaign's successful runs:
 
 ```bash
 python scripts/summarize_results.py 'results/full_matrix/runs/**/result.csv' \
-  --bootstrap --best --out results/full_matrix/summary
+  --seed --best --out results/full_matrix/summary
 ```
 
-The summary selects best test results across the grid within each comparable
-dataset/privacy/method-backbone cell; it labels test-selection bias. To inspect
-every configuration instead, omit `--best`.
+The summary selects the configuration with the highest mean test result within
+each comparable dataset/privacy/method-backbone cell, retaining its sample SD;
+it labels test-selection bias. To inspect every configuration, omit `--best`.
+The generic reporter exposes partial cohorts through `n`; the supervised queue's
+best-test tables additionally require all three seeds before admitting a winner.
 Space-separated environment overrides `DATASETS`, `METHODS`, `EPSILONS`,
 `SEEDS`, `LEARNING_RATES`, `BATCH_SIZES`, `EPOCHS`, and `P2_VALUES` can restrict or
 extend the grid. `BOOTSTRAP_RESAMPLES` controls the final-test bootstrap count.

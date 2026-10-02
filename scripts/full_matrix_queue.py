@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 
-ROOT = Path(__file__).absolute().parents[1]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts import full_matrix_records as records
 from scripts import full_matrix_runtime as runtime
@@ -83,7 +83,7 @@ def _verify_depth_baseline(row: dict, config: dict, result: dict) -> None:
     private = privacy['parameters']
     records._same(private['max_degree'], 5, 'baseline accountant degree bound')
     if method == 'progap':
-        depth = row.get('r', 2)
+        depth = row["r"] if row.get("r") is not None else 1
         records._same(private['depth'], depth, 'ProGAP accountant depth')
         records._same(private['component_coefficients'], [depth, depth + 1],
                       'ProGAP NAP/SGD composition')
@@ -129,12 +129,24 @@ def _read_completed_output(row: dict, state: dict) -> dict:
         records._same(parameters['K_out'], row.get('K_out', 10), 'SparseGNN outgoing cap')
     elif 'r' in row:
         _verify_depth_baseline(row, config, result)
+    if 'degree_bound' in row:
+        degree_key = ('K_out' if row['method'].startswith('sparse_') else
+                      'topk' if row['method'] == 'dpar' else
+                      'max_fanout' if row['method'] in ('graphsage', 'gin') else
+                      'max_degree' if row['method'] == 'progap' or row['method'].startswith('dp_gnn_') else None)
+        if degree_key is not None:
+            records._same(parameters[degree_key], row['degree_bound'], 'degree-equivalent bound')
     metric = config['task']['primary_metric']
     records._same(config['metric'], metric, 'config primary metric')
     records._same(result['metric'], metric, 'result primary metric')
     for key in ('validation_metric', 'test_metric'):
         records._finite(result[key], key)
     records._verify_selection({**row, 'task': config['task']}, result, parameters)
+    if row.get('bootstrap_resamples', 1000) == 0:
+        records._same(parameters['bootstrap_resamples'], 0, 'bootstrap disabled')
+        records._require(not result.get('test_confidence_intervals'),
+                         'bootstrap-disabled run emitted confidence intervals')
+        return result
     interval = result['test_confidence_intervals']
     for key, value in records.BOOTSTRAP.items():
         records._same(interval[key], value, f'bootstrap {key}')
@@ -197,12 +209,14 @@ def tables(root, rows, states):
             for key in ('effective_batch_size', 'hidden', 'dropout', 'metric',
                         'validation_metric', 'test_metric', 'parameters'):
                 projection[key] = actual[key]
-            interval = actual['test_confidence_intervals']
-            primary = interval['metrics'][actual['metric']]
             selection = actual['selection']
-            projection.update(ci_lower=primary['lower'], ci_upper=primary['upper'],
-                              confidence_level=interval['confidence_level'], selected_step=selection['step'],
+            projection.update(selected_step=selection['step'],
                               selected_epoch=selection.get('epoch', selection['step'] // actual['parameters']['evaluate_every']))
+            interval = actual.get('test_confidence_intervals')
+            if interval:
+                primary = interval['metrics'][actual['metric']]
+                projection.update(ci_lower=primary['lower'], ci_upper=primary['upper'],
+                                  confidence_level=interval['confidence_level'])
         projection.update({key: result[key] for key in ('status', 'attempt', 'reason', 'result_csv')})
         projections.append(projection)
 
@@ -228,6 +242,40 @@ def tables(root, rows, states):
             stream.write('| ' + ' | '.join(value.replace('|', '&#124;').replace('\r', '&#13;').replace('\n', '<br>')
                                           for value in values) + ' |\n')
     temporary.replace(root / 'summary.md')
+    if rows and all(row.get('bootstrap_resamples') == 0 for row in rows):
+        _seed_tables(root, results)
+
+
+def _seed_tables(root, results):
+    """Retain partial cohorts, but rank only complete three-seed configurations."""
+    from scripts import summarize_results as summary
+
+    diagnostics = summary.Diagnostics()
+    runs = []
+    for result in results:
+        if result['status'] != 'completed':
+            continue
+        raw = {key: json.dumps(value) if isinstance(value, (dict, list))
+               else '' if value is None else str(value)
+               for key, value in result.items() if key != 'native_result'}
+        runs.append(summary.make_run(raw, 'all', result['result_csv'], 2, 'auto'))
+    cohorts = summary.summarize(runs, True, diagnostics)
+    complete = [row for row in cohorts if row['n'] == 3 and row['seeds'] == '0;1;2']
+    diagnostics.warn('Best-test tables require all three seeds (0, 1, 2); incomplete configurations remain in seed_summary only.')
+    grouped = {run.config_id: f"p2={run.settings['p2']}" if 'p2' in run.settings else 'baselines'
+               for run in runs}
+    for name, candidates, best in (
+        ('seed_summary', cohorts, False),
+        ('best_test', [dict(row) for row in complete], True),
+        ('best_test_by_p2', [{**row, 'group': grouped[row['config_id']]} for row in complete], True),
+    ):
+        if best:
+            candidates = summary.select_best(candidates, diagnostics)
+        temporary = [root / f'.{name}{suffix}.tmp' for suffix in ('.csv', '.md')]
+        summary.export(candidates, temporary,
+                       argparse.Namespace(seed=True, bootstrap=False, best=best), diagnostics)
+        for source, suffix in zip(temporary, ('.csv', '.md')):
+            source.replace(root / f'{name}{suffix}')
 
 
 def _ablation_rows(root: Path, *, report_only: bool, study: str = 'ofat') -> list[dict]:
@@ -337,7 +385,7 @@ def main():
         if args.report_only:
             tables(root, rows, states)
             runtime.atomic_json(state_path, states)
-            expected_count = {'ofat': 60, 'depth-baselines': 27}.get(study, 336)
+            expected_count = {'ofat': 60, 'depth-baselines': 27}.get(study, 1584)
             return 0 if len(rows) == expected_count and all(state['status'] == 'completed' for state in states) else 1
         # The first wave spreads loaders across datasets rather than racing one cache.
         groups = [[i for i, row in enumerate(rows) if row['protocol'] == protocol]
@@ -468,8 +516,7 @@ def main():
                                            'MKL_NUM_THREADS': '2', 'OPENBLAS_NUM_THREADS': '2',
                                            'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONNOUSERSITE': '1'}
                             future = pool.submit(runtime.run_process, command, folder, environment, stop,
-                                                 gpu=observed, sampler=sampler, lease_fd=handle.fileno(),
-                                                 policy={'hard_seconds': None})
+                                                 gpu=observed, sampler=sampler, lease_fd=handle.fileno())
                             active[uuid] = (future, index, lease)
                             print(json.dumps({'event': 'STARTED', 'dataset': row['protocol'], 'method': row['method'],
                                               'gpu': uuid, 'attempt': state['attempt'], 'folder': str(folder)}), flush=True)

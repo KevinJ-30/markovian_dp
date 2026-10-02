@@ -11,7 +11,7 @@ from src.privacy.accountants import (
 from src.privacy import accounting as sparse_accounting
 from src.privacy.accounting import (
     calibrate_sparsegnn_noise, mixture_gaussian_pld, naive_opacus_epsilon,
-    shell_sizes, sparsegnn_epsilon, sparsegnn_epsilon_schedule,
+    sparsegnn_epsilon, sparsegnn_epsilon_schedule,
     sparsegnn_mixture_weights,
 )
 from src.privacy.privacy_loss import DoubleMixtureGaussianPrivacyLoss
@@ -19,17 +19,14 @@ from src.privacy.privacy_loss import DoubleMixtureGaussianPrivacyLoss
 pytest.importorskip("dp_accounting")
 
 
-def test_shell_sizes_use_union_safe_out_degree_bound():
-    assert shell_sizes(2, K_out=5) == [1, 10, 50]
-    assert shell_sizes(2, K_out=5, union_safe=False) == [1, 5, 25]
-    assert shell_sizes(3, K_out=4)[0] == 1
+def test_unthinned_mixture_matches_sampling_all_union_shell_roots():
+    from scipy.stats import binom
 
-
-def test_path_bound_mixture_is_a_distribution_of_the_right_length():
-    weights = sparsegnn_mixture_weights(0.3, 0.5, 2, 4, 3)
-    assert len(weights) == 2 + 3 + 3 ** 2
-    assert math.isclose(float(weights.sum()), 1.0, abs_tol=1e-12)
-    assert (weights >= 0).all()
+    # One substituted root plus two outgoing shells: 1 + 2*3 + 2*3**2.
+    # With p2=1, every affected root is sampled independently at rate p1.
+    weights = sparsegnn_mixture_weights(0.3, 1.0, 2, 4, 3)
+    expected = binom.pmf(np.arange(26), 25, 0.3)
+    np.testing.assert_allclose(weights, expected, rtol=1e-12, atol=1e-15)
 
 
 def test_path_bound_mixture_mean_matches_conditional_retention_formula():
@@ -38,7 +35,7 @@ def test_path_bound_mixture_mean_matches_conditional_retention_formula():
     expected = p1
     for level in range(1, radius + 1):
         retained_given_path = p1 * p2 ** level / (1.0 - p1 + p1 * p2 ** level)
-        expected += k_out ** level * retained_given_path
+        expected += 2 * k_out ** level * retained_given_path
     observed = float(sum(index * mass for index, mass in enumerate(weights)))
     assert math.isclose(observed, expected, rel_tol=1e-9)
 
@@ -179,23 +176,6 @@ def test_calibration_rejects_exhausted_bracket():
             target_epsilon=1e-12, target_delta=1e-5,
             p1=0.05, p2=0.1, r=1, K_in=2, K_out=2, steps=2,
             max_sigma=1.0, grid=1e-3)
-
-
-def test_calibration_prepares_sigma_independent_weights_once(monkeypatch):
-    original = sparse_accounting.sparsegnn_mixture_weights
-    calls = 0
-
-    def counted(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(sparse_accounting, "sparsegnn_mixture_weights", counted)
-    calibrate_sparsegnn_noise(
-        target_epsilon=1.0, target_delta=1e-5,
-        p1=0.05, p2=0.1, r=1, K_in=2, K_out=2, steps=2,
-        grid=1e-3, sigma_rtol=1e-2)
-    assert calls == 1
 
 
 def test_calibration_progress_pairs_uncached_evaluations(monkeypatch):

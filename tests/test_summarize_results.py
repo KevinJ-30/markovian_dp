@@ -238,3 +238,35 @@ def test_progap_depth_and_stage_count_are_distinct_settings(tmp_path):
     assert int(rows[0]["n"]) == 2
     assert float(rows[0]["value"]) == pytest.approx(.7)
     assert float(rows[0]["uncertainty"]) == pytest.approx(math.sqrt(.02))
+
+
+def test_queue_best_test_uses_complete_seed_means_and_preserves_p2(tmp_path):
+    from scripts.full_matrix_queue import _seed_tables
+
+    results = []
+    for p2, lr, scores in (
+        (0.1, .01, (.9, .5, .4)),
+        (0.1, .001, (.6, .65, .7)),
+        (0.5, .01, (.65, .7, .75)),
+        (1.0, .01, (.99,)),
+    ):
+        for seed, score in enumerate(scores):
+            results.append(_row(
+                seed=seed, lr=lr, p2=p2, test_acc=score, status="completed",
+                result_csv=str(tmp_path / f"p{p2}_lr{lr}_s{seed}.csv"),
+            ))
+    _seed_tables(tmp_path, results)
+    with (tmp_path / "seed_summary.csv").open() as handle:
+        all_rows = list(csv.DictReader(handle))
+    assert sorted(int(row["n"]) for row in all_rows) == [1, 3, 3, 3]
+    with (tmp_path / "best_test.csv").open() as handle:
+        best = list(csv.DictReader(handle))
+    assert len(best) == 1
+    assert float(best[0]["value"]) == pytest.approx(.7)
+    assert float(best[0]["uncertainty"]) == pytest.approx(.05)
+    assert best[0]["seeds"] == "0;1;2"
+    with (tmp_path / "best_test_by_p2.csv").open() as handle:
+        per_p2 = {row["group"]: row for row in csv.DictReader(handle)}
+    assert set(per_p2) == {"p2=0.1", "p2=0.5"}
+    assert float(per_p2["p2=0.1"]["value"]) == pytest.approx(.65)
+    assert "lr=0.001" in per_p2["p2=0.1"]["configuration"]

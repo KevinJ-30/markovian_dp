@@ -71,3 +71,5 @@ third_party/**/logs/
 *.png
 *.csv
 
+*.json
+

@@ -7,6 +7,7 @@ from opacus.grad_sample import GradSampleModule
 from torch_geometric.data import Data
 
 from src.models.gnn_mechanism import GNNMechanism
+from src.models.layers import PaddedGINConv, build_conv_stack
 from src.processing.padded import pad_rooted_subgraphs
 from src.training.sparse_gnn import OpacusPrivateUpdate
 from src.processing.sparse_expand import RootedSubgraph
@@ -104,7 +105,7 @@ def test_chunked_and_oversized_fallback_match_unbounded_batch():
         assert torch.allclose(got, expected, atol=1e-6)
 
 
-@pytest.mark.parametrize("aggr", ["mean", "gcn", "gin"])
+@pytest.mark.parametrize("aggr", ["mean", "gcn", "gin", "gin_mean"])
 def test_padded_losses_match_sparse_pyg(aggr):
     torch.manual_seed(12)
     data = _data()
@@ -122,7 +123,7 @@ def test_padded_losses_match_sparse_pyg(aggr):
     assert torch.allclose(padded, reference, atol=1e-6)
 
 
-@pytest.mark.parametrize("aggr", ["mean", "gcn", "gin"])
+@pytest.mark.parametrize("aggr", ["mean", "gcn", "gin", "gin_mean"])
 @pytest.mark.parametrize("empty", [False, True])
 def test_private_update_matches_manual_clipping_noise_and_sgd(aggr, empty):
     torch.manual_seed(21)
@@ -182,7 +183,7 @@ def test_private_physical_chunks_match_one_padded_batch():
         assert torch.allclose(left.grad, right.grad, atol=1e-6)
 
 
-@pytest.mark.parametrize("aggr", ["mean", "gcn", "gin"])
+@pytest.mark.parametrize("aggr", ["mean", "gcn", "gin", "gin_mean"])
 def test_opacus_grad_samples_match_vmap_per_root_gradients(aggr):
     torch.manual_seed(31)
     data = _data()
@@ -221,3 +222,89 @@ def test_opacus_grad_samples_match_vmap_per_root_gradients(aggr):
         assert parameter.grad_sample.shape[0] == batch.batch_size
         assert torch.allclose(
             parameter.grad_sample, reference[name], atol=1e-6, rtol=1e-5)
+
+
+@pytest.mark.parametrize("aggr, root_output", [("gin", 14.0), ("gin_mean", 8.0)])
+def test_gin_neighbor_pooling_keeps_root_separate_and_excludes_padding(aggr, root_output):
+    conv = build_conv_stack([1, 1], aggr=aggr)[0]
+    with torch.no_grad():
+        for linear in (conv.nn[0], conv.nn[2]):
+            linear.weight.fill_(1.0)
+            linear.bias.zero_()
+    features = torch.tensor([[2.0], [4.0], [8.0], [16.0]])
+    edges = torch.tensor([[1, 2], [0, 0]])
+    expected = torch.tensor([[root_output], [4.0], [8.0], [16.0]])
+    torch.testing.assert_close(conv(features, edges), expected)
+
+    # Invalid edge slots must affect neither the sum nor the mean's degree;
+    # padded features must not leak into real or isolated node predictions.
+    padded_features = torch.full((2, 5, 1), 999.0)
+    padded_features[0, :4] = features
+    padded_features[1, 0] = 2.0
+    node_mask = torch.tensor([
+        [True, True, True, True, False],
+        [True, False, False, False, False],
+    ])
+    padded_edges = torch.tensor([
+        [[1, 2, 4, -1, 99], [0, 0, 0, -1, 99]],
+        [[99, -1, 4, 0, 0], [99, -1, 0, 0, 0]],
+    ])
+    edge_mask = torch.tensor([
+        [True, True, False, False, False],
+        [False, False, False, False, False],
+    ])
+    padded = PaddedGINConv(conv)(
+        padded_features, padded_edges, edge_mask, node_mask)
+    torch.testing.assert_close(padded[0, :4], expected)
+    torch.testing.assert_close(padded[1, 0], features[0])
+    torch.testing.assert_close(padded[~node_mask], torch.zeros_like(padded[~node_mask]))
+
+    no_edges = PaddedGINConv(conv)(
+        features.unsqueeze(0), torch.empty((1, 2, 0), dtype=torch.long),
+        torch.empty((1, 0), dtype=torch.bool), torch.ones((1, 4), dtype=torch.bool))
+    torch.testing.assert_close(no_edges[0], features)
+
+
+def test_mean_gin_full_rooted_disconnected_csr_and_private_losses_and_gradients_match():
+    torch.manual_seed(48)
+    data = _data()
+    data.train_mask.fill_(True)
+    data.edge_index = torch.tensor([[1, 2, 3, 0, 1], [0, 0, 1, 2, 2]])
+    mechanism = _mechanism(data, max_nodes=32, aggr="gin_mean")
+    mechanism.eval_mode()
+    roots = torch.tensor([0, 2, 4])
+    subgraphs = []
+    for nodes in (torch.tensor([0, 1, 2, 3]), torch.tensor([2, 0, 1, 3])):
+        subgraphs.append(RootedSubgraph(
+            int(nodes[0]), nodes, nodes.argsort()[data.edge_index]))
+    subgraphs.append(RootedSubgraph(
+        4, torch.tensor([4]), torch.empty((2, 0), dtype=torch.long)))
+    reference = F.nll_loss(
+        mechanism.module(data.x, data.edge_index)[roots], data.y[roots],
+        reduction="none")
+    parameters = list(mechanism.parameters())
+    reference_gradients = [
+        torch.autograd.grad(loss, parameters, retain_graph=True)
+        for loss in reference
+    ]
+
+    batch = pad_rooted_subgraphs(
+        subgraphs, x=data.x, y=data.y, train_mask=data.train_mask,
+        device=torch.device("cpu"))
+    private_module = mechanism.build_private_module()
+    private_module.eval()
+    mechanism._DENSE_MESSAGE_BUDGET = 0
+    paths = {
+        "rooted": torch.stack([mechanism.subgraph_loss(s) for s in subgraphs]),
+        "disconnected": torch.stack(mechanism.subgraph_losses(subgraphs)),
+        "csr": F.nll_loss(
+            mechanism.module(data.x, mechanism.eval_edges(data))[roots],
+            data.y[roots], reduction="none"),
+        "private": mechanism.private_losses(private_module, batch),
+    }
+    for path, losses in paths.items():
+        torch.testing.assert_close(losses, reference, msg=path)
+        for loss, expected_gradients in zip(losses, reference_gradients):
+            gradients = torch.autograd.grad(loss, parameters, retain_graph=True)
+            for got, expected in zip(gradients, expected_gradients):
+                torch.testing.assert_close(got, expected, atol=1e-6, rtol=1e-5, msg=path)

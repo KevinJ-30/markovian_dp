@@ -47,8 +47,6 @@ def parse_args():
                         'on the symmetric/undirected path')
     p.add_argument('--T', type=int, required=True)
     p.add_argument('--clip', type=float, default=1.0)
-    p.add_argument('--legacy_shells', action='store_true',
-                   help='drop the union-graph correction (n_d = K^d not 2*K^d)')
     p.add_argument('--grid', type=float, default=1e-3,
                    help='dp_accounting discretization.  Pessimistic rounding '
                         'accumulates over composition, so the numerical floor '
@@ -112,7 +110,7 @@ def main():
         for eps in a.eps:
             cell = dict(p1=a.p1, p2=p2, r=a.r, K=a.K, T=a.T, clip=a.clip,
                         eps=eps, delta=delta, grid=a.grid,
-                        union_safe=not a.legacy_shells)
+                        chi=2, accountant_revision='path_bound_chi2_v1')
             entry = cache_dir / f"sigma_{_cache_key(**cell)}.json" if cache_dir else None
 
             if entry is not None:
@@ -129,7 +127,7 @@ def main():
                 c = calibrate_sparsegnn_noise(
                     target_epsilon=eps, target_delta=delta, p1=a.p1, p2=p2,
                     r=a.r, K_in=a.K, K_out=a.K, steps=a.T, clip=a.clip,
-                    grid=a.grid, union_safe=not a.legacy_shells)
+                    grid=a.grid)
             except (RuntimeError, ValueError) as exc:
                 print(f"# SKIP p2={p2} eps={eps}: {exc}", file=sys.stderr)
                 # Cache the SKIP too: an unreachable cell costs the same search

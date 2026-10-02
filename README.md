@@ -64,6 +64,12 @@ the same default. Explicit overrides remain supported: set `parameters.dropout`
 in a baseline JSON config, or `--dropout` for the ceiling CLI; `0.0` disables it.
 Historical experiment recipes and recorded results retain their original rates.
 
+The maintained matrix runner (`scripts/full_matrix_run.py`) defaults to ProGAP
+depth **1**, giving two native training stages. Its `--epochs` budget is per
+stage: 20 means 40 stage-epochs. Set `--progap-depth 2` explicitly to reproduce
+the former three-stage default (60 stage-epochs at 20 epochs per stage).
+Fixed-depth study recipes retain their explicit depths.
+
 The old SparseGNN import and CLI paths have been removed. Existing command-line
 flags, dataset/split caches, and result filenames and schemas are unchanged.
 
@@ -88,11 +94,16 @@ Supported dataset keys:
 |---|---|
 | Citation networks | `cora`, `cora-ml`, `citeseer`, `pubmed` |
 | OGB node classification | `ogbn-arxiv`, `ogbn-products` |
-| PyG node classification | `reddit`, `flickr` |
+| PyG node classification | `reddit`, `flickr`, `coauthor-physics` |
 | Single-university Facebook | `facebook` |
 | GraphSAINT | `ppi-large`, `saint-flickr`, `saint-reddit`, `saint-yelp`, `saint-amazon` |
-| Domain-disjoint classification | `twitch-explicit`, `facebook100`, `mag-countries` |
-| GraphLand regression | `hm-prices`, `avazu-ctr` |
+| Domain-disjoint classification | `twitch-explicit`, `facebook100`, `facebook100-gender`, `mag-countries` |
+
+`coauthor-physics` loads PyG Coauthor Physics without feature normalization or
+compression (34,493 nodes, 8,415 features, five classes). Its cache defaults to
+`data/Coauthor`, overridable with `COAUTHOR_DATA_ROOT` or the loader's `root=`.
+It has no native masks; the comparison runner uses a cached seed-0 stratified
+60/20/20 split into separate induced graphs (20,696 / 6,899 / 6,898 nodes).
 
 GraphSAINT also accepts `graphsaint:<name>` for `ppi-large`, `flickr`,
 `reddit`, `yelp`, and `amazon`. Bare `reddit` and `flickr` retain their
@@ -146,120 +157,41 @@ splits differ too. The raw GraphSAINT directory names remain `flickr`, `reddit`,
 `yelp`, and `amazon`. The `_load_graphsaint` docstring documents the
 preprocessing needed to reconcile the released files with the paper's Table 1.
 
-### GraphLand regression
+### Scalar regression
 
-`hm-prices` (product price) and `avazu-ctr` (device click-through rate) use
-PyG's `GraphLandDataset` to download and preprocess the released graphs.
-This requires a PyG version providing that dataset class, scikit-learn >= 1.5,
-and PyYAML. The cache defaults to `data/graphland`; set
-`GRAPHLAND_DATA_ROOT` or pass `root=` to `load_dataset` to relocate it.
+Generic scalar regression remains supported for caller-supplied graph data;
+no bundled regression dataset loader is provided. Models use one scalar output
+and MSE loss. Evaluation and validation-based checkpoint selection use whole-split
+R² (`r2`), with higher scores preferred even when all candidates are negative.
+Legacy result fields named `*_accuracy` or `*_acc` can contain R².
 
-Both use a **custom random 80/10/10 train/validation/test node split**, fixed
-at split seed 0 across training seeds. Training and validation counts are
-rounded down; test receives the remainder. This replaces the published RH
-masks and is **not** GraphLand's published RL, RH, TH, or THI protocol.
-The generic comparison runner defaults to these loader-provided (`native`)
-masks and rejects a conflicting split strategy. `--common_inductive_split`
-also preserves them rather than stratifying continuous targets.
+R² uses the evaluated split's own target mean as its baseline. The trivial
+reference predictor instead predicts the training mean and can score below zero.
+As in scikit-learn's default `r2_score`, constant targets score 1 for perfect
+predictions and 0 otherwise; fewer than two scored nodes yield NaN.
 
-```bash
-python -m src.experiments.sparse \
-  --dataset hm-prices --model regression_gnn --aggr mean \
-  --common_inductive_split --T 200 --seeds 1
-```
+The ProGAP inductive adapter accepts regression partition metadata with
+`primary_metric: "r2"`. It uses scalar predictions, per-root MSE, and whole-split
+R² independent of evaluation chunk size, while retaining its NAP, private
+optimization, and composed calibration mechanisms. The adapter requires at
+least two scored nodes for defined regression evaluation.
 
-Use `--dataset avazu-ctr` for CTR, or `--aggr gin` for SparseGIN. Generic
-`src.experiments.run` configs can select either dataset with the existing
-regression-capable methods, without explicit regression or split flags:
-
-```json
-{
-  "dataset": "avazu-ctr",
-  "method": "graphsage",
-  "device": "auto",
-  "parameters": {"epochs": 20, "hidden_size": 64}
-}
-```
-
-The task uses one scalar output and MSE loss. Targets are standardized using
-only the **new 80% training labels**, with mean and scale exposed as
-`dataset.target_mean` and `dataset.target_std`. Constant training targets use
-scale 1. **R² is the sole regression evaluation metric** (`r2`), and higher
-is better, including when all candidate scores are negative. Checkpoint
-selection maximizes validation R². The score is unitless and unchanged by
-target standardization; it is computed over the entire scored split, not
-averaged over minibatches. Existing result fields named `*_accuracy` or
-`*_acc` retain their legacy names but contain R². No auxiliary regression
-metric columns are emitted.
-
-R² uses the evaluated split's own target mean in its denominator. The trivial
-reference predictor instead predicts the training mean and can score below
-zero. As in scikit-learn's default `r2_score`, constant targets score 1 for
-perfect predictions and 0 otherwise; fewer than two scored nodes yield NaN.
-
-The loader rejects nonfinite targets rather than admitting unlabeled roots
-into the training/accounting population.
-
-Feature encoding, quantile transforms, and missing-feature imputation retain
-PyG's **full-graph** preprocessing. Message-passing contexts still follow the
-selected runner: generic comparisons and SparseGNN with
-`--common_inductive_split` use graph-disjoint partitions; ordinary SparseGNN
-uses train-induced edges for fitting and the full graph for evaluation.
-Thus this is not a strictly train-only feature-preprocessing benchmark.
-DP training accounting does **not** account for releasing or fitting these
-data-dependent feature/target transforms; treating their statistics as public
-or otherwise accounting for them is a separate privacy assumption.
-
-**ProGAP adapted for regression** is supported through the retained inductive
-adapter. The runner derives the task from dataset metadata (`primary_metric:
-"r2"`); no separate regression flag is needed. Each progressive stage uses one
-unbounded scalar output and per-root MSE. Prediction bypasses softmax, and
-validation/test R² is reduced over the entire scored split using centered
-float64 statistics, independently of evaluation chunk size. Selection maximizes
-validation R² even when all checkpoints have negative scores. Results declare
-`metric: "r2"`; legacy accuracy/macro-F1 result fields carry that same R².
-The adapter requires at least two scored nodes for a defined evaluation.
-
-For example, save this configuration outside the repository:
-
-```json
-{
-  "dataset": "hm-prices",
-  "method": "progap",
-  "device": "auto",
-  "source_dir": "third_party/ProGAP",
-  "command": ["/path/to/progap/python", "inductive_adapter.py"],
-  "parameters": {
-    "target_epsilon": 8.0, "target_delta": 0.0005, "epochs": 1,
-    "batch_size": 32, "max_degree": 5, "depth": 1
-  }
-}
-```
-
-```bash
-python -m src.experiments.run --config /path/to/progap-graphland.json \
-    --out results/inductive/hm-prices/progap.json
-```
-
-Use `--dataset avazu-ctr` for CTR. ProGAP's `epochs` applies **per progressive
-stage**: depth `d` trains `d + 1` stages. NAP normalization/noise, degree bounding,
-per-example gradient clipping/noise, sampling, and composed calibration remain
-unchanged by the regression adaptation. This is task-adapted ProGAP, not an
-unmodified upstream classification baseline. Raw private-training losses are
-not published in adapter histories; validation metrics assume public/fixed
-held-out data. Data-dependent preprocessing and private validation selection
-still require separate privacy treatment.
+Data-dependent preprocessing, private validation selection, and private test
+releases require separate privacy treatment; training accounting does not
+automatically cover them.
 
 ### Domain-disjoint datasets
 
-Three dataset names expose provenance-defined domains rather than a random node
-split. `facebook100` is a new 18-school benchmark; the existing `facebook`
-dataset remains the single UIllinois20 graph and is unchanged.
+Four dataset names expose provenance-defined domains rather than a random node
+split. `facebook100` and `facebook100-gender` share the 18-school raw benchmark
+but define different targets. The existing `facebook` dataset remains the
+single UIllinois20 graph and is unchanged.
 
 | dataset | canonical domains | default train | default validation | default test | reported metric |
 |---|---|---|---|---|---|
 | `twitch-explicit` | `de`, `engb`, `es`, `fr`, `ptbr`, `ru`, `tw` | `de` | `engb` | `es`, `fr`, `ptbr`, `ru`, `tw` | AUROC |
 | `facebook100` | `penn94`, `amherst41`, `cornell5`, `johns-hopkins55`, `reed98`, `caltech36`, `berkeley13`, `brown11`, `columbia2`, `yale4`, `virginia63`, `texas80`, `bingham82`, `duke14`, `princeton12`, `washu32`, `brandeis99`, `carnegie49` | `johns-hopkins55`, `caltech36`, `amherst41` | `cornell5`, `yale4` | `penn94`, `brown11`, `texas80` | accuracy |
+| `facebook100-gender` | same 18 schools as `facebook100` | same default schools | same default schools | same default schools | accuracy |
 | `mag-countries` | `us`, `cn`, `de`, `fr`, `ru`, `jp` | `us` | `cn` | `cn` | accuracy |
 
 The defaults apply when no domain role is supplied. A custom split must provide
@@ -353,9 +285,17 @@ python -m src.experiments.sparse \
 
 Twitch is binary and must use `binary_gnn`; it trains a single logit and reports
 tie-correct AUROC (`validation_auroc` and `test_auroc`), not accuracy.
-`facebook100` is a two-class accuracy task; matching GraphOOD, raw missing
-gender `0` is collapsed into class `0`. MAG is a 20-class task. Label 19 still
-participates in training loss but is excluded from validation/test accuracy.
+`facebook100` retains the historical GraphOOD **missing-versus-recorded** task:
+raw gender `0` maps to class `0`, and both positive categories map to class `1`.
+`facebook100-gender` instead predicts the recorded categories: raw `1/2` map to
+`0/1`; raw `0` nodes and their incident edges are excluded, with retained edges
+reindexed. Both use the same feature vocabulary fitted over all raw nodes in
+all 18 schools (13,778 columns), excluding the gender column. Their processed
+split identities are distinct; historical missingness results are not gender
+classification results. The corrected task stores label mapping, provenance,
+and per-domain raw/retained/excluded node counts.
+MAG is a 20-class task. Label 19 participates in training loss but is excluded
+from validation/test accuracy.
 
 All three families download automatically on first use over HTTPS. The cache
 roots can be overridden, and otherwise are:
@@ -403,13 +343,17 @@ python -m src.experiments.compute_epsilon \
 ```
 
 Select the SparseGNN architecture with `--aggr mean` (the default GraphSAGE),
-`--aggr gcn`, or `--aggr gin`. GIN uses sum aggregation and
-`MLP((1 + epsilon) * x + sum(neighbors))`, with fixed `epsilon=0`.
+`--aggr gcn`, `--aggr gin`, or `--aggr gin_mean`. GIN uses
+`MLP((1 + epsilon) * x + aggregate(neighbors))`, with fixed `epsilon=0`:
+`gin` sums neighbors; `gin_mean` averages neighbors without averaging the
+separate root term. Isolated nodes contribute a zero neighbor vector, and
+padded nodes/edges do not affect the mean.
 Each layer's MLP is `Linear(in, out) -> ReLU -> Linear(out, out)`, without
 batch normalization; `--hidden` and `--num_layers` set the stack dimensions.
 It supports non-private training, padded per-root Opacus clipping/noise, and
-full-graph CSR inference. For the study runner, set `"aggregation": "gin"`
-in the JSON cell; the existing `"mean"` setting remains the default.
+full-graph CSR inference. For the existing study runner, `"aggregation": "gin"`
+selects sum-GIN; `"mean"` remains GraphSAGE. The matrix worker selects mean-GIN
+with `--method sparse_gin --gin-pooling mean`.
 Changing the architecture does not change calibration for fixed sampling,
 degree bounds, clipping, and update count.
 
@@ -532,11 +476,17 @@ the in-expansion shell law. The private optimizer is likewise separate from
 accounting—Opacus computes per-root gradients, clips at `C`, and injects noise
 with standard deviation `sigma*C`; no generic Opacus accountant is attached.
 
-Under in-expansion the accounting shells are `K_out^d`, so it is the **out**-degree
-cap that prices the guarantee. Epsilon is charged for the worst-case bound
-`K^d` while utility only ever sees `E[min(deg, K)]`, which saturates: on a
-heavy-tailed degree distribution a generous cap costs a great deal of epsilon
-for very little signal.
+Under in-expansion, accounting uses fixed `chi=2`: the root shell has size one
+and non-root shells have size `2*K_out^d` (not `(2*K_out)^d`). The **out**-degree
+cap therefore prices the guarantee. Utility only sees `E[min(deg, K)]`, which
+saturates: on a heavy-tailed degree distribution a generous cap costs a great
+deal of epsilon for very little signal.
+
+Accounting APIs and CLIs no longer offer a legacy shell-policy switch.
+New calibration-cache entries and experiment metadata identify the fixed
+chi=2 policy. Historical results are not relabeled: their epsilon must be
+recomputed at the recorded noise, or noise recalibrated and training rerun
+to meet the original target epsilon.
 
 ## DP-GNN baseline
 

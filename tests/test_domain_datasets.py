@@ -12,6 +12,7 @@ from torch_geometric.data import Data
 
 from src.data import datasets
 from src.data import domain_datasets as domain
+from src.processing.splits import load_or_create_inductive_split
 
 
 def _write_twitch_domain(root, name, node_rows, edges, features):
@@ -126,10 +127,11 @@ def test_twitch_rejects_unknown_edge_ids_and_conflicting_duplicate_nodes(tmp_pat
         domain._parse_twitch_domain(other, "de")
 
 
-def test_normalization_defaults_equal_explicit_and_are_registry_ordered():
-    normalized, split_id = domain.normalize_domain_split("facebook100")
+@pytest.mark.parametrize("dataset_name", ["facebook100", "facebook100-gender"])
+def test_normalization_defaults_equal_explicit_and_are_registry_ordered(dataset_name):
+    normalized, split_id = domain.normalize_domain_split(dataset_name)
     explicit, explicit_id = domain.normalize_domain_split(
-        "facebook100",
+        dataset_name,
         _split(
             ["caltech36", "johns-hopkins55", "amherst41"],
             ["yale4", "cornell5"],
@@ -147,7 +149,7 @@ def test_normalization_defaults_equal_explicit_and_are_registry_ordered():
     assert normalized["val"] == ["cornell5", "yale4"]
     assert normalized["test"] == ["penn94", "brown11", "texas80"]
     _, different_id = domain.normalize_domain_split(
-        "facebook100", {**explicit, "seed": 1}
+        dataset_name, {**explicit, "seed": 1}
     )
     assert different_id != split_id
 
@@ -246,6 +248,108 @@ def test_facebook100_uses_all_school_vocabulary_and_missing_gender_rule(tmp_path
     assert metadata["task_type"] == "MULTICLASS"
     assert metadata["primary_metric"] == "accuracy"
     assert metadata["metric_ignore_label"] is None
+
+
+def _write_fb100_gender_fixture(root):
+    root.mkdir(exist_ok=True)
+    for index, filename in enumerate(domain.FB100_FILES.values()):
+        local_info = np.array(
+            [
+                [index + 1, 0, 777, 0, 1, 2005, index + 10],
+                [index + 1, 2, 2, 3, 0, 2006, 0],
+                [index + 1, 0, 778, 0, 1, 2005, index + 10],
+                [index + 1, 1, 2, 3, 0, 2006, 0],
+            ],
+            dtype=np.int64,
+        )
+        adjacency = sp.csr_matrix(
+            (np.ones(6), ([0, 1, 2, 1, 3, 3], [1, 2, 3, 3, 1, 3])),
+            shape=(4, 4),
+        )
+        savemat(root / filename, {"A": adjacency, "local_info": local_info})
+
+
+def test_facebook100_recorded_gender_filters_nodes_and_remaps_induced_edges(tmp_path):
+    _write_fb100_gender_fixture(tmp_path)
+    requested = _split(["penn94"], ["amherst41"], ["cornell5"])
+    legacy, _ = domain.load_domain_dataset("facebook100", requested, root=tmp_path)
+    dataset, data = datasets.load_dataset(
+        "facebook100-gender", domain_split=requested, root=tmp_path
+    )
+
+    assert data.y.tolist() == [1, 0, 1, 0, 1, 0]
+    assert data.domain_id.tolist() == [0, 0, 1, 1, 2, 2]
+    assert data.train_mask.tolist() == [True, True, False, False, False, False]
+    assert data.val_mask.tolist() == [False, False, True, True, False, False]
+    assert data.test_mask.tolist() == [False, False, False, False, True, True]
+    assert set(map(tuple, data.edge_index.t().tolist())) == {
+        (0, 1), (1, 0), (1, 1), (2, 3), (3, 2), (3, 3),
+        (4, 5), (5, 4), (5, 5),
+    }
+    # Categories present only on excluded nodes (777/778), and schools not
+    # selected by this split, still define the common raw-school vocabulary.
+    assert data.x.shape == (6, 43)
+    assert torch.equal(data.x, legacy.x[[1, 3, 5, 7, 9, 11]])
+    assert dataset.num_features == legacy.x.size(1)
+    assert dataset.num_classes == 2
+    assert dataset.task_type == "MULTICLASS"
+    assert dataset.primary_metric == "accuracy"
+    assert dataset.metric_ignore_label is None
+    assert dataset.label_metadata == data.label_metadata
+    assert data.label_metadata["raw_to_class"] == {"1": 0, "2": 1}
+    assert data.label_metadata["excluded_raw_values"] == [0]
+    assert dataset.provenance == data.provenance
+    assert data.provenance["revision"] == domain.FB100_REVISION
+    assert data.provenance["feature_vocabulary_domains"] == list(domain.FB100_DOMAINS)
+    assert dataset.domain_node_counts == {
+        name: {"raw": 4, "retained": 2, "excluded": 2}
+        for name in ("penn94", "amherst41", "cornell5")
+    }
+
+
+@pytest.mark.parametrize("unexpected", [-1, 3])
+def test_facebook100_recorded_gender_rejects_unexpected_raw_categories(tmp_path, unexpected):
+    _write_fb100_gender_fixture(tmp_path)
+    # Even an unselected school is validated while fitting the raw vocabulary.
+    filename = domain.FB100_FILES["carnegie49"]
+    savemat(
+        tmp_path / filename,
+        {
+            "A": sp.csr_matrix((1, 1)),
+            "local_info": np.array([[1, unexpected, 1, 0, 1, 2005, 0]]),
+        },
+    )
+    with pytest.raises(ValueError, match="Unexpected raw gender categories"):
+        domain.load_domain_dataset(
+            "facebook100-gender",
+            _split(["penn94"], ["amherst41"], ["cornell5"]),
+            root=tmp_path,
+        )
+
+
+def test_facebook100_gender_and_missingness_use_disjoint_split_caches(tmp_path):
+    raw = tmp_path / "raw"
+    _write_fb100_gender_fixture(raw)
+    requested = _split(["penn94"], ["amherst41"], ["cornell5"])
+    splits = {}
+    for name in ("facebook100", "facebook100-gender"):
+        data, _ = domain.load_domain_dataset(name, requested, root=raw)
+        splits[name] = load_or_create_inductive_split(
+            data, name, root=tmp_path / "splits", split_strategy="domain"
+        )
+        reloaded = load_or_create_inductive_split(
+            data, name, root=tmp_path / "splits", split_strategy="domain"
+        )
+        assert torch.equal(reloaded.train.data.y, splits[name].train.data.y)
+    legacy = splits["facebook100"]
+    gender = splits["facebook100-gender"]
+    assert legacy.path != gender.path
+    assert legacy.path.is_file() and gender.path.is_file()
+    assert legacy.domain_split_id != gender.domain_split_id
+    assert legacy.domain_split == gender.domain_split
+    assert legacy.train.data.y.tolist() == [0, 1, 0, 1]
+    assert gender.train.data.y.tolist() == [1, 0]
+    assert gender.train.data.label_metadata["raw_to_class"] == {"1": 0, "2": 1}
 
 
 def _save_mag(path, label_offset=0):

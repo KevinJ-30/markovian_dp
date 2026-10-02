@@ -72,7 +72,6 @@ class SparseGNNAccountant(PrivacyAccountant):
             sigma_rtol=kwargs.get("sigma_rtol", 1e-3),
             sigma_atol=kwargs.get("sigma_atol", 1e-6),
             max_sigma=kwargs.get("max_sigma", 1e6),
-            union_safe=kwargs.get("union_safe", True),
         )
         return calibration.as_dict()
 

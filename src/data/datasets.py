@@ -22,9 +22,7 @@ SUPPORTED_DATASETS = {
     'reddit': 'Reddit',
     # Inductive node classification benchmarks
     'flickr': 'Flickr',
-    # GraphLand scalar regression, fixed random 80/10/10 node splits.
-    'hm-prices': 'hm-prices',
-    'avazu-ctr': 'avazu-ctr',
+    'coauthor-physics': 'Coauthor-Physics',
     # GAP/ProGAP's Facebook: the UIllinois20 FB100 network, year label filtered
     # to classes with >=1000 nodes.  For head-to-head comparison with those
     # papers on a dataset where the graph actually carries signal.
@@ -32,6 +30,7 @@ SUPPORTED_DATASETS = {
     # Provenance-specific domain-disjoint node-classification benchmarks.
     'twitch-explicit': 'Twitch-Explicit',
     'facebook100': 'Facebook100',
+    'facebook100-gender': 'Facebook100-Gender',
     'mag-countries': 'MAG-Countries',
     # GraphSAINT benchmark graphs (Zeng et al., ICLR 2020), loaded from the
     # authors' released files under their inductive protocol.  Shorthands for
@@ -118,50 +117,6 @@ class _SimpleDataset:
         return self._data
 
 
-def _load_graphland(name, root=None):
-    """GraphLand regression with a fixed seed-0 random 80/10/10 split.
-
-    Reuse PyG's full-graph feature preprocessing, but not its published split
-    or target scaling. Targets are standardized using only our training nodes.
-    These two releases require a finite target at every node so native
-    graph-disjoint training and its supervised population remain well-defined.
-    """
-    from torch_geometric.datasets import GraphLandDataset
-
-    root = root or os.environ.get('GRAPHLAND_DATA_ROOT', 'data/graphland')
-    source = GraphLandDataset(
-        root=os.fspath(root), name=name, split='RH',
-        regression_targets_transform=None)
-    data = source[0]
-    targets = data.y.reshape(-1).float()
-    n = int(data.num_nodes)
-    if targets.numel() != n or not torch.isfinite(targets).all():
-        raise ValueError(
-            f"GraphLand {name} requires one finite regression target per node")
-    n_train, n_val = 8 * n // 10, n // 10
-    if min(n_train, n_val, n - n_train - n_val) < 1:
-        raise ValueError(
-            f"GraphLand {name} needs at least 10 nodes for an 80/10/10 split")
-    order = torch.randperm(n, generator=torch.Generator().manual_seed(0))
-    for role, indices in (
-            ('train', order[:n_train]),
-            ('val', order[n_train:n_train + n_val]),
-            ('test', order[n_train + n_val:])):
-        mask = torch.zeros(n, dtype=torch.bool)
-        mask[indices] = True
-        setattr(data, f'{role}_mask', mask)
-
-    train_targets = targets[data.train_mask].double()
-    target_mean = float(train_targets.mean())
-    target_std = float(train_targets.std(unbiased=False))
-    if target_std == 0:
-        target_std = 1.0
-    data.y = ((targets.double() - target_mean) / target_std).float()
-    return _SimpleDataset(
-        data, data.num_node_features, 1,
-        task_type='REGRESSION', primary_metric='r2', multilabel=False,
-        split_strategy='native', split_seed=0,
-        target_mean=target_mean, target_std=target_std), data
 
 
 GRAPHSAINT_DATASETS = {
@@ -456,15 +411,15 @@ def load_dataset(name, device='cpu', domain_split=None, *, root=None):
         device: Device to move data to.
         domain_split: Optional train/validation/test domain selection for the
             domain-disjoint datasets. Supplying any role requires all three.
-        root: Optional cache directory for domain, GraphSAINT, and GraphLand datasets.
+        root: Optional cache directory for domain, GraphSAINT, and Coauthor datasets.
 
     Returns:
         (dataset, data) tuple.
     """
     key = name.lower()
     spec = SUPPORTED_DATASETS.get(key, name)
-    if key in ('twitch-explicit', 'facebook100', 'mag-countries'):
-        from src.data.domain_datasets import load_domain_dataset
+    from src.data.domain_datasets import DOMAIN_DATASET_NAMES, load_domain_dataset
+    if key in DOMAIN_DATASET_NAMES:
         data, metadata = load_domain_dataset(
             key, domain_split=domain_split, root=root)
         dataset = _SimpleDataset(data, **metadata)
@@ -484,9 +439,6 @@ def load_dataset(name, device='cpu', domain_split=None, *, root=None):
         raise ValueError(f"Unknown dataset '{name}'. Supported: "
                          f"{list(SUPPORTED_DATASETS.keys())} or "
                          f"graphsaint:<name>")
-    if key in ('hm-prices', 'avazu-ctr'):
-        dataset, data = _load_graphland(key, root=root)
-        return dataset, data.to(device)
     if key == 'cora-ml':
         dataset, data = _load_cora_ml()
         return dataset, data.to(device)
@@ -495,6 +447,13 @@ def load_dataset(name, device='cpu', domain_split=None, *, root=None):
         dataset, data = _load_ogb_node(key)
         data = data.to(device)
         return dataset, data
+
+    if key == 'coauthor-physics':
+        from torch_geometric.datasets import Coauthor
+        cache = root if root is not None else os.environ.get(
+            'COAUTHOR_DATA_ROOT', 'data/Coauthor')
+        dataset = Coauthor(root=cache, name='Physics')
+        return dataset, dataset[0].to(device)
 
     if key == 'reddit':
         from torch_geometric.datasets import Reddit

@@ -269,7 +269,7 @@ def test_every_mechanism_trains_one_private_padded_step(kind):
 
 # ── large-graph evaluation ────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("aggr", ["mean", "gcn", "gin"])
+@pytest.mark.parametrize("aggr", ["mean", "gcn", "gin", "gin_mean"])
 def test_csr_eval_path_matches_edge_index(aggr):
     """Above the dense-message budget, evaluate() must switch to CSR and give
     the same numbers.

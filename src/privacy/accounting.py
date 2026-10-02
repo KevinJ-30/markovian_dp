@@ -17,24 +17,11 @@ the in-expansion shell law.
 from dataclasses import asdict, dataclass
 import math
 import time
-from typing import Any, Callable, List, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
 from .privacy_loss import DoubleMixtureGaussianPrivacyLoss
-
-
-def _q_products(p2: float, r: int, K: int) -> List[float]:
-    """Path-retention bounds q_0..q_r from Theorem 5.4."""
-    q = [1.0]
-    for d in range(1, r + 1):
-        if p2 >= 1.0:
-            q.append(1.0)
-            continue
-        log_keep = sum((K ** (level - 1)) * math.log1p(-(p2 ** level))
-                       for level in range(d, r + 1))
-        q.append(1.0 - math.exp(log_keep))
-    return q
 
 
 def _binom_pmf(n: int, p: float) -> np.ndarray:
@@ -52,55 +39,18 @@ def _binom_pmf(n: int, p: float) -> np.ndarray:
     return pmf / pmf.sum()
 
 
-def shell_sizes(r: int, K_out: int, union_safe: bool = True) -> List[int]:
-    """In-expansion shell bounds n_0..n_r.
-
-    The default factor two is the union-graph correction: only the substituted
-    node's first step can double, hence n_d = 2*K_out**d rather than (2K)^d.
-    """
-    if r < 0 or K_out < 1:
-        raise ValueError("need r >= 0 and K_out >= 1")
-    factor = 2 if union_safe else 1
-    return [1] + [factor * K_out ** d for d in range(1, r + 1)]
-
-
-# def sparsegnn_mixture_weights(
-#     p1: float,
-#     p2: float,
-#     r: int,
-#     K_in: int,
-#     K_out: Optional[int] = None,
-#     union_safe: bool = True,
-# ) -> np.ndarray:
-#     """Theorem 5.4 mixture weights for in-expansion."""
-#     if not (0.0 <= p1 <= 1.0 and 0.0 <= p2 <= 1.0):
-#         raise ValueError("p1 and p2 must lie in [0, 1]")
-#     if r < 0 or K_in < 1:
-#         raise ValueError("need r >= 0 and K_in >= 1")
-#     K_out = K_in if K_out is None else K_out
-#     if K_out < 1:
-#         raise ValueError("K_out must be at least one")
-#     q = _q_products(p2, r, min(K_in, K_out))
-#     sizes = shell_sizes(r, K_out, union_safe=union_safe)
-#     weights = np.array([1.0])
-#     for n_d, q_d in zip(sizes, q):
-#         weights = np.convolve(weights, _binom_pmf(n_d, p1 * q_d))
-#     weights = np.clip(weights, 0.0, None)
-#     return weights / weights.sum()
-
 def sparsegnn_mixture_weights(
     p1: float,
     p2: float,
     r: int,
     K_in: int,
     K_out: Optional[int] = None,
-    union_safe: bool = True,
 ) -> np.ndarray:
     """Path-bound mixture weights for in-expansion.
 
     Returns weights[k] = Pr(J_path = k).
-    union_safe=True uses ordinary degree bounds (chi=2).
-    union_safe=False requires bounded neighboring unions (chi=1).
+    Uses ordinary degree bounds with fixed chi=2: each non-root shell has
+    2*K_out**ell potentially affected roots, not (2*K_out)**ell.
     
     Do not modify this function.
     """
@@ -112,9 +62,8 @@ def sparsegnn_mixture_weights(
     K_out = K_in if K_out is None else K_out
     if K_out < 1:
         raise ValueError("K_out must be at least one")
-
-    # chi = 2 if union_safe else 1
-    chi = 1
+    
+    chi = 2
     weights = np.array([1.0 - p1, p1])
 
     for ell in range(1, r + 1):
@@ -205,10 +154,8 @@ def sparsegnn_epsilon_schedule(
     delta: float,
     K_out: Optional[int] = None,
     grid: float = 1e-3,
-    union_safe: bool = True,
 ):
-    weights = sparsegnn_mixture_weights(
-        p1, p2, r, K_in, K_out, union_safe=union_safe)
+    weights = sparsegnn_mixture_weights(p1, p2, r, K_in, K_out)
     return _compose_schedule(
         mixture_gaussian_pld(weights, sigma, grid), steps, delta)
 
@@ -223,11 +170,10 @@ def sparsegnn_epsilon(
     delta: float,
     K_out: Optional[int] = None,
     grid: float = 1e-3,
-    union_safe: bool = True,
 ) -> float:
     return sparsegnn_epsilon_schedule(
         p1, p2, r, K_in, sigma, [steps], delta, K_out=K_out,
-        grid=grid, union_safe=union_safe)[int(steps)]
+        grid=grid)[int(steps)]
 
 
 @dataclass(frozen=True)
@@ -266,7 +212,6 @@ def calibrate_sparsegnn_noise(
     sigma_rtol: float = 1e-3,
     sigma_atol: float = 1e-6,
     max_sigma: float = 1e6,
-    union_safe: bool = True,
     progress: Optional[Callable[[dict[str, Any]], None]] = None,
 ) -> SparseGNNNoiseCalibration:
     """Find the smallest known-safe Opacus noise multiplier."""
@@ -290,8 +235,7 @@ def calibrate_sparsegnn_noise(
         })
 
 
-    weights = sparsegnn_mixture_weights(
-        p1, p2, r, K_in, K_out, union_safe=union_safe)
+    weights = sparsegnn_mixture_weights(p1, p2, r, K_in, K_out)
     values = {}
 
     def epsilon_at(sigma):

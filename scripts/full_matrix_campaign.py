@@ -81,7 +81,7 @@ class CampaignQueue:
 
     def __init__(self, root: Path, *, device: str = "cuda", gpus: str = "auto",
                  resume: bool = False, policy: dict | None = None,
-                 purpose: str = "campaign", clock: Any = time,
+                 purpose: str = "campaign", max_jobs_per_gpu: int = 1, clock: Any = time,
                  gpu_resolver: Callable | None = None,
                  sampler_factory: Callable | None = None,
                  gpu_probe: Callable | None = None,
@@ -90,10 +90,15 @@ class CampaignQueue:
                  disk_available: Callable | None = None):
         if device not in {"cpu", "cuda"}:
             raise ValueError("device must be cpu or cuda")
-        if purpose not in {"campaign", "smoke"}:
-            raise ValueError("purpose must be campaign or smoke")
-        if purpose == "campaign" and device != "cuda":
+        if purpose not in {"campaign", "smoke", "ideation"}:
+            raise ValueError("purpose must be campaign, smoke or ideation")
+        if purpose != "smoke" and device != "cuda":
             raise ValueError("the training campaign requires CUDA; CPU is smoke-only")
+        if isinstance(max_jobs_per_gpu, bool) or not isinstance(max_jobs_per_gpu, int) or max_jobs_per_gpu < 1:
+            raise ValueError("max_jobs_per_gpu must be a positive integer")
+        if purpose == "ideation" and max_jobs_per_gpu > 2:
+            raise ValueError("ideation permits at most two jobs per GPU")
+        self.max_jobs_per_gpu = max_jobs_per_gpu
         self.root = Path(root).expanduser().absolute()
         self.device, self.gpus, self.resume, self.purpose = device, gpus, resume, purpose
         self.clock = clock
@@ -121,6 +126,7 @@ class CampaignQueue:
         self.manifest_sha256 = ""
         self.active: dict[str, dict] = {}
         self.reservations: dict[str, int] = {}
+        self.shape_peaks: dict[tuple, int] = {}
         self.gpu_rows: dict[str, dict] = {}
         self.sampler = None
         self._retry: deque[str] = deque()
@@ -173,24 +179,40 @@ class CampaignQueue:
         path = self._quarantine_path(uuid)
         row = {"gpu_uuid": uuid, "campaign_root": str(self.root),
                "attempt_dir": str(folder), "reason": reason, "utc": runtime.utc_now()}
-        # Never erase another scheduler's ownership blocker.
-        if path.exists():
-            previous = runtime.read_json(path)
-            if previous.get("attempt_dir") != str(folder):
+        # Shared supervisors may quarantine independently; preserve each
+        # blocker once, including evidence owned by another controller.
+        with self.mutex:
+            if path.exists():
+                previous = runtime.read_json(path)
+                blocker = previous
+                while blocker:
+                    if (blocker.get("campaign_root") == str(self.root)
+                            and blocker.get("attempt_dir") == str(folder)):
+                        return
+                    blocker = blocker.get("previous_blocker")
                 row["previous_blocker"] = previous
-        runtime.atomic_json(path, row)
+            runtime.atomic_json(path, row)
 
     def _clear_quarantine(self, uuid: str | None, folder: Path) -> None:
         if uuid is None:
             return
         path = self._quarantine_path(uuid)
-        if path.exists():
-            row = runtime.read_json(path)
-            if row.get("campaign_root") == str(self.root) and row.get("attempt_dir") == str(folder):
-                if row.get("previous_blocker"):
-                    runtime.atomic_json(path, row["previous_blocker"])
-                else:
+        with self.mutex:
+            if path.exists():
+                row = runtime.read_json(path)
+                kept = []
+                while row:
+                    previous = row.pop("previous_blocker", None)
+                    if not (row.get("campaign_root") == str(self.root)
+                            and row.get("attempt_dir") == str(folder)):
+                        kept.append(row)
+                    row = previous
+                if not kept:
                     path.unlink()
+                else:
+                    for newer, older in zip(kept, kept[1:]):
+                        newer["previous_blocker"] = older
+                    runtime.atomic_json(path, kept[0])
 
     def _check_identity(self) -> None:
         # Never invoked on a thread currently supervising an active process.
@@ -219,7 +241,8 @@ class CampaignQueue:
             raise ValueError(f"{self.purpose} queue rejects {self.manifest.get('purpose')!r} manifest")
         if self.manifest.get("device") != self.device:
             raise ValueError("queue device differs from the sealed manifest")
-        expected = 336 if self.purpose == "campaign" else (20 if self.device == "cpu" else 10)
+        expected = (280 if self.purpose == "ideation" else 1584 if self.purpose == "campaign"
+                    else (20 if self.device == "cpu" else 10))
         if len(self.requests) != expected or self.manifest.get("expected_requests") != expected:
             raise ValueError(f"{self.purpose} requires exactly {expected} requests")
         self.by_key = {row["request_key"]: row for row in self.requests}
@@ -344,6 +367,9 @@ class CampaignQueue:
                                    "owned_process_exited": True, "ended_utc": runtime.utc_now(),
                                    "reason": "controller exited before spawning this attempt"}
             outcome = self._acceptance(self.by_key[key], folder, outcome)
+            self._remember_peak(self.by_key[key], folder, outcome)
+            if outcome["status"] == "oom":
+                self.shape_peaks.pop(self._shape(self.by_key[key]), None)
             if key in accepted_keys:
                 raise ValueError(f"attempts exist after an accepted request: {key}")
             if outcome.get("accepted"):
@@ -364,6 +390,70 @@ class CampaignQueue:
             if recovered:
                 self.event("ATTEMPT_RECOVERED", request_key=key, attempt_number=number,
                            status=outcome["status"], reason=outcome.get("reason"))
+
+    @staticmethod
+    def _shape(request: dict) -> tuple:
+        return (request["protocol"], request["method"], request["batch_size"],
+                request.get("p2") if request["method"].startswith("sparse_") else None)
+
+    def _remember_peak(self, request: dict, folder: Path, outcome: dict) -> None:
+        # Only a full, verified run can calibrate a future reservation.
+        if not outcome.get("accepted") or not outcome.get("owned_process_exited"):
+            return
+        sampled = outcome.get("peak_gpu_memory_mib")
+        values = [float(sampled) * 1024 ** 2] if sampled is not None else []
+        path = folder / "output" / "result.json"
+        resources = runtime.read_json(path).get("resources", {}) if path.exists() else {}
+        allocated = resources.get("peak_cuda_allocated_bytes") or 0
+        child = resources.get("peak_child_cuda_allocated_bytes") or 0
+        # ProGAP's training lives in a child; the parent's allocator alone is
+        # not evidence of its full shape. Sum allocators conservatively.
+        if request["method"] == "progap" and not (child or (sampled and sampled > 0)):
+            return
+        values.append(float(allocated) + float(child))
+        peak = max((value for value in values if math.isfinite(value) and value > 0), default=0)
+        if peak:
+            shape = self._shape(request)
+            self.shape_peaks[shape] = max(self.shape_peaks.get(shape, 0), math.ceil(peak))
+
+    def _gpu_reservation(self, request: dict) -> int | None:
+        peak = self.shape_peaks.get(self._shape(request))
+        return math.ceil(peak * 1.25) + GIB // 2 if peak else None
+
+    def _sharing_admission(self, request: dict, gpu: dict, siblings: list[dict]) -> dict | None:
+        if gpu.get("error") or gpu.get("utilization_gpu") is None or gpu["utilization_gpu"] > 70:
+            return None
+        reservation = self._gpu_reservation(request)
+        existing = [self._gpu_reservation(row["request"]) for row in siblings]
+        if reservation is None or any(value is None for value in existing):
+            return None
+        existing = [max(reserved, math.ceil(row.get("sampled_gpu_peak_bytes", 0) * 1.25) + GIB // 2)
+                    for reserved, row in zip(existing, siblings)]
+        owned = set()
+        try:
+            for row in siblings:
+                owned.update(runtime.owned_attempt_pids(row["folder"]))
+        except (OSError, ValueError, RuntimeError, KeyError):
+            return None
+        processes = gpu.get("compute_processes")
+        if processes is None or any(row["pid"] not in owned for row in processes):
+            return None
+        if any(row.get("used_memory_mib") is None for row in processes):
+            return None
+        total, free = gpu.get("memory_total_mib"), gpu.get("memory_free_mib")
+        if total is None or free is None:
+            return None
+        total, free = int(total * 1024 ** 2), int(free * 1024 ** 2)
+        headroom = max(2 * GIB, math.ceil(total * 0.1))
+        used_owned = int(sum(row["used_memory_mib"] for row in processes) * 1024 ** 2)
+        # Reserve future peaks, not merely the current, possibly pre-training
+        # footprint. Preserve all memory not attributable to our workers.
+        reserved = sum(existing) + reservation
+        if reserved + headroom > total or reserved + headroom > free + used_owned:
+            return None
+        return {"shape": list(self._shape(request)), "peak_reservation_bytes": reservation,
+                "total_peak_reservations_bytes": reserved, "device_headroom_bytes": headroom,
+                "owned_sibling_pids": sorted(owned)}
 
     def _estimated_host(self, request: dict) -> int:
         prepared = self.manifest["prepared"][request["protocol"]]
@@ -396,7 +486,7 @@ class CampaignQueue:
         return any(other != uuid and other not in busy and self._stable_idle(other)
                    and not self._quarantine_path(other).exists() for other in self.gpu_rows)
 
-    def _ready_key(self, uuid: str | None) -> str | None:
+    def _ready_key(self, uuid: str | None, eligible: Callable | None = None) -> str | None:
         now = self.clock.time()
         ordered = list(self._retry) + self.order
         seen = set()
@@ -416,6 +506,8 @@ class CampaignQueue:
                 since = self._retry_preference.setdefault(key, self.clock.monotonic())
                 if self.clock.monotonic() - since < self.policy["poll_seconds"]:
                     continue
+            if eligible is not None and not eligible(self.by_key[key]):
+                continue
             return key
         return None
 
@@ -445,6 +537,7 @@ class CampaignQueue:
                      "prepared_fingerprint": request["prepared_fingerprint"],
                      "prepared_manifest_sha256": request["prepared_manifest_sha256"],
                      "gpu": gpu, "resources": resources, "policy": self.policy,
+                     "max_jobs_per_gpu": self.max_jobs_per_gpu,
                      "cwd": str(REPO_ROOT), "argv": command,
                      "controlled_environment": {name: environment[name] for name in (
                          "CUDA_VISIBLE_DEVICES", "PYTHONPATH", "OMP_NUM_THREADS", "MKL_NUM_THREADS",
@@ -473,9 +566,17 @@ class CampaignQueue:
         with self.mutex:
             if self.stop.is_set() or (self.purpose == "smoke" and self.active):
                 return None
-            if uuid is not None and any(row["gpu_uuid"] == uuid for row in self.active.values()):
+            siblings = [row for row in self.active.values() if row["gpu_uuid"] == uuid]
+            if siblings and (uuid is None or len(siblings) >= self.max_jobs_per_gpu):
                 return None
-            key = self._ready_key(uuid)
+            sharing = {}
+            def eligible(request):
+                admission = self._sharing_admission(request, gpu or {}, siblings)
+                if admission is not None:
+                    sharing[request["request_key"]] = admission
+                    return True
+                return False
+            key = self._ready_key(uuid, eligible if siblings else None)
             if key is None:
                 return None
             request = self.by_key[key]
@@ -487,6 +588,8 @@ class CampaignQueue:
             if not resources["admissible"]:
                 self._availability_event(uuid or "cpu", "waiting_resources", resources=resources)
                 return None
+            if siblings:
+                resources["gpu_sharing"] = sharing[key]
             return self._allocate_locked(request, uuid, gpu, resources)
 
     def _sample(self, key: str, sample: dict) -> None:
@@ -494,6 +597,10 @@ class CampaignQueue:
         with self.mutex:
             if key in self.reservations:
                 self.reservations[key] = max(self.reservations[key], rss)
+            peak = sample.get("peak_gpu_memory_mib")
+            if key in self.active and peak is not None:
+                self.active[key]["sampled_gpu_peak_bytes"] = max(
+                    self.active[key].get("sampled_gpu_peak_bytes", 0), int(peak * 1024 ** 2))
 
     @staticmethod
     def _cleanup_temporary(folder: Path) -> None:
@@ -523,6 +630,9 @@ class CampaignQueue:
             self._cleanup_temporary(folder)
         with self.mutex:
             self._transition(self.state[key], outcome, number)
+            self._remember_peak(request, folder, outcome)
+            if outcome["status"] == "oom":
+                self.shape_peaks.pop(self._shape(request), None)
             outcome["retry_state"] = dict(self.state[key])
             runtime.atomic_json(folder / "exit.json", outcome)
             self.active.pop(key, None)
@@ -547,6 +657,8 @@ class CampaignQueue:
                 attempt["command"], attempt["folder"], attempt["environment"], self.stop,
                 policy=self.policy, lease_fd=lease.fileno() if lease is not None else None,
                 gpu=attempt["gpu"], sampler=self.sampler,
+                co_owned_pids=(lambda: self._co_owned_pids(attempt["gpu_uuid"]))
+                if self.max_jobs_per_gpu > 1 else None,
                 on_sample=lambda sample: self._sample(attempt["request"]["request_key"], sample))
         except Exception as error:
             self.event("SUPERVISOR_ERROR", attempt_dir=str(attempt["folder"]), reason=str(error))
@@ -562,6 +674,71 @@ class CampaignQueue:
                            "reason": f"supervisor exception: {error}; recovery: {cleanup_error}"}
         attempt["owned_process_exited"] = bool(outcome.get("owned_process_exited"))
         return self._finish(attempt, outcome)
+
+    def _co_owned_pids(self, uuid: str | None) -> set[int]:
+        with self.mutex:
+            folders = [row["folder"] for row in self.active.values() if row["gpu_uuid"] == uuid]
+        owned = set()
+        for folder in folders:
+            try:
+                owned.update(runtime.owned_attempt_pids(folder))
+            except (OSError, ValueError, RuntimeError, KeyError):
+                pass  # Unknown identities remain foreign in telemetry.
+        return owned
+
+    def _serve_gpu(self, uuid: str, lease: Any, attempts: list[dict]) -> None:
+        """Hold one lease while independently supervised workers overlap."""
+        workers: list[threading.Thread] = []
+
+        def execute(attempt):
+            try:
+                self._execute(attempt, lease)
+            except BaseException as error:
+                self.errors.append(f"attempt supervisor: {error}")
+                self.request_stop("controller_error")
+
+        try:
+            while not self.stop.is_set() and not self._shutdown.is_set():
+                workers = [worker for worker in workers if worker.is_alive()]
+                if attempts and not workers:
+                    return
+                if self._quarantine_path(uuid).exists():
+                    return
+                if len(workers) < self.max_jobs_per_gpu and self._check_before_launch():
+                    try:
+                        gpu = self._gpu_probe(uuid)
+                    except Exception as error:
+                        gpu = {"uuid": uuid, "error": str(error)}
+                    if not gpu or gpu.get("uuid") != uuid or gpu.get("error"):
+                        self._availability_event(uuid, "query_unavailable")
+                    else:
+                        # Evaluate idleness and claim under the same lock: a
+                        # sibling can finish while the NVIDIA query is in flight.
+                        with self.mutex:
+                            siblings = any(row["gpu_uuid"] == uuid for row in self.active.values())
+                            if siblings or (gpu.get("idle") and not gpu.get("compute_processes")):
+                                attempt = self._claim(uuid, gpu)
+                            else:
+                                attempt = None
+                                self._availability_event(uuid, "busy_at_admission")
+                        if attempt is not None:
+                            attempts.append(attempt)
+                            worker = threading.Thread(target=execute, args=(attempt,),
+                                                      name=f"attempt-{attempt['request']['request_key']}")
+                            worker.start()
+                            workers.append(worker)
+                            self._availability_event(uuid, "running")
+                    if not workers:
+                        return
+                self.stop.wait(min(1.0, self.policy["poll_seconds"]))
+        except BaseException:
+            self.request_stop("controller_error")
+            raise
+        finally:
+            # Every inherited lease belongs to this controller. Never close its
+            # descriptor until every supervisor has performed owned-tree cleanup.
+            for worker in workers:
+                worker.join()
 
     def _worker(self, uuid: str | None) -> None:
         try:
@@ -596,43 +773,21 @@ class CampaignQueue:
                     self._availability_event(uuid, "cooperative_lease_busy")
                     self._shutdown.wait(self.policy["poll_seconds"])
                     continue
-                release_lease = True
-                attempt = None
+                attempts: list[dict] = []
                 try:
-                    if not self._check_before_launch():
-                        return
-                    # A fresh, bounded query is the final GPU check before claim
-                    # and spawn. Once running, foreign contention never evicts us.
-                    try:
-                        gpu = self._gpu_probe(uuid)
-                    except Exception as error:
-                        gpu = {"uuid": uuid, "error": str(error), "idle": False}
-                    if not gpu or gpu.get("uuid") != uuid or gpu.get("error"):
-                        self._availability_event(uuid, "query_unavailable",
-                                                 reason=(gpu or {}).get("error", "missing target GPU"))
-                    elif not gpu.get("idle"):
-                        self._availability_event(uuid, "busy_at_admission")
-                    elif self._quarantine_path(uuid).exists():
-                        self._availability_event(uuid, "quarantined")
-                    else:
-                        attempt = self._claim(uuid, gpu)
-                        if attempt is not None:
-                            self._availability_event(uuid, "running")
-                            release_lease = False
-                            release_lease = self._execute(attempt, lease)
-                            if not release_lease:
-                                self._quarantined_leases[uuid] = lease_context
-                                return
+                    self._serve_gpu(uuid, lease, attempts)
                 finally:
-                    if attempt is not None and attempt.get("owned_process_exited"):
-                        release_lease = True
+                    release_lease = all(attempt.get("owned_process_exited") for attempt in attempts)
                     if release_lease:
                         lease_context.__exit__(None, None, None)
                     else:
                         self._quarantined_leases[uuid] = lease_context
-                        if attempt is not None:
-                            self._quarantine(uuid, attempt["folder"],
-                                             "owned process cleanup not confirmed by controller")
+                        for attempt in attempts:
+                            if not attempt.get("owned_process_exited"):
+                                self._quarantine(uuid, attempt["folder"],
+                                                 "owned process cleanup not confirmed by controller")
+                if not release_lease:
+                    return
                 self._shutdown.wait(self.policy["poll_seconds"])
         except Exception as error:
             self.errors.append(f"owning thread {uuid or 'cpu'}: {error}")
@@ -680,6 +835,12 @@ class CampaignQueue:
     def _start(self) -> None:
         if self.device == "cuda":
             rows = self._resolve_gpus(self.gpus)
+            if self.purpose == "ideation":
+                permitted = {4, 5, 6, 7}
+                if self.gpus.strip().lower() == "auto":
+                    rows = [row for row in rows if row.get("index") in permitted]
+                elif any(row.get("index") not in permitted for row in rows):
+                    raise ValueError("ideation permits physical GPU indices 4–7 only")
             self.gpu_rows = {row["uuid"]: row for row in rows}
             if len(self.gpu_rows) != len(rows):
                 raise ValueError("GPU resolver returned duplicate UUIDs")
@@ -701,7 +862,7 @@ class CampaignQueue:
         print(banner, flush=True)
         self.event("CONTROLLER_READY", purpose=self.purpose, device=self.device,
                    expected_requests=len(self.requests), allowed_gpu_uuids=list(self.gpu_rows),
-                   resume=self.resume, policy=self.policy)
+                   resume=self.resume, policy=self.policy, max_jobs_per_gpu=self.max_jobs_per_gpu)
         devices = list(self.gpu_rows) if self.device == "cuda" else [None]
         for uuid in devices:
             thread = threading.Thread(target=self._worker, args=(uuid,),
@@ -771,7 +932,7 @@ class CampaignQueue:
 def parser() -> argparse.ArgumentParser:
     cli = argparse.ArgumentParser(description=__doc__)
     sub = cli.add_subparsers(dest="command", required=True)
-    sub.add_parser("dry-run", help="print the sealed 336-command grid without preparing or querying GPUs")
+    sub.add_parser("dry-run", help="print the sealed 1584-command grid without preparing or querying GPUs")
     prepare = sub.add_parser("prepare", help="prepare and seal a fresh production campaign")
     prepare.add_argument("--out-root", type=Path, required=True)
     internal = sub.add_parser("_prepare-protocol", help=argparse.SUPPRESS)
@@ -781,6 +942,8 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--out-root", type=Path, required=True)
     run.add_argument("--resume", action="store_true")
     run.add_argument("--gpus", default="auto", help="auto or comma-separated authorized UUIDs/indices")
+    run.add_argument("--purpose", choices=("campaign", "ideation"), default="campaign")
+    run.add_argument("--max-jobs-per-gpu", type=int, default=1)
     for name in ("report", "verify"):
         command = sub.add_parser(name)
         command.add_argument("--out-root", type=Path, required=True)
@@ -809,7 +972,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "_prepare-protocol":
             result = records.prepare_protocol(args.dataset, root)
         elif args.command == "run":
-            return CampaignQueue(root, gpus=args.gpus, resume=args.resume).run()
+            return CampaignQueue(root, gpus=args.gpus, resume=args.resume, purpose=args.purpose,
+                                 max_jobs_per_gpu=args.max_jobs_per_gpu).run()
         elif args.command == "smoke":
             records.prepare_campaign(root, purpose="smoke", device=args.device)
             return CampaignQueue(root, device=args.device, gpus=args.gpus, purpose="smoke").run()

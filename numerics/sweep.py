@@ -37,7 +37,7 @@ def run_sweep(parameter):
 
     appendix.write_parameters(args, **metadata)
     fig, axes = appendix.new_figure(args, len(appendix.HORIZONS))
-    methods = appendix.methods(args)
+    methods = compare.methods(args)
     delta_label = ticker.ScalarFormatter(useMathText=True).format_data(args.delta)
     with (args.out_dir / "curves.csv").open("w", newline="") as curves_file:
         writer = csv.writer(curves_file)

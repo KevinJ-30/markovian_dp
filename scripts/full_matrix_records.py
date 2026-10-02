@@ -24,7 +24,7 @@ import tempfile
 import time
 from typing import Any
 
-REPO_ROOT = Path(__file__).absolute().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 MAIN_PYTHON = "/usr/scratch/asaha92/envs/graph_subsampling/bin/python"
 PROGAP_PYTHON = "/usr/scratch/asaha92/envs/progap/bin/python"
 if str(REPO_ROOT) not in sys.path:
@@ -48,9 +48,9 @@ BOOTSTRAP = {"method": "percentile", "confidence_level": 0.95,
 BINDING_FIELDS = frozenset(("campaign_manifest_path", "campaign_manifest_sha256", "attempt_number"))
 KEY_EXCLUDED = frozenset(("request_key", "ordinal", "argv", "prepared_manifest", "prepared_manifest_sha256"))
 INTERPRETATION = {
-    "configuration_selection": "highest FINAL TEST score; TEST-selection bias applies",
+    "configuration_selection": "main campaign: highest mean FINAL TEST score across complete seed cohorts; legacy bootstrap: highest final-run TEST score; TEST-selection bias applies",
     "checkpoint_selection": "first strict validation-primary-metric maximum; no early stopping",
-    "uncertainty": "node bootstrap conditional on fixed predictions, not seed variance or a test-selection correction",
+    "uncertainty": "main campaign: sample SD across seeds, not a CI; legacy bootstrap: node resampling conditional on fixed predictions; neither corrects test-selection bias",
     "privacy": "per-run epsilon is not a composed privacy guarantee for the sweep or retries",
     "gpu_ownership": "flock and NVIDIA idle observations are advisory, not atomic reservations against unrelated users",
 }
@@ -94,26 +94,28 @@ def _request_key(request: dict) -> str:
 
 
 def _grid_identity(row: dict) -> tuple:
-    return tuple(row[key] for key in ("protocol", "method", "lr", "epsilon", "p2"))
+    return tuple(row[key] for key in ("protocol", "method", "lr", "epsilon", "p2", "seed"))
 
 
 def _validate_grid(rows: list[dict], batch_size: int = 1024) -> None:
-    _same(len(rows), 336, "campaign request count")
-    _same(Counter(row["protocol"] for row in rows), Counter({p: 42 for p in PROTOCOLS}),
+    _same(len(rows), 1584, "campaign request count")
+    _same(Counter(row["protocol"] for row in rows), Counter({p: 198 for p in PROTOCOLS}),
           "protocol counts")
-    _same(len({_grid_identity(row) for row in rows}), 336, "unique configurations")
+    _same(len({_grid_identity(row) for row in rows}), 1584, "unique configurations")
     for row in rows:
         method = row["method"]
         _require(method in METHODS, f"unexpected method {method}")
-        for key, value in {"batch_size": batch_size, "epochs": 20, "seed": 0,
-                           "dropout": 0.5, "mlp_hidden": 64, "gnn_hidden": 128}.items():
+        for key, value in {"batch_size": batch_size, "epochs": 20, "degree_bound": 10,
+                           "bootstrap_resamples": 0, "dropout": 0.5,
+                           "mlp_hidden": 64, "gnn_hidden": 128}.items():
             _same(row[key], value, key)
+        _require(type(row["seed"]) is int and row["seed"] in (0, 1, 2), "unexpected seed")
         _require(row["lr"] in (0.01, 0.001), "unexpected learning rate")
         _require(row["epsilon"] is None if method in NONPRIVATE else row["epsilon"] in (2, 8),
                  "unexpected privacy dimension")
-        _require(row["p2"] in (0.5, 0.1) if method.startswith("sparse_") else row["p2"] is None,
+        _require(row["p2"] in (0.1, 0.25, 0.5, 0.75, 1.0) if method.startswith("sparse_") else row["p2"] is None,
                  "unexpected p2 dimension")
-    expected = {method: (16 if method in NONPRIVATE else 64 if method.startswith("sparse_") else 32)
+    expected = {method: (48 if method in NONPRIVATE else 480 if method.startswith("sparse_") else 96)
                 for method in METHODS}
     _same(Counter(row["method"] for row in rows), Counter(expected), "method counts")
 
@@ -127,20 +129,20 @@ def enumerate_grid(batch_size: int = 1024) -> list[dict]:
     environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHON": MAIN_PYTHON,
                    "PROGAP_PYTHON": PROGAP_PYTHON, "DEVICE": "cuda", "OUT_ROOT": str(placeholder),
                    "DATASETS": " ".join(PROTOCOLS), "METHODS": " ".join(METHODS),
-                   "EPSILONS": "2 8", "SEEDS": "0", "LEARNING_RATES": "0.01 0.001",
-                   "BATCH_SIZES": str(batch_size), "EPOCHS": "20", "P2_VALUES": "0.5 0.1",
-                   "BOOTSTRAP_RESAMPLES": "1000"}
+                   "EPSILONS": "2 8", "SEEDS": "0 1 2", "LEARNING_RATES": "0.01 0.001",
+                   "BATCH_SIZES": str(batch_size), "EPOCHS": "20", "P2_VALUES": "0.1 0.25 0.5 0.75 1.0",
+                   "BOOTSTRAP_RESAMPLES": "0"}
     expanded = subprocess.run(["bash", str(REPO_ROOT / "scripts/full_matrix.sh"), "--dry-run"],
                               cwd=REPO_ROOT, env=environment, capture_output=True, text=True,
                               check=True, timeout=30)
     rows, summaries, counts = [], 0, 0
     for line in expanded.stdout.splitlines():
-        if line == "Dry run: 336 training runs; no experiments executed.":
+        if line == "Dry run: 1584 training runs; no experiments executed.":
             counts += 1
             continue
         command = shlex.split(line)
         if command == [MAIN_PYTHON, str(REPO_ROOT / "scripts/summarize_results.py"),
-                       str(placeholder / "runs/**/result.csv"), "--bootstrap", "--best", "--out",
+                       str(placeholder / "runs/**/result.csv"), "--seed", "--best", "--out",
                        str(placeholder / "summary")]:
             summaries += 1
             continue
@@ -149,13 +151,15 @@ def enumerate_grid(batch_size: int = 1024) -> list[dict]:
                  f"unexpected shell dry-run output: {line!r}")
         args = parser().parse_args(command[2:])
         _same(args.device, "cuda", "grid device")
-        _same(args.bootstrap_resamples, 1000, "bootstrap resamples")
+        _same(args.bootstrap_resamples, 0, "bootstrap resamples")
+        _same(args.degree_bound, 10, "degree bound")
         _same(args.progap_python, PROGAP_PYTHON if args.method == "progap" else None,
               "ProGAP interpreter")
         rows.append({"protocol": args.dataset, "method": args.method, "lr": args.lr,
                      "batch_size": args.batch_size, "epochs": args.epochs, "seed": args.seed,
                      "dropout": args.dropout, "mlp_hidden": args.mlp_hidden,
                      "gnn_hidden": args.gnn_hidden, "epsilon": args.epsilon, "p2": args.p2,
+                     "degree_bound": args.degree_bound, "bootstrap_resamples": args.bootstrap_resamples,
                      "argv": command})
         rows[-1]["dataset"] = args.dataset
     _same((summaries, counts), (1, 1), "shell footer")
@@ -166,7 +170,7 @@ def enumerate_grid(batch_size: int = 1024) -> list[dict]:
 def source_hashes() -> dict[str, str]:
     paths = [REPO_ROOT / "scripts" / name for name in (
         "full_matrix_campaign.py", "full_matrix_records.py", "full_matrix_runtime.py",
-        "full_matrix_run.py", "full_matrix.sh", "summarize_results.py")]
+        "full_matrix_run.py", "full_matrix.sh", "summarize_results.py", "ideation_study.py")]
     paths += list((REPO_ROOT / "src").rglob("*.py"))
     paths += list((REPO_ROOT / "third_party/ProGAP").rglob("*.py"))
     return {str(path.relative_to(REPO_ROOT)): sha256(path) for path in sorted(paths)}
@@ -214,7 +218,8 @@ def _cache_identity(protocol: str) -> dict:
         ("OGB_DATA_ROOT", f"data/{protocol}") if protocol.startswith("ogbn-") else
         ("GRAPHSAINT_DATA_ROOT", "data/graphsaint") if protocol.startswith("saint-") else
         ("GRAPHOOD_TWITCH_DATA_ROOT", "data/graphood/twitch") if protocol == "twitch-allbut2" else
-        ("GRAPHOOD_FB100_DATA_ROOT", "data/graphood/facebook100") if protocol == "facebook100-allbut2" else
+        ("GRAPHOOD_FB100_DATA_ROOT", "data/graphood/facebook100") if protocol == "facebook100-allbut2" or protocol.startswith("fb100-gender-") else
+        ("COAUTHOR_DATA_ROOT", "data/Coauthor") if protocol == "coauthor-physics" else
         ("PAIR_ALIGN_MAG_DATA_ROOT", "data/pair_align_mag"))
     path = Path(os.environ.get(variable, default)).expanduser()
     if not path.is_absolute():
@@ -333,6 +338,10 @@ def _publish_prepared(protocol: str, root: Path, dataset: str, split: Any, task:
         artifact_sha256={name: sha256(staging / name)
                          for name in ("train.pt", "val.pt", "test.pt", "split_metadata.pt")},
     )
+    for key in ("label_metadata", "provenance", "domain_node_counts"):
+        value = getattr(split.train.data, key, None)
+        if value is not None:
+            manifest[key] = value
     manifest["scored_populations"] = {}
     for name in ("train", "val", "test"):
         part = getattr(split, name)
@@ -350,13 +359,16 @@ def _publish_prepared(protocol: str, root: Path, dataset: str, split: Any, task:
 
 def prepare_protocol(protocol: str, root: Path) -> dict:
     """One CPU child, one raw load, one immutable format-2 export."""
-    _require(protocol in PROTOCOLS, f"unknown campaign protocol: {protocol}")
+    from scripts.ideation_study import PROTOCOLS as IDEATION_PROTOCOLS
+    _require(protocol in (*PROTOCOLS, *IDEATION_PROTOCOLS), f"unknown campaign protocol: {protocol}")
     _require(os.environ.get("CUDA_VISIBLE_DEVICES") == "", "preparation requires explicitly hidden CUDA")
     from scripts.full_matrix_run import _load_split
 
     started = time.monotonic()
-    cache = _cache_identity(protocol)
+    cache = None if protocol == "coauthor-physics" else _cache_identity(protocol)
     dataset, split, task, strategy = _load_split(protocol, Path(root) / "prepared/split_cache")
+    if cache is None:
+        cache = _cache_identity(protocol)
     return _publish_prepared(protocol, Path(root), dataset, split, task, strategy,
                              started=started, cache=cache)
 
@@ -402,31 +414,39 @@ def load_prepared_protocol(path: Path) -> tuple:
     return manifest["dataset"], split, manifest["task"], manifest["split_strategy"]
 
 
+def _bootstrap_settings(row: dict) -> dict:
+    return {**BOOTSTRAP, "n_resamples": row.get("bootstrap_resamples", BOOTSTRAP["n_resamples"])}
+
+
 def _expected_parameters(row: dict, n: int) -> dict:
     method, epochs = row["method"], row["epochs"]
+    degree = row.get("degree_bound")
     batch = min(row["batch_size"], n)
     interval = math.ceil(n / batch)
     common = {"optimizer": "adam", "weight_decay": 0.0 if method == "progap" else 5e-4,
               "dropout": row["dropout"], "batch_size": batch, "epochs": epochs,
-              "bootstrap_confidence": 0.95, "bootstrap_resamples": 1000, "bootstrap_seed": 0}
+              "bootstrap_confidence": 0.95,
+              "bootstrap_resamples": _bootstrap_settings(row)["n_resamples"], "bootstrap_seed": 0}
     if method in NONPRIVATE or method == "dp_mlp":
         common.update(hidden_size=row["mlp_hidden"] if method in ("mlp", "dp_mlp") else row["gnn_hidden"],
                       layers=2, learning_rate=row["lr"], steps=epochs * interval, evaluate_every=interval)
         if method in ("graphsage", "gin"):
-            common.update(graphsage_sampling="hierarchical", max_fanout=10)
+            common.update(graphsage_sampling="hierarchical", max_fanout=degree if degree is not None else 10)
         if method == "dp_mlp":
             common.update(clip=1.0, delta=1.0 / n)
     elif method == "dpar":
         common.update(hidden_size=row["gnn_hidden"], layers=2, learning_rate=row["lr"],
                       ppr_num=70, sampled_train_rate=0.09, sampled_train_nodes=None,
-                      alpha=0.25, rho=1e-4, ista_epsilon=1e-4, topk=16, ppr_clip=0.01,
+                      alpha=0.25, rho=1e-4, ista_epsilon=1e-4,
+                      topk=degree if degree is not None else 16, ppr_clip=0.01,
                       sgd_clip=1.0, inference_steps=2, target_delta=1.0 / n,
                       target_epsilon=row["epsilon"], dp_ppr=True, dp_sgd=True)
     elif method == "progap":
-        depth = row["r"] if row.get("r") is not None else 2
+        depth = row["r"] if row.get("r") is not None else 1
         stages = depth + 1
         common.update(hidden_dim=row["gnn_hidden"], learning_rate=row["lr"], depth=depth, stages=stages,
-                      epochs_total=stages * epochs, max_degree=5, max_grad_norm=1.0,
+                      epochs_total=stages * epochs, max_degree=degree if degree is not None else 5,
+                      max_grad_norm=1.0,
                       steps=stages * epochs * (n // batch), evaluate_every=n // batch,
                       accounted_sgd_steps_per_stage=epochs * n // batch, base_layers=1, head_layers=1,
                       activation="selu", jk="cat", batch_norm=True, layerwise=False,
@@ -435,16 +455,18 @@ def _expected_parameters(row: dict, n: int) -> dict:
     elif method.startswith("dp_gnn_"):
         from src.privacy.dpgnn import max_terms_per_node
         radius = row["r"] if row.get("r") is not None else 1
-        common.update(latent_size=row["gnn_hidden"], learning_rate=row["lr"], max_degree=5,
+        max_degree = degree if degree is not None else 5
+        common.update(latent_size=row["gnn_hidden"], learning_rate=row["lr"], max_degree=max_degree,
                       clip=1.0, radius=radius, max_private_batch_nodes=8192,
                       architecture="gin" if method.endswith("gin") else "graphsage", delta=1.0 / n,
                       steps=epochs * interval, evaluate_every=interval,
-                      max_terms=min(max_terms_per_node(5, radius), n))
+                      max_terms=min(max_terms_per_node(max_degree, radius), n))
     else:
         common.update(hidden=row["gnn_hidden"], layers=2, lr=row["lr"],
-                      architecture="gin" if method.endswith("gin") else "mean",
-                      p1=batch / n, p2=row["p2"], r=1, clip=1.0, K_in=10, K_out=10,
-                      cap_mode="directed", cap_seed=20000, direction="in", chi=1, union_safe=False,
+                      architecture=("gin_mean" if row.get("gin_pooling") == "mean" else "gin") if method.endswith("gin") else "mean",
+                      p1=batch / n, p2=row["p2"], r=row.get("r", 1), clip=1.0, K_in=10,
+                      K_out=degree if degree is not None else row.get("K_out", 10),
+                      cap_mode="directed", cap_seed=20000 + row["seed"], direction="in", chi=2,
                       accounting_grid=1e-3, calibration_rtol=1e-3, calibration_atol=1e-6,
                       max_private_batch_nodes=8192, steps=epochs * interval, evaluate_every=interval)
     return common
@@ -462,7 +484,7 @@ def _make_request(row: dict, prepared: dict, source_fingerprint: str, ordinal: i
                "prepared_manifest_sha256": prepared["manifest_sha256"],
                "prepared_fingerprint": prepared["fingerprint"], "source_fingerprint": source_fingerprint,
                "task": prepared["task"], "expected_parameters": _expected_parameters(row, n),
-               "bootstrap": BOOTSTRAP, "split_seed": 0,
+               "bootstrap": _bootstrap_settings(row), "split_seed": 0,
                "epoch_semantics": "per_stage_native_drop_last" if method == "progap" else
                "released_ppr_root_pass" if method == "dpar" else "training_population_expected_pass"}
     request["request_key"] = _request_key(request)
@@ -478,11 +500,11 @@ def build_requests(prepared: dict) -> list[dict]:
     for row in enumerate_grid():
         grouped[row["protocol"]].append(row)
     # Preserve the shell's order within each protocol while interleaving datasets.
-    ordered = [grouped[protocol][index] for index in range(42) for protocol in PROTOCOLS]
+    ordered = [grouped[protocol][index] for index in range(198) for protocol in PROTOCOLS]
     requests = [_make_request(row, prepared[row["protocol"]], fingerprint, ordinal)
                 for ordinal, row in enumerate(ordered)]
     _validate_grid(requests)
-    _same(len({request["request_key"] for request in requests}), 336, "unique request keys")
+    _same(len({request["request_key"] for request in requests}), 1584, "unique request keys")
     return requests
 
 
@@ -557,9 +579,10 @@ def _comparison_slots(requests: list[dict]) -> list[dict]:
 
 
 def prepare_campaign(root: Path, *, purpose: str = "campaign", device: str = "cuda") -> dict:
-    _require(purpose in ("campaign", "smoke"), "unknown manifest purpose")
+    from scripts import ideation_study
+    _require(purpose in ("campaign", "smoke", "ideation"), "unknown manifest purpose")
     _require(device in ("cpu", "cuda"), "unknown device")
-    _require(purpose != "campaign" or device == "cuda", "production campaign requires CUDA")
+    _require(purpose == "smoke" or device == "cuda", "production studies require CUDA")
     root = Path(root).expanduser().absolute()
     root.mkdir(parents=True, exist_ok=False)
     with file_lock(root / "campaign.lock", nonblocking=True):
@@ -571,13 +594,15 @@ def prepare_campaign(root: Path, *, purpose: str = "campaign", device: str = "cu
             shutil.copyfile(REPO_ROOT / relative, destination)
             _same(sha256(destination), digest, f"source changed during snapshot: {relative}")
         packages = package_versions()
-        if purpose == "campaign":
+        if purpose != "smoke":
             prepared = {}
-            for protocol in PROTOCOLS:
+            protocols = ideation_study.PROTOCOLS if purpose == "ideation" else PROTOCOLS
+            script = "ideation_study.py" if purpose == "ideation" else "full_matrix_campaign.py"
+            for protocol in protocols:
                 _same(source_hashes(), hashes, "source changed before preparation")
                 log = root / "preparation_logs" / f"{protocol}.log"
                 log.parent.mkdir(parents=True, exist_ok=True)
-                command = [MAIN_PYTHON, str(REPO_ROOT / "scripts/full_matrix_campaign.py"),
+                command = [MAIN_PYTHON, str(REPO_ROOT / "scripts" / script),
                            "_prepare-protocol", "--out-root", str(root), "--dataset", protocol]
                 with log.open("x") as stream:
                     process = subprocess.run(command, cwd=REPO_ROOT, stdout=stream, stderr=subprocess.STDOUT,
@@ -588,13 +613,14 @@ def prepare_campaign(root: Path, *, purpose: str = "campaign", device: str = "cu
                 prepared[protocol] = _prepared_row(root / "prepared" / protocol / "manifest.json")
                 _verify_prepared(Path(prepared[protocol]["manifest"]))
                 _same(source_hashes(), hashes, "source changed during preparation")
-            requests = build_requests({p: {**row, "source_fingerprint": fingerprint} for p, row in prepared.items()})
+            requests = (ideation_study.build_requests(prepared, fingerprint) if purpose == "ideation" else
+                        build_requests({p: {**row, "source_fingerprint": fingerprint} for p, row in prepared.items()}))
         else:
             prepared = _smoke_prepared(root, device)
             requests = _smoke_requests(prepared, fingerprint)
         _same(source_hashes(), hashes, "source changed during preparation")
         _same(package_versions(), packages, "package identity changed during preparation")
-        expected = 336 if purpose == "campaign" else 20 if device == "cpu" else 10
+        expected = 280 if purpose == "ideation" else 1584 if purpose == "campaign" else 20 if device == "cpu" else 10
         _same(len(requests), expected, "purpose-specific request count")
         atomic_json(root / "requests.json", requests)
         atomic_json(root / "execution_policy.json", dict(DEFAULT_POLICY))
@@ -603,7 +629,11 @@ def prepare_campaign(root: Path, *, purpose: str = "campaign", device: str = "cu
                     "protocols": list(prepared), "requests_sha256": sha256(root / "requests.json"),
                     "execution_policy_sha256": sha256(root / "execution_policy.json"),
                     "source_sha256": hashes, "source_fingerprint": fingerprint,
-                    "package_versions": packages, "prepared": prepared, "interpretation": INTERPRETATION}
+                    "package_versions": packages, "prepared": prepared,
+                    "interpretation": ideation_study.INTERPRETATION if purpose == "ideation" else INTERPRETATION}
+        if purpose == "ideation":
+            manifest["study"] = ideation_study.SPEC
+            _same(manifest["expected_comparisons"], 30, "ideation comparison registry")
         if purpose == "campaign":
             _same(manifest["expected_comparisons"], 136, "comparison registry")
         # Published last: a partial preparation cannot be mistaken for a sealed campaign.
@@ -615,9 +645,9 @@ def load_campaign(root: Path, *, check_sources: bool = True, check_prepared: boo
     root = Path(root).expanduser().absolute()
     manifest = read_json(_owned(root / "campaign_manifest.json", root))
     _same(manifest["format"], 1, "campaign format")
-    _require(manifest["purpose"] in ("campaign", "smoke"), "unknown manifest purpose")
+    _require(manifest["purpose"] in ("campaign", "smoke", "ideation"), "unknown manifest purpose")
     _require(manifest["device"] in ("cpu", "cuda"), "unknown manifest device")
-    expected = 336 if manifest["purpose"] == "campaign" else 20 if manifest["device"] == "cpu" else 10
+    expected = 280 if manifest["purpose"] == "ideation" else 1584 if manifest["purpose"] == "campaign" else 20 if manifest["device"] == "cpu" else 10
     _same(manifest["expected_requests"], expected, "purpose-specific request count")
     _same(sha256(root / "requests.json"), manifest["requests_sha256"], "requests hash")
     _same(sha256(root / "execution_policy.json"), manifest["execution_policy_sha256"], "execution policy hash")
@@ -632,6 +662,15 @@ def load_campaign(root: Path, *, check_sources: bool = True, check_prepared: boo
         _same(manifest["protocols"], list(PROTOCOLS), "campaign protocols")
         _same(manifest["expected_comparisons"], 136, "campaign comparison cells")
         _same(manifest["device"], "cuda", "campaign device")
+    elif manifest["purpose"] == "ideation":
+        from scripts import ideation_study
+        _same(manifest["protocols"], list(ideation_study.PROTOCOLS), "ideation protocols")
+        _same(manifest["study"], ideation_study.SPEC, "approved initial study")
+        _same(manifest["interpretation"], ideation_study.INTERPRETATION, "ideation interpretation")
+        _same(manifest["expected_comparisons"], 30, "ideation comparison cells")
+        _same(manifest["device"], "cuda", "ideation device")
+        _same(requests, ideation_study.build_requests(manifest["prepared"], manifest["source_fingerprint"]),
+              "exact approved 280-configuration registry")
     else:
         _same(manifest["protocols"], ["smoke-accuracy", "smoke-binary", "smoke-multilabel"]
               if manifest["device"] == "cpu" else ["smoke-accuracy"], "smoke protocol registry")
@@ -651,7 +690,7 @@ def load_campaign(root: Path, *, check_sources: bool = True, check_prepared: boo
         _same(request["delta"], None if request["method"] in NONPRIVATE else 1.0 / request["n_train"], "request delta")
         _same(request["weight_decay"], 0.0 if request["method"] == "progap" else 5e-4, "request decay")
         _same(request["expected_parameters"], _expected_parameters(request, request["n_train"]), "expected parameters")
-        _same(request["bootstrap"], BOOTSTRAP, "request bootstrap")
+        _same(request["bootstrap"], _bootstrap_settings(request), "request bootstrap")
     for protocol, row in manifest["prepared"].items():
         path = _owned(Path(row["manifest"]), root / "prepared")
         _same(sha256(path), row["manifest_sha256"], f"prepared manifest {protocol}")
@@ -685,14 +724,16 @@ def validate_worker_request(args: argparse.Namespace) -> dict:
     _same(Path(args.prepared_protocol).absolute(), Path(registered["prepared_manifest"]), "prepared worker argument")
     for key in ("method", "lr", "batch_size", "epochs", "seed", "dropout", "mlp_hidden", "gnn_hidden", "epsilon", "p2"):
         _same(getattr(args, key), registered[key], f"worker argument {key}")
+    _same(args.gin_pooling, registered.get("gin_pooling", "sum"), "worker GIN pooling")
     _same(args.dpgnn_radius,
           registered["r"] if registered["method"].startswith("dp_gnn_") and registered.get("r") is not None else 1,
           "worker DP-GNN radius")
     _same(args.progap_depth,
-          registered["r"] if registered["method"] == "progap" and registered.get("r") is not None else 2,
+          registered["r"] if registered["method"] == "progap" and registered.get("r") is not None else 1,
           "worker ProGAP depth")
     _same(args.dataset, registered["protocol"], "worker protocol")
-    _same(args.bootstrap_resamples, 1000, "worker bootstrap")
+    _same(args.bootstrap_resamples, _bootstrap_settings(registered)["n_resamples"], "worker bootstrap")
+    _same(args.degree_bound, registered.get("degree_bound"), "worker degree bound")
     _same(str(args.device).split(":")[0], manifest["device"], "worker device")
     _same(getattr(args, "progap_python", None), PROGAP_PYTHON if registered["method"] == "progap" else None,
           "worker ProGAP interpreter")
@@ -837,6 +878,10 @@ def _verify_science(request: dict, config: dict, result: dict, prepared: dict) -
             _same(privacy["composition_count"], steps, "accounted steps")
             _same(privacy["sampling_probability"], batch / n, "accounted sampling probability")
             _require(_finite(privacy["noise_multiplier"], "noise multiplier") > 0, "noise must be positive")
+        if method.startswith("sparse_"):
+            _same(native["privacy"]["accountant"],
+                  "src.privacy.accounting.sparsegnn_mixture_weights.chi2", "SparseGNN accountant")
+            _same(native["privacy"]["parameters"]["chi"], 2, "SparseGNN accounted chi")
         if method.startswith("dp_gnn_"):
             private = native["privacy"]["parameters"]
             from src.privacy.dpgnn import max_terms_per_node
@@ -863,8 +908,12 @@ def _verify_science(request: dict, config: dict, result: dict, prepared: dict) -
         _same(result["delta"], None, "nonprivate delta")
     _verify_selection(request, result, parameters)
     interval = result["test_confidence_intervals"]
-    _same(interval, native["test_confidence_intervals"], "native confidence intervals")
-    for key, value in BOOTSTRAP.items():
+    _same(interval, native.get("test_confidence_intervals", {}), "native confidence intervals")
+    bootstrap = _bootstrap_settings(request)
+    if bootstrap["n_resamples"] == 0:
+        _same(interval, {}, "disabled bootstrap intervals")
+        return False
+    for key, value in bootstrap.items():
         _same(interval[key], value, f"bootstrap {key}")
     _require(isinstance(interval["n_observations"], int) and interval["n_observations"] > 0,
              "bootstrap has no scored observations")
@@ -874,7 +923,7 @@ def _verify_science(request: dict, config: dict, result: dict, prepared: dict) -
         return False
     _require(isinstance(primary, dict), "malformed primary confidence interval")
     valid = primary["valid_resamples"]
-    _require(isinstance(valid, int) and not isinstance(valid, bool) and 0 <= valid <= 1000,
+    _require(isinstance(valid, int) and not isinstance(valid, bool) and 0 <= valid <= bootstrap["n_resamples"],
              "invalid bootstrap valid-resample count")
     if valid == 0 or primary["lower"] is None or primary["upper"] is None:
         return False
@@ -945,8 +994,10 @@ def _verify_attempt(root: Path, request: dict, attempt_dir: Path, manifest: dict
         else:
             _same(text, str(value), f"CSV {key}")
     ci_available = _verify_science(request, config, result, prepared)
-    return {"accepted": True, "status": "completed" if ci_available else "ci_unavailable",
-            "reason": None if ci_available else "required primary node-bootstrap CI is unavailable",
+    ci_required = _bootstrap_settings(request)["n_resamples"] > 0
+    complete = ci_available or not ci_required
+    return {"accepted": True, "status": "completed" if complete else "ci_unavailable",
+            "reason": None if complete else "required primary node-bootstrap CI is unavailable",
             "request_key": request["request_key"], "attempt_number": number,
             "result": result, "ci_available": ci_available}
 
@@ -1089,8 +1140,8 @@ def _collect_evidence(root: Path, manifest: dict, requests: list[dict]) -> dict:
         if accepted_pair:
             attempt, native = accepted_pair
             ci = native["test_confidence_intervals"]
-            primary = ci["metrics"].get(request["task"]["primary_metric"], {})
-            disposition = "completed" if attempt["ci_available"] else "ci_unavailable"
+            primary = ci.get("metrics", {}).get(request["task"]["primary_metric"], {})
+            disposition = attempt["verification_status"]
             metrics = {
                 "test_metric": native["test_metric"], "validation_metric": native["validation_metric"],
                 "ci_lower": primary.get("lower"), "ci_upper": primary.get("upper"),
@@ -1119,12 +1170,13 @@ def _collect_evidence(root: Path, manifest: dict, requests: list[dict]) -> dict:
         coverage.append({"request_key": key, "ordinal": request["ordinal"], "protocol": request["protocol"],
                          "method": request["method"], "epsilon": request["epsilon"], "status": disposition,
                          "accepted": bool(accepted_pair), "ci_available": metrics["ci_available"],
+                         "ci_required": _bootstrap_settings(request)["n_resamples"] > 0,
                          "attempt_count": len(history), "attempt_number": metrics["attempt_number"],
                          "retry_eligible": not bool(accepted_pair) and disposition in ("pending", "running", "interrupted", "retry_pending", "retry_deferred"),
                          "prompt_ooms": projection.get("prompt_ooms", 0), "not_before": projection.get("not_before", 0),
                          "last_gpu": projection.get("last_gpu"), "reason": reason})
     return {"attempts": attempts, "timing": timing, "results": results, "coverage": coverage,
-            "accepted": accepted, "errors": errors}
+            "accepted": accepted, "errors": errors, "purpose": manifest["purpose"]}
 
 
 def _summarize_evidence(evidence: dict) -> tuple[list[dict], Any]:
@@ -1137,34 +1189,49 @@ def _summarize_evidence(evidence: dict) -> tuple[list[dict], Any]:
         return [], diagnostics
     runs = summary.read_group("default", sorted(paths), {}, "auto", diagnostics)
     finals = summary.final_runs(runs, diagnostics)
-    rows = summary.summarize(finals, False, diagnostics)
+    if evidence.get("purpose") == "ideation":
+        from scripts.ideation_study import select_by_validation
+        rows = summary.summarize(finals, False, diagnostics)
+        return select_by_validation(rows, evidence["results"]), diagnostics
+    seed_mode = all(row.get("bootstrap_resamples") == 0 for row in evidence["results"])
+    rows = summary.summarize(finals, seed_mode, diagnostics)
+    if seed_mode:
+        rows = [row for row in rows if set(row["seeds"].split(";")) == {"0", "1", "2"}]
     return summary.select_best(rows, diagnostics), diagnostics
 
 
 def _comparisons(requests: list[dict], evidence: dict, summary_rows: list[dict]) -> list[dict]:
     result_by_key = {row["request_key"]: row for row in evidence["results"]}
-    winners = {row["sources"]: row for row in summary_rows}
+    winners = {source: row for row in summary_rows for source in row["sources"].split(";")}
     comparisons = []
     for slot in _comparison_slots(requests):
         candidates = [result_by_key[key] for key in slot["request_keys"]]
         accepted = [row for row in candidates if row["accepted"]]
-        complete = len(accepted) == len(candidates) and all(row["ci_available"] for row in accepted)
+        missing = [row["request_key"] for row in candidates if not row["accepted"]
+                   or (_bootstrap_settings(row)["n_resamples"] > 0 and not row["ci_available"])]
         selected = [row for row in accepted if row["result_csv"] in winners]
-        _require(len(selected) <= 1, f"ambiguous summary mapping for {slot}")
-        _require(not accepted or len(selected) == 1, f"summary omitted accepted comparison {slot}")
-        chosen = selected[0] if selected else None
-        comparison = {**slot, "expected_candidate_count": len(candidates), "accepted_count": len(accepted),
-                      "ci_complete_count": sum(row["ci_available"] for row in accepted),
-                      "status": "complete_grid" if complete else "partial_grid" if accepted else "unavailable",
-                      "selection": "best_test", "test_selection_bias": True,
-                      "selected_request_key": chosen["request_key"] if chosen else None,
-                      "selected_attempt_number": chosen["attempt_number"] if chosen else None,
-                      "missing_request_keys": [row["request_key"] for row in candidates
-                                               if not row["accepted"] or not row["ci_available"]]}
-        for key in ("test_metric", "ci_lower", "ci_upper", "ci_valid_resamples", "test_confidence_intervals",
-                    "actual_epsilon", "actual_delta", "result_csv"):
+        summaries = {winners[row["result_csv"]]["config_id"] for row in selected}
+        _require(len(summaries) <= 1, f"ambiguous summary mapping for {slot}")
+        chosen = winners[selected[0]["result_csv"]] if selected else None
+        comparison = {
+            **slot, "expected_candidate_count": len(candidates), "accepted_count": len(accepted),
+            "ci_complete_count": sum(row["ci_available"] for row in accepted),
+            "status": "complete_grid" if not missing else "partial_grid" if accepted else "unavailable",
+            "selection": "best_validation" if evidence.get("purpose") == "ideation" else "best_test",
+            "test_selection_bias": evidence.get("purpose") != "ideation",
+            "validation_metric": selected[0]["validation_metric"] if selected and evidence.get("purpose") == "ideation" else None,
+            "selected_request_keys": [row["request_key"] for row in selected],
+            "selected_attempt_numbers": [row["attempt_number"] for row in selected],
+            "missing_request_keys": missing,
+            "test_metric": chosen["value"] if chosen else None,
+            "summary_config_id": chosen["config_id"] if chosen else None,
+            "actual_epsilons": [row["actual_epsilon"] for row in selected],
+            "actual_deltas": [row["actual_delta"] for row in selected],
+            "result_csvs": [row["result_csv"] for row in selected],
+            "test_confidence_intervals": [row["test_confidence_intervals"] for row in selected],
+        }
+        for key in ("n", "seeds", "uncertainty", "uncertainty_type", "ci_lower", "ci_upper"):
             comparison[key] = chosen[key] if chosen else None
-        comparison["summary_config_id"] = winners[chosen["result_csv"]]["config_id"] if chosen else None
         comparisons.append(comparison)
     return comparisons
 
@@ -1172,21 +1239,23 @@ def _comparisons(requests: list[dict], evidence: dict, summary_rows: list[dict])
 def _coverage_summary(manifest: dict, evidence: dict, comparisons: list[dict]) -> dict:
     accepted = sum(row["accepted"] for row in evidence["coverage"])
     ci_complete = sum(row["accepted"] and row["ci_available"] for row in evidence["coverage"])
+    completed = sum(row["accepted"] and (row["ci_available"] or not row["ci_required"])
+                    for row in evidence["coverage"])
     complete_cells = sum(row["status"] == "complete_grid" for row in comparisons)
     return {
         "purpose": manifest["purpose"], "expected_requests": manifest["expected_requests"],
-        "accepted_count": accepted, "ci_complete_count": ci_complete,
+        "accepted_count": accepted, "completed_count": completed, "ci_complete_count": ci_complete,
         "expected_comparisons": manifest["expected_comparisons"], "comparison_complete_count": complete_cells,
-        "fully_executed": ci_complete == manifest["expected_requests"]
+        "fully_executed": completed == manifest["expected_requests"]
         and complete_cells == manifest["expected_comparisons"] and not evidence["errors"],
         "attempt_count": len(evidence["attempts"]), "dispositions": dict(Counter(row["status"] for row in evidence["coverage"])),
         "missing_request_keys": [row["request_key"] for row in evidence["coverage"]
-                                 if not row["accepted"] or not row["ci_available"]],
+                                 if not row["accepted"] or (row["ci_required"] and not row["ci_available"])],
         "missing_comparison_cells": [
             {"protocol": row["protocol"], "method": row["method"], "epsilon": row["target_epsilon"],
              "status": row["status"]} for row in comparisons if row["status"] != "complete_grid"],
         "errors": evidence["errors"], "invalid_count": sum(row["status"] == "invalid" for row in evidence["attempts"]),
-        "corrupt": bool(evidence["errors"]), "interpretation": INTERPRETATION,
+        "corrupt": bool(evidence["errors"]), "interpretation": manifest["interpretation"],
     }
 
 
@@ -1228,15 +1297,17 @@ def write_reports(root: Path) -> dict:
                 _csv_write(staging / f"{name}.csv", rows,
                            columns=None if rows else ["request_key", "attempt_number", "status"])
             outputs = (staging / "summary.csv", staging / "summary.md")
-            args = argparse.Namespace(bootstrap=True, seed=False, best=True)
+            seed_mode = all(row.get("bootstrap_resamples") == 0 for row in requests)
+            args = argparse.Namespace(bootstrap=not seed_mode, seed=seed_mode,
+                                      best=manifest["purpose"] != "ideation")
             summary.export(summary_rows, outputs, args, diagnostics)
             with outputs[1].open("a", encoding="utf-8") as stream:
                 if not summary_rows:
-                    stream.write("\nNo accepted results: the comparison is unavailable.\n")
+                    stream.write("\nNo eligible completed cohort: the comparison is unavailable.\n")
                 stream.write(f"\nAccepted requests: {status['accepted_count']}/{status['expected_requests']}; "
-                             f"CI-complete: {status['ci_complete_count']}; complete comparison cells: "
+                             f"Completed: {status['completed_count']}; CI-available: {status['ci_complete_count']}; complete comparison cells: "
                              f"{status['comparison_complete_count']}/{status['expected_comparisons']}.\n")
-                stream.write("\n" + "\n".join(f"- {value}" for value in INTERPRETATION.values()) + "\n")
+                stream.write("\n" + "\n".join(f"- {value}" for value in manifest["interpretation"].values()) + "\n")
                 if status["missing_comparison_cells"]:
                     stream.write("\nUnavailable and partial cells are retained explicitly in comparison.csv.\n")
                 if status["errors"]:

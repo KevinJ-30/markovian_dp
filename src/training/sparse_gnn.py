@@ -339,7 +339,6 @@ def train_sparse_gnn_with_budget(
     clip: float,
     direction: str = "in",
     accounting_grid: float = 1e-3,
-    union_safe: bool = True,
     calibration_rtol: float = 1e-3,
     calibration_atol: float = 1e-6,
     max_sigma: float = 1e6,
@@ -359,7 +358,6 @@ def train_sparse_gnn_with_budget(
         p1=p1, p2=p2, r=r, K_in=K_in, K_out=K_out, steps=T, clip=clip,
         grid=accounting_grid, sigma_rtol=calibration_rtol,
         sigma_atol=calibration_atol, max_sigma=max_sigma,
-        union_safe=union_safe,
     )
     metrics = train_sparse_gnn(
         mechanism, train_data, test_data, p1=p1, p2=p2, r=r, T=T, adj=adj,

@@ -51,14 +51,21 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--out-dir", required=True, type=Path, help="new, unoccupied per-cell directory")
     cli.add_argument("--epsilon", type=float, help="required for private methods; rejected otherwise")
     cli.add_argument("--p2", type=float, help="required only for SparseGNN")
+    cli.add_argument("--gin-pooling", choices=("sum", "mean"), default="sum",
+                     help="SparseGNN-GIN neighbor pooling; root contribution stays separate")
+    cli.add_argument("--degree-bound", type=int, default=None,
+                     help="positive backend bound: DP-GNN/ProGAP max_degree, DPAR topk "
+                          "(not graph degree), GraphSAGE/GIN fanout, or SparseGNN outgoing cap; "
+                          "omitting preserves each backend's default")
     cli.add_argument("--sparse-radius", type=int, default=1,
                      help="SparseExpand radius (positive integer; SparseGNN only)")
-    cli.add_argument("--sparse-degree-cap", type=int, default=10,
-                     help="SparseGNN preprocessing outgoing-degree cap; not the fixed incoming sampling cap")
+    cli.add_argument("--sparse-degree-cap", type=int, default=None,
+                     help="SparseGNN preprocessing outgoing-degree cap (default: --degree-bound "
+                          "or 10); not the fixed incoming sampling cap")
     cli.add_argument("--dpgnn-radius", type=int, default=1,
                      help="DP-GNN message-passing radius (positive integer; DP-GNN only)")
-    cli.add_argument("--progap-depth", type=int, default=2,
-                     help="ProGAP propagation depth (positive integer; ProGAP only)")
+    cli.add_argument("--progap-depth", type=int, default=1,
+                     help="ProGAP propagation depth (default: 1, two training stages; ProGAP only)")
     cli.add_argument("--progap-python", help="ProGAP interpreter (default: this Python executable)")
     cli.add_argument("--bootstrap-resamples", type=int, default=1000,
                      help="final-test node bootstrap resamples at 95%% confidence; 0 disables")
@@ -77,6 +84,18 @@ def _check_args(args: argparse.Namespace) -> None:
     for name in ("batch_size", "epochs", "mlp_hidden", "gnn_hidden"):
         if getattr(args, name) < 1:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
+    if args.degree_bound is not None and (
+        type(args.degree_bound) is not int or args.degree_bound < 1
+    ):
+        raise ValueError("--degree-bound must be a positive integer")
+    if args.sparse_degree_cap is None:
+        args.sparse_degree_cap = (
+            args.degree_bound if args.method.startswith("sparse_")
+            and args.degree_bound is not None else 10
+        )
+    elif args.method.startswith("sparse_") and args.degree_bound is not None:
+        if args.sparse_degree_cap != args.degree_bound:
+            raise ValueError("--degree-bound and --sparse-degree-cap must agree for SparseGNN")
     for name in ("sparse_radius", "sparse_degree_cap", "dpgnn_radius", "progap_depth"):
         value = getattr(args, name)
         if type(value) is not int or value < 1:
@@ -84,9 +103,11 @@ def _check_args(args: argparse.Namespace) -> None:
     sparse_override = args.sparse_radius != 1 or args.sparse_degree_cap != 10
     if sparse_override and not args.method.startswith("sparse_"):
         raise ValueError("--sparse-radius and --sparse-degree-cap overrides are supported only by SparseGNN")
+    if args.gin_pooling != "sum" and args.method != "sparse_gin":
+        raise ValueError("--gin-pooling mean is supported only by SparseGNN-GIN")
     if args.dpgnn_radius != 1 and not args.method.startswith("dp_gnn_"):
         raise ValueError("--dpgnn-radius overrides are supported only by DP-GNN")
-    if args.progap_depth != 2 and args.method != "progap":
+    if args.progap_depth != 1 and args.method != "progap":
         raise ValueError("--progap-depth overrides are supported only by ProGAP")
     if not 0 <= args.seed < 2**32:
         raise ValueError("--seed must be in [0, 2**32)")
@@ -127,6 +148,9 @@ def _check_args(args: argparse.Namespace) -> None:
 
 
 def _protocol(name: str) -> tuple[str, dict[str, Any] | None]:
+    from scripts.ideation_study import PROTOCOLS as IDEATION_PROTOCOLS, protocol
+    if name in IDEATION_PROTOCOLS:
+        return protocol(name)
     if name not in {"twitch-allbut2", "facebook100-allbut2", "mag-allbut2"}:
         return name, None
     from src.data.domain_datasets import FB100_DOMAINS, MAG_DOMAINS, TWITCH_DOMAINS
@@ -197,6 +221,8 @@ def _baseline(args, split, task, batch, delta):
         "weight_decay": 5e-4,
         "dropout": args.dropout, "seed": args.seed, **_task_options(task), **_bootstrap(args),
     }
+    if args.method in {"graphsage", "gin"} and args.degree_bound is not None:
+        options["max_fanout"] = args.degree_bound
     calibration = None
     if args.method == "dp_mlp":
         from src.privacy.accountants import DPMLPAccountant
@@ -229,6 +255,7 @@ def _dpar(args, split, task, batch, delta):
         hidden_size=args.gnn_hidden, learning_rate=args.lr, batch_size=batch,
         epochs=args.epochs, dropout=args.dropout, seed=args.seed,
         weight_decay=5e-4,
+        **({"topk": args.degree_bound} if args.degree_bound is not None else {}),
         **_task_options(task), **_bootstrap(args),
     )
     result = DPARTrainer(config, device=args.device).fit(split)
@@ -291,7 +318,7 @@ def _dpgnn(args, split, task, batch, delta):
     population = int(split.train.data.num_nodes)
     interval = math.ceil(population / batch)
     steps = args.epochs * interval
-    max_degree = 5
+    max_degree = args.degree_bound if args.degree_bound is not None else 5
     max_terms = min(max_terms_per_node(max_degree, args.dpgnn_radius), population)
     calibration = _dpgnn_noise(
         target_epsilon=args.epsilon, delta=delta, population=population,
@@ -368,7 +395,7 @@ def _sparse(args, split, task, batch, delta):
     p1 = batch / population
     interval = math.ceil(population / batch)
     steps = args.epochs * interval
-    aggr = "gin" if args.method.endswith("gin") else "mean"
+    aggr = ("gin_mean" if args.gin_pooling == "mean" else "gin") if args.method.endswith("gin") else "mean"
     generator = torch.Generator().manual_seed(args.seed + 20_000)
     train_edges = preprocess_edges(
         split.train.data.edge_index, population,
@@ -385,7 +412,7 @@ def _sparse(args, split, task, batch, delta):
     calibration = calibrate_sparsegnn_noise(
         target_epsilon=args.epsilon, target_delta=delta, p1=p1, p2=args.p2,
         r=args.sparse_radius, K_in=10, K_out=args.sparse_degree_cap, steps=steps, clip=1.0,
-        grid=1e-3, sigma_rtol=1e-3, sigma_atol=1e-6, union_safe=False,
+        grid=1e-3, sigma_rtol=1e-3, sigma_atol=1e-6,
     )
     extra = {} if any(task[name] for name in ("binary", "multilabel", "regression")) else {
         "metric_ignore_label": task["metric_ignore_label"]}
@@ -408,13 +435,13 @@ def _sparse(args, split, task, batch, delta):
     result["calibration"] = calibration.as_dict()
     result["privacy"] = {
         "epsilon": calibration.epsilon, "delta": calibration.delta,
-        "accountant": "src.privacy.accounting.sparsegnn_mixture_weights.chi1",
+        "accountant": "src.privacy.accounting.sparsegnn_mixture_weights.chi2",
         "noise_multiplier": calibration.noise_multiplier,
         "sampling_probability": p1, "composition_count": steps,
         "parameters": {"p1": p1, "p2": args.p2, "r": args.sparse_radius,
                        "K_in": 10, "K_out": args.sparse_degree_cap,
-                       "chi": 1, "union_safe": False, "grid": 1e-3,
-                       "qualification": "Retains the repository's current chi=1 accounting policy; no union-graph correction."},
+                       "chi": 2, "grid": 1e-3,
+                       "qualification": "Uses the repository's fixed chi=2 mixture formula; this setting alone does not establish a privacy guarantee."},
     }
     parameters = {
         "architecture": aggr, "hidden": args.gnn_hidden, "layers": 2,
@@ -426,7 +453,7 @@ def _sparse(args, split, task, batch, delta):
         "cap_semantics": "outgoing arcs capped; incoming degree unrestricted",
         "incoming_sampling_cap": MAX_INCOMING_EDGES,
         "K_in_achieved": achieved_degrees[0], "K_out_achieved": achieved_degrees[1],
-        "chi": 1, "union_safe": False, "accounting_grid": 1e-3,
+        "chi": 2, "accounting_grid": 1e-3,
         "calibration_rtol": 1e-3, "calibration_atol": 1e-6,
         "evaluate_every": interval, "max_private_batch_nodes": mechanism.max_private_batch_nodes,
         **_task_options(task), **_bootstrap(args),
@@ -445,7 +472,9 @@ def _progap(args, split, task, batch, delta):
         "target_epsilon": args.epsilon, "target_delta": delta,
         "epochs": args.epochs, "batch_size": batch, "hidden_dim": args.gnn_hidden,
         "learning_rate": args.lr, "dropout": args.dropout, "multilabel": task["multilabel"],
-        "depth": args.progap_depth, "max_degree": 5, "max_grad_norm": 1.0,
+        "depth": args.progap_depth,
+        "max_degree": args.degree_bound if args.degree_bound is not None else 5,
+        "max_grad_norm": 1.0,
         "optimizer": "adam", "weight_decay": 0.0, "eval_chunk_size": 16384,
     }
     config = {
@@ -608,6 +637,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     identity = {
         "dataset": dataset, "protocol": args.dataset, "method": args.method,
         "architecture": "mlp" if args.method in {"mlp", "dp_mlp"} else
+                        "gin_mean" if args.method == "sparse_gin" and args.gin_pooling == "mean" else
                         "gin" if args.method.endswith("gin") else
                         "graphsage" if args.method in {"graphsage", "dp_gnn_sage", "sparse_sage"} else args.method,
         "dp": private, "target_epsilon": args.epsilon, "target_delta": delta if private else None,

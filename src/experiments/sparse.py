@@ -145,8 +145,9 @@ def parse_args():
                         "'regression_gnn' (MSE training + R² evaluation, for regression tasks)")
     p.add_argument('--aggr', choices=VALID_AGGR, default='mean',
                    help="message-passing aggregator: 'mean' (GraphSAGE), "
-                        "'gcn' (normalized GCN), or 'gin' (sum aggregation, "
-                        "two-layer ReLU MLP, fixed epsilon=0)")
+                        "'gcn' (normalized GCN), 'gin' (sum neighbors), or "
+                        "'gin_mean' (mean neighbors); GIN uses a separate root, "
+                        "two-layer ReLU MLP, fixed epsilon=0")
     p.add_argument('--train_domains', nargs='+',
                    help='domain datasets: canonical training domain slugs')
     p.add_argument('--val_domains', nargs='+',
@@ -212,9 +213,6 @@ def parse_args():
         help='calibrate one noise multiplier per (p1, p2, r) configuration')
     p.add_argument('--target_delta', type=float,
                    help='target delta required with --target_epsilon')
-    p.add_argument('--legacy_shells', action='store_true',
-                   help='drop the union-graph correction in the in-process '
-                        'calibration (n_d = K^d instead of 2*K^d)')
     p.add_argument('--accounting_grid', type=float, default=1e-3,
                    help='dp_accounting value discretization interval')
     p.add_argument('--calibration_rtol', type=float, default=1e-3,
@@ -549,7 +547,6 @@ def main():
                     grid=args.accounting_grid,
                     sigma_rtol=args.calibration_rtol,
                     sigma_atol=args.calibration_atol,
-                    union_safe=not args.legacy_shells,
                 )
                 sigma = calibration.noise_multiplier
                 print(f"\n[p1={p1} p2={p2} r={r}]")

@@ -75,10 +75,13 @@ MAG_ARTIFACTS = {
 }
 MAG_DOMAINS = tuple(MAG_ARTIFACTS)
 
-DOMAIN_DATASET_NAMES = ("twitch-explicit", "facebook100", "mag-countries")
+DOMAIN_DATASET_NAMES = (
+    "twitch-explicit", "facebook100", "facebook100-gender", "mag-countries",
+)
 DOMAIN_REGISTRIES = {
     "twitch-explicit": TWITCH_DOMAINS,
     "facebook100": FB100_DOMAINS,
+    "facebook100-gender": FB100_DOMAINS,
     "mag-countries": MAG_DOMAINS,
 }
 DOMAIN_DEFAULTS = {
@@ -90,6 +93,13 @@ DOMAIN_DEFAULTS = {
         "val_ratio": 0.2,
     },
     "facebook100": {
+        "train": ["johns-hopkins55", "caltech36", "amherst41"],
+        "val": ["cornell5", "yale4"],
+        "test": ["penn94", "brown11", "texas80"],
+        "seed": 0,
+        "val_ratio": 0.2,
+    },
+    "facebook100-gender": {
         "train": ["johns-hopkins55", "caltech36", "amherst41"],
         "val": ["cornell5", "yale4"],
         "test": ["penn94", "brown11", "texas80"],
@@ -112,6 +122,12 @@ DOMAIN_TASKS = {
         "metric_ignore_label": None,
     },
     "facebook100": {
+        "num_classes": 2,
+        "task_type": "MULTICLASS",
+        "primary_metric": "accuracy",
+        "metric_ignore_label": None,
+    },
+    "facebook100-gender": {
         "num_classes": 2,
         "task_type": "MULTICLASS",
         "primary_metric": "accuracy",
@@ -549,7 +565,9 @@ def _fb100_edge_index(adjacency: Any, path: Path) -> torch.Tensor:
     return torch.empty((2, 0), dtype=torch.long)
 
 
-def _load_fb100_domains(root: Path, selected: Sequence[str]) -> dict[str, Data]:
+def _load_fb100_domains(
+    root: Path, selected: Sequence[str], *, recorded_gender: bool = False
+) -> dict[str, Data]:
     # The categorical feature vocabulary is fitted over the complete 18-school
     # benchmark, so every matrix must be present and validated before any
     # selected school is transformed.
@@ -560,6 +578,13 @@ def _load_fb100_domains(root: Path, selected: Sequence[str]) -> dict[str, Data]:
     selected_set = set(selected)
     for domain, filename in FB100_FILES.items():
         adjacency, info = _validated_fb100_matrix(root / filename)
+        if recorded_gender:
+            unexpected = np.setdiff1d(np.unique(info[:, 1]), [0, 1, 2])
+            if unexpected.size:
+                raise ValueError(
+                    f"Unexpected raw gender categories in {root / filename}: "
+                    f"{unexpected.tolist()}; expected only 0, 1, 2"
+                )
         # Only selected domains need their (potentially large) adjacency after
         # schema validation; every school's metadata remains for the vocabulary.
         matrices[domain] = (
@@ -588,6 +613,18 @@ def _load_fb100_domains(root: Path, selected: Sequence[str]) -> dict[str, Data]:
     result: dict[str, Data] = {}
     for domain in selected:
         adjacency, info = matrices[domain]
+        raw_num_nodes = info.shape[0]
+        path = root / FB100_FILES[domain]
+        edge_index = _fb100_edge_index(adjacency, path)
+        if recorded_gender:
+            # Fit the vocabulary above on every raw node first, then allocate
+            # features only for the retained, recorded-gender population.
+            keep = info[:, 1] != 0
+            remap = torch.full((raw_num_nodes,), -1, dtype=torch.long)
+            remap[torch.from_numpy(keep)] = torch.arange(int(keep.sum()))
+            edge_index = remap[edge_index]
+            edge_index = edge_index[:, (edge_index >= 0).all(dim=0)]
+            info = info[keep]
         x = torch.zeros((info.shape[0], total_features), dtype=torch.float32)
         for column, values, offset in zip(
             feature_columns, categories, offsets
@@ -604,16 +641,20 @@ def _load_fb100_domains(root: Path, selected: Sequence[str]) -> dict[str, Data]:
                     torch.from_numpy(rows),
                     torch.from_numpy(encoded.astype(np.int64, copy=False) + offset),
                 ] = 1.0
-        # This intentionally matches the selected GraphOOD behavior: missing
-        # raw gender 0 maps to class 0 and every positive value maps to class 1.
-        y = torch.from_numpy((info[:, 1] > 0).astype(np.int64, copy=False))
-        path = root / FB100_FILES[domain]
+        if recorded_gender:
+            y = torch.from_numpy(info[:, 1] - 1)
+        else:
+            # Historical GraphOOD task: missing raw gender 0 maps to class 0,
+            # and every positive value maps to class 1. Keep this task distinct.
+            y = torch.from_numpy((info[:, 1] > 0).astype(np.int64, copy=False))
         result[domain] = Data(
             x=x,
-            edge_index=_fb100_edge_index(adjacency, path),
+            edge_index=edge_index,
             y=y,
             num_nodes=info.shape[0],
         )
+        if recorded_gender:
+            result[domain].raw_num_nodes = raw_num_nodes
     return result
 
 
@@ -812,6 +853,32 @@ def _assemble_domains(
         "primary_metric": task["primary_metric"],
         "metric_ignore_label": task["metric_ignore_label"],
     }
+    if dataset_name == "facebook100-gender":
+        metadata["label_metadata"] = {
+            "target": "recorded_gender",
+            "raw_column": 1,
+            "raw_to_class": {"1": 0, "2": 1},
+            "excluded_raw_values": [0],
+            "unknown_node_policy": "excluded_induced_subgraph",
+        }
+        metadata["provenance"] = {
+            "source_url": FB100_RAW_URL,
+            "revision": FB100_REVISION,
+            "feature_columns": [0, 2, 3, 4, 5, 6],
+            "feature_vocabulary_domains": list(FB100_DOMAINS),
+            "feature_vocabulary_population": "all_raw_nodes_before_gender_filter",
+            "feature_vocabulary_num_features": metadata["num_features"],
+        }
+        metadata["domain_node_counts"] = {
+            domain: {
+                "raw": int(graphs[domain].raw_num_nodes),
+                "retained": int(graphs[domain].num_nodes),
+                "excluded": int(graphs[domain].raw_num_nodes - graphs[domain].num_nodes),
+            }
+            for domain in selected
+        }
+        for key in ("label_metadata", "provenance", "domain_node_counts"):
+            setattr(data, key, metadata[key])
     return data, metadata
 
 
@@ -838,7 +905,7 @@ def load_domain_dataset(
             else os.environ.get("GRAPHOOD_TWITCH_DATA_ROOT", "data/graphood/twitch")
         )
         graphs = {domain: _parse_twitch_domain(cache, domain) for domain in selected}
-    elif name == "facebook100":
+    elif name in ("facebook100", "facebook100-gender"):
         cache = Path(
             root
             if root is not None
@@ -846,7 +913,9 @@ def load_domain_dataset(
                 "GRAPHOOD_FB100_DATA_ROOT", "data/graphood/facebook100"
             )
         )
-        graphs = _load_fb100_domains(cache, selected)
+        graphs = _load_fb100_domains(
+            cache, selected, recorded_gender=name == "facebook100-gender"
+        )
     elif name == "mag-countries":
         cache = Path(
             root

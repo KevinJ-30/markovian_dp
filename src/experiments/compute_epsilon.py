@@ -23,9 +23,6 @@ def parse_args():
     parser.add_argument(
         "--grid", default=1e-3, type=float,
         help="dp_accounting privacy-loss discretization interval")
-    parser.add_argument(
-        "--legacy_shells", action="store_true",
-        help="drop the union-graph correction for reproducing older numbers")
     parser.add_argument("--out", default=None)
     return parser.parse_args()
 
@@ -68,8 +65,7 @@ def main():
         p1, p2, radius, sigma, total_steps, k_in, k_out = key
         schedule = sparsegnn_epsilon_schedule(
             p1=p1, p2=p2, r=radius, K_in=k_in, K_out=k_out,
-            sigma=sigma, steps=checkpoints, delta=args.delta, grid=args.grid,
-            union_safe=not args.legacy_shells)
+            sigma=sigma, steps=checkpoints, delta=args.delta, grid=args.grid)
         for step in checkpoints:
             epsilon_cache[(key, step)] = schedule[step]
             try:
@@ -84,7 +80,8 @@ def main():
             f"epsilon={schedule[final]:.4f} "
             f"naive={naive_cache[(key, final)]:.4f}")
 
-    obsolete = {"epsilon_theorem", "epsilon_substitution", "epsilon_thm4"}
+    obsolete = {"epsilon_theorem", "epsilon_substitution", "epsilon_thm4",
+                "union_safe_shells"}
     for row in rows:
         key, step = row_key(row), row_step(row)
         for field in obsolete:
@@ -94,7 +91,7 @@ def main():
         row["epsilon_naive_opacus"] = f"{naive_cache[(key, step)]:.5f}"
         row["delta"] = f"{args.delta:g}"
         row["epsilon_grid"] = f"{args.grid:g}"
-        row["union_safe_shells"] = str(not args.legacy_shells)
+        row["chi"] = 2
 
     fieldnames = list(rows[0])
     for row in rows[1:]:

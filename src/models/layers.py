@@ -1,8 +1,8 @@
 """Sparse PyG and padded batch-first message passing for SparseGNN.
 
-Supported stacks are GraphSAGE-mean, normalized GCN, and GIN with a two-layer
-ReLU MLP and fixed epsilon=0. Padded adapters preserve the rooted-subgraph
-computation while exposing one sample per root to Opacus.
+Supported stacks are GraphSAGE-mean, normalized GCN, and GIN with sum or mean
+neighbors, a two-layer ReLU MLP, and fixed epsilon=0. Padded adapters preserve
+the rooted-subgraph computation while exposing one sample per root to Opacus.
 
 Sampling or truncating neighborhoods can change full-graph predictions for any
 stack. Privacy accounting bounds clipped per-root gradients independently of
@@ -16,7 +16,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv, GINConv, SAGEConv
 
-VALID_AGGR = ("mean", "gcn", "gin")
+VALID_AGGR = ("mean", "gcn", "gin", "gin_mean")
 
 
 def build_conv_stack(dims: List[int], aggr: str = "mean") -> nn.ModuleList:
@@ -28,13 +28,13 @@ def build_conv_stack(dims: List[int], aggr: str = "mean") -> nn.ModuleList:
             SAGEConv(dims[i], dims[i + 1], aggr="mean")
             for i in range(len(dims) - 1)
         ])
-    if aggr == "gin":
+    if aggr in ("gin", "gin_mean"):
         return nn.ModuleList([
             GINConv(nn.Sequential(
                 nn.Linear(dims[i], dims[i + 1]),
                 nn.ReLU(),
                 nn.Linear(dims[i + 1], dims[i + 1]),
-            ), eps=0.0, train_eps=False)
+            ), eps=0.0, train_eps=False, aggr="mean" if aggr == "gin_mean" else "add")
             for i in range(len(dims) - 1)
         ])
     return nn.ModuleList([
@@ -145,13 +145,22 @@ class PaddedGINConv(nn.Module):
         super().__init__()
         if conv.eps.requires_grad:
             raise ValueError("Padded GIN requires a fixed epsilon")
+        if conv.aggr not in ("add", "sum", "mean"):
+            raise ValueError(f"Padded GIN does not support aggregation {conv.aggr!r}")
+        self.aggr = conv.aggr
         self.first_linear = _linear_view(conv.nn[0].weight, conv.nn[0].bias)
         self.second_linear = _linear_view(conv.nn[2].weight, conv.nn[2].bias)
         self.register_buffer("eps", conv.eps)
 
     def forward(self, x, edge_index, edge_mask, node_mask):
-        summed = _masked_aggregate(x, edge_index, edge_mask)
-        aggregate = (1 + self.eps) * x + summed
+        neighbors = _masked_aggregate(x, edge_index, edge_mask)
+        if self.aggr == "mean":
+            degree = torch.zeros(x.shape[:2], dtype=x.dtype, device=x.device)
+            if edge_index.size(-1):
+                dst = edge_index[:, 1].masked_fill(~edge_mask, 0)
+                degree = degree.scatter_add(1, dst, edge_mask.to(x.dtype))
+            neighbors = neighbors / degree.clamp_min(1).unsqueeze(-1)
+        aggregate = (1 + self.eps) * x + neighbors
         out = self.second_linear(F.relu(self.first_linear(aggregate)))
         return out * node_mask.unsqueeze(-1).to(out.dtype)
 

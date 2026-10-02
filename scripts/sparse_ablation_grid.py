@@ -27,9 +27,9 @@ P2_VALUES = (0.05, 0.1, 0.25, 0.5, 1.0)
 DEGREE_CAPS = (5, 10, 20, 40)
 ANCHOR = {"r": 1, "p2": 0.5, "K_out": 10}
 ACCOUNTING_POLICY = (
-    "Current SparseGNN calibration uses chi=1 and union_safe=False; these runs "
-    "do not establish a union-safe accounting claim. Every configuration is "
-    "recalibrated at target epsilon=8."
+    "SparseGNN calibration uses the repository's fixed chi=2 mixture formula; "
+    "this setting alone does not establish a privacy guarantee. Every "
+    "configuration is recalibrated at target epsilon=8."
 )
 BASELINE_ACCOUNTING_POLICY = (
     "Each depth is calibrated independently at target epsilon=8. DP-GNN uses "
@@ -190,7 +190,7 @@ def fixed_parameters(study: str = "ofat") -> dict[str, Any]:
               "bootstrap_resamples": 1000, "bootstrap_confidence": 0.95,
               "bootstrap_seed": 0}
     if study == "ofat":
-        return {**common, "layers": 2, "K_in": 10, "chi": 1, "union_safe": False}
+        return {**common, "layers": 2, "K_in": 10, "chi": 2}
     if study == "depth-baselines":
         return {**common, "dpgnn_max_degree": 5, "progap_max_degree": 5}
     raise ValueError(f"unknown ablation study: {study!r}")

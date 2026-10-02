@@ -15,19 +15,19 @@ Environment (space-separated values for grid variables):
   PROGAP_PYTHON      Python executable with ProGAP dependencies [same as PYTHON]
   DEVICE             Training device [cuda]
   OUT_ROOT           Result root [<repository>/results/full_matrix]
-  DATASETS           Protocols [8 standard + 3 all-but-two domain protocols]
+  DATASETS           Protocols [8 standard protocols]
   METHODS            mlp graphsage gin dp_mlp progap dpar dp_gnn_sage dp_gnn_gin
                      sparse_sage sparse_gin
   EPSILONS           Private targets [2 8]; non-private methods run only once
-  SEEDS              Training seeds [0]; graph split stays fixed
+  SEEDS              Training seeds [0 1 2]; graph split stays fixed
   LEARNING_RATES     [0.01 0.001]
-  BATCH_SIZES        [256 1024]
+  BATCH_SIZES        [1024]
   EPOCHS             [20]; ProGAP uses this many epochs per stage
-  P2_VALUES         SparseGNN edge sampling probabilities [0.5 0.1]
-  BOOTSTRAP_RESAMPLES [1000]; final test bootstrap, confidence 95%
+  P2_VALUES         SparseGNN edge sampling probabilities [0.1 0.25 0.5 0.75 1.0]
+  BOOTSTRAP_RESAMPLES [0]; disabled for the three-seed campaign
 
-Fixed: MLP/DP-MLP hidden64; graph methods hidden128; dropout0.5.
-DPAR retains its native 70-PPR-root limit and default graph sampling rate.
+Fixed: MLP/DP-MLP hidden64; graph methods hidden128; dropout0.5; degree bound10.
+DPAR uses topk10 (not a graph degree cap), retaining 70 PPR roots and native sampling.
 Existing per-epoch validation selects the final test checkpoint.
 Use a new OUT_ROOT for a new campaign; existing run folders are never replaced.
 HELP
@@ -54,16 +54,16 @@ OUT_ROOT="${OUT_ROOT:-$ROOT/results/full_matrix}"
 # Relative output roots are always relative to the repository, including when
 # the launcher is invoked by an absolute path from another directory.
 [[ "$OUT_ROOT" = /* ]] || OUT_ROOT="$ROOT/$OUT_ROOT"
-BOOTSTRAP_RESAMPLES="${BOOTSTRAP_RESAMPLES:-1000}"
+BOOTSTRAP_RESAMPLES="${BOOTSTRAP_RESAMPLES:-0}"
 
 read -r -a datasets <<< "${DATASETS:-ogbn-arxiv ogbn-products saint-reddit saint-yelp saint-amazon twitch-allbut2 facebook100-allbut2 mag-allbut2}"
 read -r -a methods <<< "${METHODS:-mlp graphsage gin dp_mlp progap dpar dp_gnn_sage dp_gnn_gin sparse_sage sparse_gin}"
 read -r -a epsilons <<< "${EPSILONS:-2 8}"
-read -r -a seeds <<< "${SEEDS:-0}"
+read -r -a seeds <<< "${SEEDS:-0 1 2}"
 read -r -a rates <<< "${LEARNING_RATES:-0.01 0.001}"
-read -r -a batches <<< "${BATCH_SIZES:-256 1024}"
+read -r -a batches <<< "${BATCH_SIZES:-1024}"
 read -r -a epochs_grid <<< "${EPOCHS:-20}"
-read -r -a p2_values <<< "${P2_VALUES:-0.5 0.1}"
+read -r -a p2_values <<< "${P2_VALUES:-0.1 0.25 0.5 0.75 1.0}"
 
 for method in "${methods[@]}"; do
     case "$method" in
@@ -103,7 +103,7 @@ for dataset in "${datasets[@]}"; do
                                 command=("$PYTHON" "$ROOT/scripts/full_matrix_run.py"
                                     --dataset "$dataset" --method "$method"
                                     --lr "$lr" --batch-size "$batch" --epochs "$epochs"
-                                    --seed "$seed" --dropout 0.5 --mlp-hidden 64 --gnn-hidden 128
+                                    --seed "$seed" --dropout 0.5 --mlp-hidden 64 --gnn-hidden 128 --degree-bound 10
                                     --device "$DEVICE" --out-dir "$run_dir"
                                     --bootstrap-resamples "$BOOTSTRAP_RESAMPLES")
                                 [[ "$epsilon" == non-private ]] || command+=(--epsilon "$epsilon")
@@ -130,7 +130,7 @@ for dataset in "${datasets[@]}"; do
 done
 
 summary=("$PYTHON" "$ROOT/scripts/summarize_results.py"
-    "$OUT_ROOT/runs/**/result.csv" --bootstrap --best --out "$OUT_ROOT/summary")
+    "$OUT_ROOT/runs/**/result.csv" --seed --best --out "$OUT_ROOT/summary")
 print_command "${summary[@]}"
 if (( DRY_RUN )); then
     printf 'Dry run: %d training runs; no experiments executed.\n' "$count"

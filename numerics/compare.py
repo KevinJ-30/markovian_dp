@@ -3,12 +3,17 @@ r"""Plot epsilon(T) and composed delta(epsilon); run `python numerics/compare.py
 We clip to C = 1. 
 
 Our pair: 
-    J = Bernoulli(p1) + sum_{ell=1}^r Binomial(K**ell, b_ell), independently,
+    J = Bernoulli(p1) + sum_{ell=1}^r Binomial(2*K**ell, b_ell), independently,
     b_ell = p1*p2**ell / (1-p1+p1*p2**ell),
     P = sum_j Pr(J=j) Normal(-j, sigma**2),
     Q = sum_j Pr(J=j) Normal(+j, sigma**2).
-At p2=1, J is Binomial(M,p1): this is the requested group-privacy baseline.
+At p2=1, J is Binomial(1 + 2*sum_{ell=1}^r K**ell, p1), our group baseline.
 We compose the pair's pessimistically discretized PLD.
+
+Lower pair:
+    J = Bernoulli(p1) + sum_{ell=1}^r Binomial(K_out**ell, p1*p2**ell),
+    independently, with the same Gaussian centers +/-j and noise sigma.
+Its curves use the same numerical PLD approximation as the upper pair.
 
 Group privacy:
 
@@ -44,7 +49,7 @@ import numpy as np
 from dp_accounting.rdp.rdp_privacy_accountant import compute_delta, compute_epsilon
 from scipy.optimize import brentq
 from scipy.special import logsumexp
-from scipy.stats import hypergeom
+from scipy.stats import binom, hypergeom
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -56,6 +61,23 @@ ORDERS = np.unique(np.concatenate((
     1 + np.geomspace(1e-3, 1, 100), np.arange(1.1, 10, 0.1),
     np.linspace(2, 64, 497), np.geomspace(64, 1024, 100),
 )))
+
+
+def lower_mixture_weights(p1, p2, r, K_out):
+    """Law of Bern(p1) + sum_ell Binom(K_out**ell, p1*p2**ell)."""
+    weights = np.array([1.0 - p1, p1])
+    for ell in range(1, r + 1):
+        n = K_out**ell
+        shell = binom.pmf(np.arange(n + 1), n, p1 * p2**ell)
+        weights = np.convolve(weights, shell)
+    return weights / weights.sum()
+
+
+def methods(args):
+    """Curve/CSV order, shared by all numerical figures."""
+    return [("daigavane", ""), ("group", 1.0),
+            *[("ours", p2) for p2 in args.p2],
+            *[("lower", p2) for p2 in [1.0, *args.p2]]]
 
 
 def daigavane_rdp(population, batch_size, max_terms, sigma, orders=ORDERS):
@@ -160,9 +182,15 @@ def draw_curves(ax, x, curves, args):
             label="Daigavane et al. (RDP)")
     ax.plot(x, curves[1], color="black", linestyle="--", linewidth=2.8, alpha=1,
             label=r"Group privacy ($p_2=1$)")
-    for index, (p2, values) in enumerate(zip(args.p2, curves[2:])):
-        ax.plot(x, values, color=colors[index % len(colors)], linewidth=2.8, alpha=1,
+    for index, p2 in enumerate(args.p2):
+        color = colors[index % len(colors)]
+        ax.plot(x, curves[2 + index], color=color, linewidth=2.8,
                 label=rf"Ours ($p_2={p2:g}$)")
+        ax.plot(x, curves[3 + len(args.p2) + index], color=color,
+                linestyle="--", linewidth=2,
+                label=rf"Lower ($p_2={p2:g}$)")
+    ax.plot(x, curves[2 + len(args.p2)], color="black", linestyle="-.", linewidth=2,
+            label=r"Lower ($p_2=1$)")
 
 
 def draw_panel(ax, x, curves, radius, args, *, composition=False):
@@ -197,11 +225,12 @@ def main():
     iterations = np.unique(np.concatenate(([0], np.rint(
         np.linspace(1, args.steps, min(args.steps, args.iteration_points))).astype(int))))
     parameters = {**vars(args), "out_dir": str(args.out_dir), "batch_size": batch_size,
-                  "radii": RADII, "iterations": iterations.tolist(), "chi": 1, "orders": ORDERS.tolist(),
+                  "radii": RADII, "iterations": iterations.tolist(), "chi": 2, "orders": ORDERS.tolist(),
                   "root_sampling": {"daigavane": "fixed-size without replacement",
                                     "ours_and_group": "Bernoulli"},
                   "noise_convention": "sigma = noise_std / clipping_norm",
                   "group_definition": "our Gaussian-mixture pair at p2=1",
+                  "lower_pair": "Bern(p1) + sum_ell Binom(K_out**ell, p1*p2**ell); centers +/-j",
                   "composition": "pessimistic connect-the-dots PLD; tail_mass_truncation=1e-15",
                   "sources": ["https://arxiv.org/abs/2111.15521",
                               "https://github.com/google-research/google-research/blob/master/differentially_private_gnns/privacy_accountants.py"],
@@ -212,6 +241,7 @@ def main():
                                for name in ("numpy", "scipy", "matplotlib", "dp-accounting")}}
     (args.out_dir / "parameters.json").write_text(json.dumps(parameters, indent=2) + "\n")
     overview, axes = plt.subplots(1, 4, figsize=(22, 5.5))
+    curve_methods = methods(args)
     with (args.out_dir / "curves.csv").open("w", newline="") as curves_file, \
          (args.out_dir / "composition.csv").open("w", newline="") as composition_file, \
          (args.out_dir / "pair_weights.csv").open("w", newline="") as pairs_file:
@@ -220,22 +250,23 @@ def main():
         composition_writer = csv.writer(composition_file)
         composition_writer.writerow(["r", "t", "method", "p2", "delta", "epsilon"])
         pair_writer = csv.writer(pairs_file)
-        pair_writer.writerow(["r", "p2", "j", "probability", "P_mean", "Q_mean", "noise_std"])
+        pair_writer.writerow(["r", "method", "p2", "j", "probability", "P_mean", "Q_mean", "noise_std"])
         for row, radius in enumerate(RADII):
             max_terms = sum(args.degree**ell for ell in range(radius + 1))
             base_rdp = daigavane_rdp(args.population, batch_size, max_terms, args.sigma)
             plds = []
-            for p2 in [1.0, *args.p2]:
-                weights = sparsegnn_mixture_weights(args.p1, p2, radius, args.degree,
-                                                    args.degree, union_safe=False)
-                pair_writer.writerows((radius, p2, j, float(prob), -j, j, args.sigma)
+            for method, p2 in curve_methods[1:]:
+                weights = (lower_mixture_weights(args.p1, p2, radius, args.degree)
+                           if method == "lower" else
+                           sparsegnn_mixture_weights(args.p1, p2, radius, args.degree,
+                                                     args.degree))
+                pair_writer.writerows((radius, method, p2, j, float(prob), -j, j, args.sigma)
                                       for j, prob in enumerate(weights))
-                print(f"Building pair: r={radius}, p2={p2:g}, support={len(weights)}", flush=True)
+                print(f"Building {method} pair: r={radius}, p2={p2:g}, support={len(weights)}",
+                      flush=True)
                 plds.append(mixture_gaussian_pld(weights, args.sigma, args.grid))
-            methods = ["daigavane", "group", *(["ours"] * len(args.p2))]
-            probabilities = ["", 1.0, *args.p2]
             epsilon_curves, composed = composition_profiles(plds, base_rdp, iterations, args.delta)
-            for method, p2, values in zip(methods, probabilities, epsilon_curves):
+            for (method, p2), values in zip(curve_methods, epsilon_curves):
                 composition_writer.writerows(
                     (radius, int(t), method, p2, args.delta, float(value))
                     for t, value in zip(iterations, values))
@@ -245,7 +276,7 @@ def main():
                                    for value in epsilon]),
                           *(pld.get_delta_for_epsilon(epsilon) for pld in composed)]
             curves = [np.clip(delta, 0, 1) for delta in raw_curves]
-            for method, p2, delta, raw_delta in zip(methods, probabilities, curves, raw_curves):
+            for (method, p2), delta, raw_delta in zip(curve_methods, curves, raw_curves):
                 writer.writerows((radius, args.steps, method, p2, float(e), float(d), float(raw))
                                  for e, d, raw in zip(epsilon, delta, raw_delta))
             panels = [
