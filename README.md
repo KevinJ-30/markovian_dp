@@ -49,12 +49,13 @@ The source packages are organized by responsibility; method-specific training
 loops and graph protocols remain separate. 
 
 Entry points:
-- `python -m src.experiments.sparse` — SparseGNN sweeps.
+- `python scripts/run_experiments.py CONFIG.json --gpus auto` — the unified
+  configuration-driven experiment runner; see [configuration, scheduling, logs,
+  and resume](scripts/README.md#unified-experiment-runner).
 - `python -m src.experiments.compute_epsilon` — post-hoc privacy accounting.
-- `python -m src.experiments.run` — graph-disjoint baseline comparisons.
 
-The comparison runner supports `mlp`, `dp_mlp`, `graphsage`, `gin`, `dpar`, `dp_gnn`,
-and `progap`. SparseGNN uses its separate CLI above. HeterPoisson support,
+The runner covers MLP, DP-MLP, GraphSAGE, GIN, DPAR, DP-GNN-SAGE/GIN, ProGAP,
+and SparseGNN-SAGE/GIN through one scientific worker. HeterPoisson support,
 presets, and vendored PNPiGNNs source have been removed; historical result
 artifacts are retained but are not supported launch configurations.
 
@@ -64,24 +65,55 @@ the same default. Explicit overrides remain supported: set `parameters.dropout`
 in a baseline JSON config, or `--dropout` for the ceiling CLI; `0.0` disables it.
 Historical experiment recipes and recorded results retain their original rates.
 
-The maintained matrix runner (`scripts/full_matrix_run.py`) defaults to ProGAP
-depth **1**, giving two native training stages. Its `--epochs` budget is per
-stage: 20 means 40 stage-epochs. Set `--progap-depth 2` explicitly to reproduce
-the former three-stage default (60 stage-epochs at 20 epochs per stage).
-Fixed-depth study recipes retain their explicit depths.
+The scientific worker (`scripts/run_experiment.py`) defaults to ProGAP
+depth **3**, giving four native training stages. Its `--epochs` budget is per
+stage: 20 means 80 stage-epochs. Set `progap_depth` explicitly in a run block
+to override it. The main and gender/Physics configs pin depth 3; the depth
+ablation retains its explicit 1/2/3 sweep. Historical results remain unchanged.
 
 The old SparseGNN import and CLI paths have been removed. Existing command-line
 flags, dataset/split caches, and result filenames and schemas are unchanged.
 
 ## Install
 
+From the repository root:
+
 ```bash
-pip install torch torch_geometric ogb opacus dp_accounting scipy pandas matplotlib pytest "scikit-learn>=1.5" pyyaml
+conda env create -f environment.yml
+conda activate graph-subsampling
+python -m pip check
 ```
 
-GraphSAGE and GIN additionally require `pyg-lib` built for your PyTorch/CUDA version;
-follow the [official wheel installation instructions](https://github.com/pyg-team/pyg-lib#installation).
-The differently named `pyg-library` package is not a substitute.
+`environment.yml` creates a Python 3.10 environment and installs
+`requirements.txt`. The requirements pin direct dependencies for training,
+privacy accounting, datasets, figures, tests, and the retained native ProGAP
+adapter. One environment covers these methods; `--progap-python` is only needed
+when deliberately using another interpreter. Transitive dependencies are resolved
+by pip, so this is not a complete environment lockfile.
+Opacus 1.4.0 supplies PRV accounting while retaining ProGAP's
+`forbid_accumulation_hook` API. The torchmetrics 0.11.4 and setuptools 79.0.1
+pins preserve the native adapter's legacy interfaces, including `pkg_resources`.
+
+The supplied profile targets **Linux x86_64 (glibc 2.28+)**, with
+**PyTorch 2.13.0 / CUDA 13.2**, **PyG 2.8.0.post1**, and the matching **pyg-lib 0.9.0**
+wheel. GPU execution requires an NVIDIA driver compatible with CUDA 13.2;
+Conda does not install the driver. CPU execution is supported with
+`--device cpu`, but this profile still installs CUDA-enabled wheels.
+
+For an existing **Python 3.10** environment, the equivalent pip installation is:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+The requirements include the official PyTorch and PyG wheel sources; no separate
+`pyg-lib` installation is needed. When changing the Torch/CUDA build, update the
+matching pins and wheel sources together using the
+[official PyG wheel instructions](https://github.com/pyg-team/pyg-lib#installation).
+The differently named `pyg-library` package is not a substitute. Do not install
+the historical `third_party/ProGAP/requirements.txt` over this environment.
+
+Dataset downloads and manually supplied assets remain separate; see below.
 
 ## Datasets
 
@@ -97,7 +129,7 @@ Supported dataset keys:
 | PyG node classification | `reddit`, `flickr`, `coauthor-physics` |
 | Single-university Facebook | `facebook` |
 | GraphSAINT | `ppi-large`, `saint-flickr`, `saint-reddit`, `saint-yelp`, `saint-amazon` |
-| Domain-disjoint classification | `twitch-explicit`, `facebook100`, `facebook100-gender`, `mag-countries` |
+| Domain-disjoint classification | `twitch-explicit`, `facebook100`, `facebook100-gender`, `facebook100-year`, `mag-countries` |
 
 `coauthor-physics` loads PyG Coauthor Physics without feature normalization or
 compression (34,493 nodes, 8,415 features, five classes). Its cache defaults to
@@ -182,16 +214,17 @@ automatically cover them.
 
 ### Domain-disjoint datasets
 
-Four dataset names expose provenance-defined domains rather than a random node
-split. `facebook100` and `facebook100-gender` share the 18-school raw benchmark
-but define different targets. The existing `facebook` dataset remains the
-single UIllinois20 graph and is unchanged.
+Five dataset names expose provenance-defined domains rather than a random node
+split. `facebook100`, `facebook100-gender`, and `facebook100-year` share the
+18-school raw benchmark but define different targets. The existing `facebook`
+dataset remains the single UIllinois20 graph and is unchanged.
 
 | dataset | canonical domains | default train | default validation | default test | reported metric |
 |---|---|---|---|---|---|
 | `twitch-explicit` | `de`, `engb`, `es`, `fr`, `ptbr`, `ru`, `tw` | `de` | `engb` | `es`, `fr`, `ptbr`, `ru`, `tw` | AUROC |
 | `facebook100` | `penn94`, `amherst41`, `cornell5`, `johns-hopkins55`, `reed98`, `caltech36`, `berkeley13`, `brown11`, `columbia2`, `yale4`, `virginia63`, `texas80`, `bingham82`, `duke14`, `princeton12`, `washu32`, `brandeis99`, `carnegie49` | `johns-hopkins55`, `caltech36`, `amherst41` | `cornell5`, `yale4` | `penn94`, `brown11`, `texas80` | accuracy |
 | `facebook100-gender` | same 18 schools as `facebook100` | same default schools | same default schools | same default schools | accuracy |
+| `facebook100-year` | same 18 schools as `facebook100` | same default schools | same default schools | same default schools | accuracy |
 | `mag-countries` | `us`, `cn`, `de`, `fr`, `ru`, `jp` | `us` | `cn` | `cn` | accuracy |
 
 The defaults apply when no domain role is supplied. A custom split must provide
@@ -294,6 +327,17 @@ all 18 schools (13,778 columns), excluding the gender column. Their processed
 split identities are distinct; historical missingness results are not gender
 classification results. The corrected task stores label mapping, provenance,
 and per-domain raw/retained/excluded node counts.
+
+`facebook100-year` predicts the six fixed cohorts **2004–2009**, mapped to
+classes **0–5**. Unknown year 0 and every out-of-cohort node are removed before
+inducing and reindexing edges. The input excludes year (raw column 5) and
+encodes columns **0, 1, 2, 3, 4, 6**, including gender and high school, using the
+same all-18-school categorical-vocabulary policy (13,697 columns). The six-class
+head remains fixed even when a requested subset lacks a cohort. Its cache
+identity is separate from both gender tasks. This is a school-held-out year
+task, not an exact reproduction of upstream ProGAP's 100-school frequency filter
+or feature/split recipe.
+
 MAG is a 20-class task. Label 19 participates in training loss but is excluded
 from validation/test accuracy.
 

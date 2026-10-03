@@ -1,0 +1,34 @@
+# Python 3.10, Linux x86_64; matches the working CUDA 13.2 stack.
+# Keep torch and pyg-lib ABI pins and both wheel sources in sync.
+--find-links https://download.pytorch.org/whl/cu132/torch/
+--find-links https://data.pyg.org/whl/torch-2.13.0+cu132.html
+
+torch==2.13.0+cu132
+torch-geometric==2.8.0.post1
+pyg-lib==0.9.0+pt213cu132
+# Native ProGAP's torchmetrics still imports setuptools' pkg_resources.
+setuptools==79.0.1
+
+# Scientific methods, accounting, datasets, and figures.
+numpy==1.26.4
+scipy==1.14.1
+# Includes PRV accounting while retaining ProGAP's forbid_accumulation_hook API.
+opacus==1.4.0
+dp-accounting==0.4.3
+ogb==1.3.6
+pandas==2.3.3
+scikit-learn==1.7.2
+matplotlib==3.10.9
+
+# Retained native ProGAP adapter (not the upstream paper environment).
+autodp==0.2.3.1
+class-resolver==0.7.1
+rich==15.0.0
+tabulate==0.10.0
+torchmetrics==0.11.4
+typing-extensions==4.15.0
+# Imported by native logger annotations even with remote logging disabled.
+wandb==0.29.0
+
+# Repository verification.
+pytest==9.1.1

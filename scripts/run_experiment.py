@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Train one full-matrix cell and publish a normalized final-result CSV.
+"""Train one graph experiment and publish normalized scientific results.
 
 The common split is seed 0, independently of the model seed. Epochs are full
 training-population passes (expected passes for root-sampling mechanisms).
-ProGAP retains its native drop-last schedule and trains three stages, each for
---epochs epochs. Every backend selects using validation, without early stopping.
+ProGAP retains its native drop-last schedule: depth + 1 stages, each trained for
+--epochs epochs (default depth 3, four stages). Every backend selects using
+validation, without early stopping.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import math
 import os
 from pathlib import Path
 import random
+import re
 import resource
 import shutil
 import sys
@@ -34,11 +36,20 @@ NATIVE_PROTOCOLS = {
     "ogbn-arxiv", "ogbn-products", "reddit", "facebook", "flickr",
     "saint-reddit", "saint-yelp", "saint-flickr", "saint-amazon", "ppi-large",
 }
+TRAIN_SCHOOLS = ("johns-hopkins55", "caltech36", "amherst41", "reed98",
+                 "brandeis99", "princeton12")
+DOMAIN_DATASETS = {
+    "twitch-explicit", "facebook100", "facebook100-gender", "facebook100-year", "mag-countries",
+}
+DOMAIN_PRESETS = {
+    "twitch-allbut2", "facebook100-allbut2", "mag-allbut2",
+    "fb100-gender-1", "fb100-gender-3", "fb100-gender-6", "fb100-gender-16", "fb100-year-6",
+}
 
 
 def parser() -> argparse.ArgumentParser:
     cli = argparse.ArgumentParser(description=__doc__)
-    cli.add_argument("--dataset", required=True, help="dataset name or *-allbut2 protocol")
+    cli.add_argument("--dataset", required=True, help="dataset name or named domain protocol")
     cli.add_argument("--method", required=True, choices=METHODS)
     cli.add_argument("--lr", required=True, type=float)
     cli.add_argument("--batch-size", required=True, type=int)
@@ -48,99 +59,206 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--mlp-hidden", type=int, default=64)
     cli.add_argument("--gnn-hidden", type=int, default=128)
     cli.add_argument("--device", default="cuda", help="explicit torch device; never falls back to CPU")
-    cli.add_argument("--out-dir", required=True, type=Path, help="new, unoccupied per-cell directory")
+    cli.add_argument("--out-dir", required=True, type=Path, help="new, unoccupied per-run directory")
     cli.add_argument("--epsilon", type=float, help="required for private methods; rejected otherwise")
     cli.add_argument("--p2", type=float, help="required only for SparseGNN")
-    cli.add_argument("--gin-pooling", choices=("sum", "mean"), default="sum",
-                     help="SparseGNN-GIN neighbor pooling; root contribution stays separate")
+    cli.add_argument("--gin-pooling", choices=("sum", "mean"), default=None,
+                     help="SparseGNN-GIN neighbor pooling (default: sum); root stays separate")
     cli.add_argument("--degree-bound", type=int, default=None,
                      help="positive backend bound: DP-GNN/ProGAP max_degree, DPAR topk "
                           "(not graph degree), GraphSAGE/GIN fanout, or SparseGNN outgoing cap; "
                           "omitting preserves each backend's default")
-    cli.add_argument("--sparse-radius", type=int, default=1,
-                     help="SparseExpand radius (positive integer; SparseGNN only)")
+    cli.add_argument("--sparse-radius", type=int, default=None,
+                     help="SparseExpand radius (default: 1; SparseGNN only)")
     cli.add_argument("--sparse-degree-cap", type=int, default=None,
-                     help="SparseGNN preprocessing outgoing-degree cap (default: --degree-bound "
-                          "or 10); not the fixed incoming sampling cap")
-    cli.add_argument("--dpgnn-radius", type=int, default=1,
-                     help="DP-GNN message-passing radius (positive integer; DP-GNN only)")
-    cli.add_argument("--progap-depth", type=int, default=1,
-                     help="ProGAP propagation depth (default: 1, two training stages; ProGAP only)")
+                     help="SparseGNN outgoing-degree cap (default: --degree-bound or 10)")
+    cli.add_argument("--dpgnn-radius", type=int, default=None,
+                     help="DP-GNN message-passing radius (default: 1; DP-GNN only)")
+    cli.add_argument("--progap-depth", type=int, default=None,
+                     help="ProGAP propagation depth (default: 3, four training stages; ProGAP only)")
     cli.add_argument("--progap-python", help="ProGAP interpreter (default: this Python executable)")
     cli.add_argument("--bootstrap-resamples", type=int, default=1000,
                      help="final-test node bootstrap resamples at 95%% confidence; 0 disables")
     cli.add_argument("--split-root", type=Path, default=REPO_ROOT / "data" / "inductive_splits",
-                     help="common seed-0 split cache (default: repository data/inductive_splits)")
-    cli.add_argument("--prepared-protocol", type=Path,
-                     help="immutable prepared partition manifest for a campaign")
-    cli.add_argument("--campaign-request", type=Path,
-                     help="hash-bound per-attempt campaign request")
+                     help="common seed-0 split cache (relative paths are repository-relative)")
+    cli.add_argument("--domain-split", type=json.loads, default=None,
+                     help="JSON object with canonical domain train/val/test lists, seed and val_ratio")
     return cli
 
 
-def _check_args(args: argparse.Namespace) -> None:
-    if not math.isfinite(args.lr) or args.lr <= 0:
-        raise ValueError("--lr must be finite and positive")
+def _finite_number(value: Any, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a finite number")
+    try:
+        value = float(value)
+    except OverflowError as error:
+        raise ValueError(f"{name} must be a finite number") from error
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number")
+    return value
+
+
+def _domain_parameters(value: Any, dataset: str) -> dict | None:
+    """Validate JSON structure without importing dataset/torch dependencies.
+
+    The loader validates canonical domain membership and resolves dataset-specific
+    defaults with src.data.domain_datasets.normalize_domain_split.
+    """
+    if value is None:
+        return None
+    if dataset in DOMAIN_PRESETS:
+        raise ValueError("domain_split cannot override a named preset with predefined domains")
+    if dataset not in DOMAIN_DATASETS:
+        raise ValueError("domain_split requires a canonical domain dataset")
+    if not isinstance(value, dict):
+        raise ValueError("domain_split must be a JSON object")
+    unknown = set(value) - {"train", "val", "test", "seed", "val_ratio"}
+    if unknown:
+        raise ValueError(f"domain_split has unknown keys: {sorted(unknown)}")
+    supplied_roles = set(value) & {"train", "val", "test"}
+    if supplied_roles and supplied_roles != {"train", "val", "test"}:
+        raise ValueError("domain_split must provide train, val, and test together")
+    normalized = {}
+    for role in ("train", "val", "test"):
+        if role not in value:
+            continue
+        domains = value[role]
+        if (not isinstance(domains, list) or not domains or
+                any(not isinstance(domain, str) or not domain for domain in domains)):
+            raise ValueError(f"domain_split.{role} must be a nonempty list of domain names")
+        if len(set(domains)) != len(domains):
+            raise ValueError(f"domain_split.{role} contains duplicate domains")
+        normalized[role] = sorted(domains)
+    if supplied_roles and set(normalized["train"]) & (set(normalized["val"]) | set(normalized["test"])):
+        raise ValueError("domain_split training domains must be disjoint from validation and test")
+    seed = value.get("seed", 0)
+    if type(seed) is not int:
+        raise ValueError("domain_split.seed must be an integer")
+    ratio = _finite_number(value.get("val_ratio", 0.2), "domain_split.val_ratio")
+    if not 0 < ratio < 1:
+        raise ValueError("domain_split.val_ratio must be in (0, 1)")
+    if not supplied_roles and seed == 0 and ratio == 0.2:
+        return None
+    normalized.update(seed=seed, val_ratio=ratio)
+    return normalized
+
+
+def normalize_parameters(values: dict) -> dict:
+    """Resolve scientific arguments without filesystem checks or torch imports.
+
+    The returned JSON-safe mapping is suitable for stable run identity and CLI
+    serialization. Device/output belong to the scheduler, not this mapping.
+    """
+    if not isinstance(values, dict) or any(not isinstance(key, str) for key in values):
+        raise ValueError("parameters must be a string-keyed JSON object")
+    required = {"dataset", "method", "lr", "batch_size", "epochs"}
+    defaults = {"seed": 0, "dropout": 0.5, "mlp_hidden": 64, "gnn_hidden": 128,
+                "degree_bound": None, "bootstrap_resamples": 1000,
+                "split_root": str(REPO_ROOT / "data" / "inductive_splits"), "domain_split": None}
+    method_fields = {"epsilon", "p2", "gin_pooling", "sparse_radius", "sparse_degree_cap",
+                     "dpgnn_radius", "progap_depth", "progap_python"}
+    unknown = set(values) - required - set(defaults) - method_fields
+    if unknown:
+        raise ValueError(f"unknown scientific parameter(s): {', '.join(sorted(unknown))}")
+    missing = required - set(values)
+    if missing:
+        raise ValueError(f"missing required parameter(s): {', '.join(sorted(missing))}")
+    result = {**defaults, **values}
+    if not isinstance(result["dataset"], str) or not result["dataset"].strip():
+        raise ValueError("dataset must be a nonempty string")
+    result["dataset"] = result["dataset"].lower()
+    method = result["method"]
+    if not isinstance(method, str) or method not in METHODS:
+        raise ValueError(f"method must be one of {', '.join(METHODS)}")
+    applicable = set()
+    if method not in NONPRIVATE:
+        applicable.add("epsilon")
+    if method.startswith("sparse_"):
+        applicable.update(("p2", "sparse_radius", "sparse_degree_cap"))
+    if method == "sparse_gin":
+        applicable.add("gin_pooling")
+    if method.startswith("dp_gnn_"):
+        applicable.add("dpgnn_radius")
+    if method == "progap":
+        applicable.update(("progap_depth", "progap_python"))
+    invalid = set(values) & (method_fields - applicable)
+    if invalid:
+        raise ValueError(f"{', '.join(sorted(invalid))} not applicable to method {method}")
     for name in ("batch_size", "epochs", "mlp_hidden", "gnn_hidden"):
-        if getattr(args, name) < 1:
-            raise ValueError(f"--{name.replace('_', '-')} must be positive")
-    if args.degree_bound is not None and (
-        type(args.degree_bound) is not int or args.degree_bound < 1
-    ):
-        raise ValueError("--degree-bound must be a positive integer")
-    if args.sparse_degree_cap is None:
-        args.sparse_degree_cap = (
-            args.degree_bound if args.method.startswith("sparse_")
-            and args.degree_bound is not None else 10
-        )
-    elif args.method.startswith("sparse_") and args.degree_bound is not None:
-        if args.sparse_degree_cap != args.degree_bound:
-            raise ValueError("--degree-bound and --sparse-degree-cap must agree for SparseGNN")
+        if type(result[name]) is not int or result[name] < 1:
+            raise ValueError(f"{name} must be a positive integer")
+    for name in ("seed", "bootstrap_resamples"):
+        if type(result[name]) is not int or result[name] < 0:
+            raise ValueError(f"{name} must be a nonnegative integer")
+    if result["seed"] >= 2**32:
+        raise ValueError("seed must be in [0, 2**32)")
+    result["lr"] = _finite_number(result["lr"], "lr")
+    if result["lr"] <= 0:
+        raise ValueError("lr must be positive")
+    result["dropout"] = _finite_number(result["dropout"], "dropout")
+    if not 0 <= result["dropout"] < 1:
+        raise ValueError("dropout must be in [0, 1)")
+    degree = result["degree_bound"]
+    if degree is not None and (type(degree) is not int or degree < 1):
+        raise ValueError("degree_bound must be a positive integer")
+    if method not in NONPRIVATE:
+        result["epsilon"] = _finite_number(result.get("epsilon"), "epsilon")
+        if result["epsilon"] <= 0:
+            raise ValueError("private methods require a positive epsilon")
+    if method.startswith("sparse_"):
+        result["p2"] = _finite_number(result.get("p2"), "p2")
+        if not 0 < result["p2"] <= 1:
+            raise ValueError("SparseGNN requires p2 in (0, 1]")
+        result.setdefault("sparse_radius", 1)
+        cap = result.get("sparse_degree_cap")
+        if cap is None:
+            cap = degree if degree is not None else 10
+        if degree is not None and cap != degree:
+            raise ValueError("degree_bound and sparse_degree_cap must agree for SparseGNN")
+        result["sparse_degree_cap"] = cap
+        result["degree_bound"] = cap
+    elif degree is None:
+        result["degree_bound"] = (10 if method in {"graphsage", "gin"} else
+                                  16 if method == "dpar" else
+                                  5 if method.startswith("dp_gnn_") or method == "progap" else None)
+    if method == "sparse_gin":
+        result.setdefault("gin_pooling", "sum")
+        if result["gin_pooling"] not in ("sum", "mean"):
+            raise ValueError("gin_pooling must be sum or mean")
+    if method.startswith("dp_gnn_"):
+        result.setdefault("dpgnn_radius", 1)
+    if method == "progap":
+        if result.get("progap_depth") is None:
+            result["progap_depth"] = 3
+        if result.get("progap_python") is None:
+            result["progap_python"] = sys.executable
+        if not isinstance(result["progap_python"], str) or not result["progap_python"]:
+            raise ValueError("progap_python must be a nonempty executable name or path")
     for name in ("sparse_radius", "sparse_degree_cap", "dpgnn_radius", "progap_depth"):
-        value = getattr(args, name)
-        if type(value) is not int or value < 1:
-            raise ValueError(f"--{name.replace('_', '-')} must be a positive integer")
-    sparse_override = args.sparse_radius != 1 or args.sparse_degree_cap != 10
-    if sparse_override and not args.method.startswith("sparse_"):
-        raise ValueError("--sparse-radius and --sparse-degree-cap overrides are supported only by SparseGNN")
-    if args.gin_pooling != "sum" and args.method != "sparse_gin":
-        raise ValueError("--gin-pooling mean is supported only by SparseGNN-GIN")
-    if args.dpgnn_radius != 1 and not args.method.startswith("dp_gnn_"):
-        raise ValueError("--dpgnn-radius overrides are supported only by DP-GNN")
-    if args.progap_depth != 1 and args.method != "progap":
-        raise ValueError("--progap-depth overrides are supported only by ProGAP")
-    if not 0 <= args.seed < 2**32:
-        raise ValueError("--seed must be in [0, 2**32)")
-    if not math.isfinite(args.dropout) or not 0 <= args.dropout < 1:
-        raise ValueError("--dropout must be finite and in [0, 1)")
-    if args.bootstrap_resamples < 0:
-        raise ValueError("--bootstrap-resamples must be nonnegative")
-    if args.method in NONPRIVATE:
-        if args.epsilon is not None:
-            raise ValueError("--epsilon is not applicable to a non-private method")
-    elif args.epsilon is None or not math.isfinite(args.epsilon) or args.epsilon <= 0:
-        raise ValueError("private methods require a finite positive --epsilon")
-    if args.method.startswith("sparse_"):
-        if args.p2 is None or not math.isfinite(args.p2) or not 0 < args.p2 <= 1:
-            raise ValueError("SparseGNN requires --p2 in (0, 1]")
-    elif args.p2 is not None:
-        raise ValueError("--p2 is supported only by SparseGNN")
-    if args.progap_python is not None and args.method != "progap":
-        raise ValueError("--progap-python is supported only by ProGAP")
-    if (args.prepared_protocol is None) != (args.campaign_request is None):
-        raise ValueError("--prepared-protocol and --campaign-request must be supplied together")
-    if args.prepared_protocol is not None:
-        if sparse_override:
-            raise ValueError("prepared campaigns do not support SparseGNN radius or degree-cap overrides")
-        args.prepared_protocol = args.prepared_protocol.expanduser().resolve()
-        args.campaign_request = args.campaign_request.expanduser().resolve()
-    args.dataset = args.dataset.lower()
-    args.out_dir = args.out_dir.expanduser().resolve()
-    args.split_root = args.split_root.expanduser().resolve()
+        if name in result and (type(result[name]) is not int or result[name] < 1):
+            raise ValueError(f"{name} must be a positive integer")
+    split_root = result["split_root"]
+    if not isinstance(split_root, str) or not split_root:
+        raise ValueError("split_root must be a nonempty path string")
+    result["split_root"] = os.path.abspath(REPO_ROOT / split_root)
+    result["domain_split"] = _domain_parameters(result["domain_split"], result["dataset"])
+    return result
+
+
+def _check_args(args: argparse.Namespace) -> None:
+    """Normalize CLI arguments, then perform execution-only checks."""
+    values = {key: str(value) if isinstance(value, Path) else value
+              for key, value in vars(args).items() if key not in {"device", "out_dir"}}
+    # None is the parser's omission sentinel, including method-specific flags.
+    values = {key: value for key, value in values.items() if value is not None}
+    normalized = normalize_parameters(values)
+    vars(args).update(normalized)
+    args.out_dir = args.out_dir.absolute()
+    args.split_root = Path(args.split_root)
     if args.out_dir.exists():
         raise FileExistsError(f"output directory is occupied: {args.out_dir}; no overwrite or resume")
     if args.method == "progap":
-        executable = shutil.which(args.progap_python or sys.executable)
+        executable = shutil.which(args.progap_python)
         if executable is None:
             raise FileNotFoundError(f"ProGAP Python executable not found: {args.progap_python}")
         # Preserve venv symlinks: resolving them changes Python's environment.
@@ -148,16 +266,17 @@ def _check_args(args: argparse.Namespace) -> None:
 
 
 def _protocol(name: str) -> tuple[str, dict[str, Any] | None]:
-    from scripts.ideation_study import PROTOCOLS as IDEATION_PROTOCOLS, protocol
-    if name == "fb100-year-6":
-        _, roles = protocol("fb100-gender-6")
-        return "facebook100-year", roles
-    if name in IDEATION_PROTOCOLS:
-        return protocol(name)
-    if name not in {"twitch-allbut2", "facebook100-allbut2", "mag-allbut2"}:
+    if name not in DOMAIN_PRESETS:
         return name, None
     from src.data.domain_datasets import FB100_DOMAINS, MAG_DOMAINS, TWITCH_DOMAINS
 
+    if name.startswith("fb100-"):
+        count = int(name.rsplit("-", 1)[1])
+        schools = (list(TRAIN_SCHOOLS[:count]) if count < 16 else
+                   [school for school in FB100_DOMAINS if school not in {"cornell5", "penn94"}])
+        dataset = "facebook100-year" if name == "fb100-year-6" else "facebook100-gender"
+        return dataset, {"train": schools, "val": ["cornell5"], "test": ["penn94"],
+                         "seed": 0, "val_ratio": 0.2}
     dataset, domains, validation, test = {
         "twitch-allbut2": ("twitch-explicit", TWITCH_DOMAINS, "engb", "es"),
         "facebook100-allbut2": ("facebook100", FB100_DOMAINS, "cornell5", "penn94"),
@@ -169,13 +288,18 @@ def _protocol(name: str) -> tuple[str, dict[str, Any] | None]:
     }
 
 
-def _load_split(protocol: str, split_root: Path):
+def _load_split(protocol: str, split_root: Path, domain_split: dict | None = None):
     from src.data.datasets import load_dataset
     from src.experiments.run import _resolve_task_metadata
     from src.processing.graphs import preprocess_inductive_split
     from src.processing.splits import load_or_create_inductive_split
 
     dataset_name, domain_options = _protocol(protocol)
+    if domain_split is not None:
+        if domain_options is not None:
+            raise ValueError("domain_split cannot override a named preset with predefined domains")
+        from src.data.domain_datasets import normalize_domain_split
+        domain_options, _ = normalize_domain_split(dataset_name, domain_split)
     try:
         dataset, data = load_dataset(dataset_name, device="cpu", domain_split=domain_options)
     except (OSError, ImportError, RuntimeError) as error:
@@ -560,15 +684,11 @@ def _privacy_pair(result, private, target, delta):
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     worker_started = time.perf_counter()
-    binding = None
-    if args.campaign_request is not None:
-        from scripts.full_matrix_records import validate_worker_request
-        binding = validate_worker_request(args)
     import torch
 
     device = torch.device(args.device)
     if device.type not in {"cpu", "cuda"}:
-        raise ValueError("this campaign supports explicit cpu or cuda devices only")
+        raise ValueError("this worker supports explicit cpu or cuda devices only")
     if device.type == "cuda":
         if not torch.cuda.is_available():
             raise RuntimeError(f"requested device {args.device} is unavailable; CPU fallback is disabled")
@@ -579,13 +699,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     load_started = time.perf_counter()
-    if binding is not None:
-        from scripts.full_matrix_records import load_prepared_protocol
-        dataset, split, task, strategy = load_prepared_protocol(args.prepared_protocol)
-    else:
-        from scripts.full_matrix_runtime import file_lock, json_hash
-        with file_lock(args.split_root / f".load-{json_hash(args.dataset)[:16]}.lock"):
-            dataset, split, task, strategy = _load_split(args.dataset, args.split_root)
+    from scripts.runner_runtime import atomic_json, file_lock
+    canonical_dataset, _ = _protocol(args.dataset)
+    lock_name = re.sub(r"[^A-Za-z0-9._-]", "_", canonical_dataset)
+    with file_lock(args.split_root / f".load-{lock_name}.lock"):
+        dataset, split, task, strategy = _load_split(args.dataset, args.split_root, args.domain_split)
     loading_seconds = time.perf_counter() - load_started
     population = int(split.train.data.num_nodes)
     batch = min(args.batch_size, population)
@@ -655,10 +773,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "domain_split_id": split.domain_split_id, "train_nodes": population,
     }
     identity["weight_decay"] = parameters["weight_decay"]
-    if binding is not None:
-        identity.update({key: binding[key] for key in (
-            "request_key", "campaign_manifest_sha256", "prepared_fingerprint",
-            "source_fingerprint", "attempt_number")})
     config = {**identity, "parameters": parameters, "task": task,
               "requested": {key: str(value) if isinstance(value, Path) else value
                             for key, value in vars(args).items()},
@@ -686,8 +800,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
            "test_confidence_intervals": native.get("test_confidence_intervals", {}),
            "completed_epochs": args.epochs}
     config, result, row = map(_json_value, (config, result, row))
-    (args.out_dir / "config.json").write_text(json.dumps(config, indent=2, sort_keys=True, allow_nan=False) + "\n")
-    (args.out_dir / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n")
+    atomic_json(args.out_dir / "config.json", config)
+    atomic_json(args.out_dir / "result.json", result)
     temporary = args.out_dir / "result.csv.partial"
     with temporary.open("x", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(row))
@@ -696,31 +810,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                          if isinstance(value, (dict, list)) else value for key, value in row.items()})
     temporary.replace(args.out_dir / "result.csv")
     return {"output": str(args.out_dir / "result.csv"), "metric": metric,
-            "test_metric": result["test_metric"], "epsilon": actual_epsilon, "delta": actual_delta,
-            "request_key": identity.get("request_key"),
-            "campaign_manifest_sha256": identity.get("campaign_manifest_sha256")}
+            "test_metric": result["test_metric"], "epsilon": actual_epsilon, "delta": actual_delta}
 
 
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
     sys.path.insert(0, str(REPO_ROOT))
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(line_buffering=True, write_through=True)
     created = False
     try:
         _check_args(args)
+        print(json.dumps({"event": "parameters", "device": args.device,
+                          "parameters": _json_value(vars(args))}, sort_keys=True, allow_nan=False), flush=True)
         # mkdir is exclusive even if another worker races the initial guard.
         args.out_dir.mkdir(parents=True, exist_ok=False)
         created = True
         os.chdir(REPO_ROOT)
         summary = run(args)
         print(json.dumps(summary, sort_keys=True, allow_nan=False), flush=True)
-        from scripts.full_matrix_runtime import atomic_json, sha256, utc_now
-        atomic_json(args.out_dir / "worker_exit.json", {
-            "status": "completed", "request_key": summary["request_key"],
-            "campaign_manifest_sha256": summary["campaign_manifest_sha256"],
-            "completed_utc": utc_now(),
-            "artifact_sha256": {name: sha256(args.out_dir / name)
-                               for name in ("config.json", "result.json", "result.csv")},
-        })
     except Exception as error:
         import traceback
         traceback.print_exc()
@@ -729,7 +838,7 @@ def main(argv=None) -> int:
         kind = "cuda_oom" if cuda_oom else "host_oom" if host_oom else "runtime_error"
         if created:
             try:
-                from scripts.full_matrix_runtime import atomic_json
+                from scripts.runner_runtime import atomic_json
                 atomic_json(args.out_dir / "worker_error.json", {
                     "kind": kind, "exception_class": type(error).__name__,
                     "message": str(error),

@@ -61,6 +61,7 @@ FB100_FILES = {
     "carnegie49": "Carnegie49.mat",
 }
 FB100_DOMAINS = tuple(FB100_FILES)
+FB100_YEAR_CLASSES = tuple(range(2004, 2010))
 
 MAG_RECORD = "10681285"
 MAG_RAW_URL = f"https://zenodo.org/api/records/{MAG_RECORD}/files"
@@ -76,12 +77,13 @@ MAG_ARTIFACTS = {
 MAG_DOMAINS = tuple(MAG_ARTIFACTS)
 
 DOMAIN_DATASET_NAMES = (
-    "twitch-explicit", "facebook100", "facebook100-gender", "mag-countries",
+    "twitch-explicit", "facebook100", "facebook100-gender", "facebook100-year", "mag-countries",
 )
 DOMAIN_REGISTRIES = {
     "twitch-explicit": TWITCH_DOMAINS,
     "facebook100": FB100_DOMAINS,
     "facebook100-gender": FB100_DOMAINS,
+    "facebook100-year": FB100_DOMAINS,
     "mag-countries": MAG_DOMAINS,
 }
 DOMAIN_DEFAULTS = {
@@ -100,6 +102,13 @@ DOMAIN_DEFAULTS = {
         "val_ratio": 0.2,
     },
     "facebook100-gender": {
+        "train": ["johns-hopkins55", "caltech36", "amherst41"],
+        "val": ["cornell5", "yale4"],
+        "test": ["penn94", "brown11", "texas80"],
+        "seed": 0,
+        "val_ratio": 0.2,
+    },
+    "facebook100-year": {
         "train": ["johns-hopkins55", "caltech36", "amherst41"],
         "val": ["cornell5", "yale4"],
         "test": ["penn94", "brown11", "texas80"],
@@ -129,6 +138,12 @@ DOMAIN_TASKS = {
     },
     "facebook100-gender": {
         "num_classes": 2,
+        "task_type": "MULTICLASS",
+        "primary_metric": "accuracy",
+        "metric_ignore_label": None,
+    },
+    "facebook100-year": {
+        "num_classes": len(FB100_YEAR_CLASSES),
         "task_type": "MULTICLASS",
         "primary_metric": "accuracy",
         "metric_ignore_label": None,
@@ -566,8 +581,10 @@ def _fb100_edge_index(adjacency: Any, path: Path) -> torch.Tensor:
 
 
 def _load_fb100_domains(
-    root: Path, selected: Sequence[str], *, recorded_gender: bool = False
+    root: Path, selected: Sequence[str], *, target: str = "gender_missingness"
 ) -> dict[str, Data]:
+    recorded_gender = target == "recorded_gender"
+    year_task = target == "year"
     # The categorical feature vocabulary is fitted over the complete 18-school
     # benchmark, so every matrix must be present and validated before any
     # selected school is transformed.
@@ -592,7 +609,7 @@ def _load_fb100_domains(
             info,
         )
 
-    feature_columns = (0, 2, 3, 4, 5, 6)
+    feature_columns = (0, 1, 2, 3, 4, 6) if year_task else (0, 2, 3, 4, 5, 6)
     categories: list[np.ndarray] = []
     offsets: list[int] = []
     total_features = 0
@@ -616,10 +633,10 @@ def _load_fb100_domains(
         raw_num_nodes = info.shape[0]
         path = root / FB100_FILES[domain]
         edge_index = _fb100_edge_index(adjacency, path)
-        if recorded_gender:
-            # Fit the vocabulary above on every raw node first, then allocate
-            # features only for the retained, recorded-gender population.
-            keep = info[:, 1] != 0
+        if recorded_gender or year_task:
+            # Fit the vocabulary on raw nodes, then induce the retained-label graph.
+            keep = (np.isin(info[:, 5], FB100_YEAR_CLASSES) if year_task
+                    else info[:, 1] != 0)
             remap = torch.full((raw_num_nodes,), -1, dtype=torch.long)
             remap[torch.from_numpy(keep)] = torch.arange(int(keep.sum()))
             edge_index = remap[edge_index]
@@ -641,7 +658,9 @@ def _load_fb100_domains(
                     torch.from_numpy(rows),
                     torch.from_numpy(encoded.astype(np.int64, copy=False) + offset),
                 ] = 1.0
-        if recorded_gender:
+        if year_task:
+            y = torch.from_numpy(info[:, 5] - FB100_YEAR_CLASSES[0])
+        elif recorded_gender:
             y = torch.from_numpy(info[:, 1] - 1)
         else:
             # Historical GraphOOD task: missing raw gender 0 maps to class 0,
@@ -653,7 +672,7 @@ def _load_fb100_domains(
             y=y,
             num_nodes=info.shape[0],
         )
-        if recorded_gender:
+        if recorded_gender or year_task:
             result[domain].raw_num_nodes = raw_num_nodes
     return result
 
@@ -830,6 +849,7 @@ def _assemble_domains(
             )
 
     task = DOMAIN_TASKS[dataset_name]
+    data.num_classes = task["num_classes"]
     data.domain_names = list(selected)
     data.domain_split = {
         role: list(normalized[role]) for role in _ROLE_NAMES
@@ -853,8 +873,16 @@ def _assemble_domains(
         "primary_metric": task["primary_metric"],
         "metric_ignore_label": task["metric_ignore_label"],
     }
-    if dataset_name == "facebook100-gender":
+    if dataset_name in ("facebook100-gender", "facebook100-year"):
+        year_task = dataset_name == "facebook100-year"
         metadata["label_metadata"] = {
+            "target": "year",
+            "raw_column": 5,
+            "raw_to_class": {str(year): index for index, year in enumerate(FB100_YEAR_CLASSES)},
+            "retained_raw_values": list(FB100_YEAR_CLASSES),
+            "excluded_raw_values_policy": "outside_retained_year_cohorts",
+            "unknown_node_policy": "excluded_induced_subgraph",
+        } if year_task else {
             "target": "recorded_gender",
             "raw_column": 1,
             "raw_to_class": {"1": 0, "2": 1},
@@ -864,9 +892,10 @@ def _assemble_domains(
         metadata["provenance"] = {
             "source_url": FB100_RAW_URL,
             "revision": FB100_REVISION,
-            "feature_columns": [0, 2, 3, 4, 5, 6],
+            "feature_columns": [0, 1, 2, 3, 4, 6] if year_task else [0, 2, 3, 4, 5, 6],
             "feature_vocabulary_domains": list(FB100_DOMAINS),
-            "feature_vocabulary_population": "all_raw_nodes_before_gender_filter",
+            "feature_vocabulary_population": ("all_raw_nodes_before_year_filter" if year_task
+                                              else "all_raw_nodes_before_gender_filter"),
             "feature_vocabulary_num_features": metadata["num_features"],
         }
         metadata["domain_node_counts"] = {
@@ -905,7 +934,7 @@ def load_domain_dataset(
             else os.environ.get("GRAPHOOD_TWITCH_DATA_ROOT", "data/graphood/twitch")
         )
         graphs = {domain: _parse_twitch_domain(cache, domain) for domain in selected}
-    elif name in ("facebook100", "facebook100-gender"):
+    elif name in ("facebook100", "facebook100-gender", "facebook100-year"):
         cache = Path(
             root
             if root is not None
@@ -914,7 +943,9 @@ def load_domain_dataset(
             )
         )
         graphs = _load_fb100_domains(
-            cache, selected, recorded_gender=name == "facebook100-gender"
+            cache, selected, target={"facebook100": "gender_missingness",
+                                     "facebook100-gender": "recorded_gender",
+                                     "facebook100-year": "year"}[name]
         )
     elif name == "mag-countries":
         cache = Path(

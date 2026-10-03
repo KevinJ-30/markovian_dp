@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 import torch
-from scipy.io import savemat
+from scipy.io import loadmat, savemat
 from torch_geometric.data import Data
 
 from src.data import datasets
@@ -350,6 +350,72 @@ def test_facebook100_gender_and_missingness_use_disjoint_split_caches(tmp_path):
     assert legacy.train.data.y.tolist() == [0, 1, 0, 1]
     assert gender.train.data.y.tolist() == [1, 0]
     assert gender.train.data.label_metadata["raw_to_class"] == {"1": 0, "2": 1}
+
+
+def _write_fb100_year_fixture(root, *, include_last_class=True):
+    root.mkdir(exist_ok=True)
+    for index, filename in enumerate(domain.FB100_FILES.values()):
+        years = [0, 2004, 1900, 2008, 2009 if include_last_class else 2007, 2010]
+        info = np.array([[index + 1, gender, 1, 0, 1, year, index + 10]
+                         for gender, year in zip([1, 0, 1, 2, 1, 2], years)])
+        adjacency = sp.csr_matrix(
+            (np.ones(8), ([0, 1, 1, 2, 3, 4, 4, 5], [1, 3, 4, 3, 4, 1, 5, 4])),
+            shape=(6, 6),
+        )
+        savemat(root / filename, {"A": adjacency, "local_info": info})
+
+
+def test_facebook100_year_cohorts_induce_edges_without_target_features(tmp_path):
+    _write_fb100_year_fixture(tmp_path)
+    requested = _split(["penn94"], ["amherst41"], ["cornell5"])
+    dataset, data = datasets.load_dataset("facebook100-year", domain_split=requested, root=tmp_path)
+    # Stable year identities, not a per-school relabeling of present classes.
+    assert data.y.tolist() == [0, 4, 5] * 3
+    assert dataset.num_classes == 6
+    assert data.train_mask.tolist() == [True] * 3 + [False] * 6
+    assert data.val_mask.tolist() == [False] * 3 + [True] * 3 + [False] * 3
+    assert data.test_mask.tolist() == [False] * 6 + [True] * 3
+    expected = {(offset + u, offset + v) for offset in (0, 3, 6)
+                for u, v in ((0, 1), (0, 2), (1, 2), (2, 0))}
+    assert set(map(tuple, data.edge_index.t().tolist())) == expected
+    assert dataset.domain_node_counts == {
+        name: {"raw": 6, "retained": 3, "excluded": 3}
+        for name in ("penn94", "amherst41", "cornell5")
+    }
+    # Changing retained target values must change labels, never input features.
+    for filename in domain.FB100_FILES.values():
+        raw = loadmat(tmp_path / filename)
+        raw["local_info"][[1, 4], 5] = [2009, 2004]
+        savemat(tmp_path / filename, {"A": raw["A"], "local_info": raw["local_info"]})
+    _, changed = datasets.load_dataset("facebook100-year", domain_split=requested, root=tmp_path)
+    assert changed.y.tolist() == [5, 4, 0] * 3
+    assert torch.equal(changed.x, data.x)
+    assert torch.equal(changed.edge_index, data.edge_index)
+
+
+def test_facebook100_year_preserves_six_class_head_and_separate_cache(tmp_path):
+    raw = tmp_path / "raw"
+    _write_fb100_year_fixture(raw, include_last_class=False)
+    requested = _split(["penn94"], ["amherst41"], ["cornell5"])
+    splits = {}
+    for name in ("facebook100-gender", "facebook100-year"):
+        data, _ = domain.load_domain_dataset(name, requested, root=raw)
+        splits[name] = load_or_create_inductive_split(
+            data, name, root=tmp_path / "splits", split_strategy="domain"
+        )
+    year, gender = splits["facebook100-year"], splits["facebook100-gender"]
+    assert year.path != gender.path and year.domain_split_id != gender.domain_split_id
+    assert year.num_classes == 6  # Year 2009 is absent in every fixture school.
+    for name in ("train", "val", "test"):
+        part = getattr(year, name)
+        assert part.data.y.tolist() == [0, 4, 3]
+        assert part.node_ids.numel() == 3
+        assert bool(part.eval_mask.all())
+    reloaded = load_or_create_inductive_split(
+        data, "facebook100-year", root=tmp_path / "splits", split_strategy="domain"
+    )
+    assert reloaded.num_classes == 6
+    assert reloaded.train.data.label_metadata["raw_to_class"]["2009"] == 5
 
 
 def _save_mag(path, label_offset=0):

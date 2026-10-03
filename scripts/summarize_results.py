@@ -60,7 +60,7 @@ IGNORED_PARAMETERS = {
 }
 OUTPUT_COLUMNS = [
     "group", "dataset", "method", "privacy", "epsilon", "delta", "split",
-    "metric", "config_id", "configuration", "n", "seeds", "value",
+    "metric", "config_id", "configuration", "n", "seeds", "value", "validation_value",
     "uncertainty", "uncertainty_type", "ci_lower", "ci_upper",
     "confidence_level", "display", "selection", "sources",
 ]
@@ -254,6 +254,18 @@ def metric_fields(row, requested, location):
     return metric, first(row, *keys)
 
 
+def validation_field(row, metric, selection):
+    primary, _ = metric_fields(row, "auto", "validation metric")
+    keys = tuple(key.replace("test_", prefix, 1)
+                 for prefix in ("validation_", "val_") for key in METRIC_COLUMNS[metric])
+    if primary == metric:
+        keys += ("validation_metric", "validation_acc", "val_acc")
+    value = first(row, *keys)
+    if not populated(value) and metric_name(selection.get("metric", primary)) == metric:
+        value = selection.get("validation_score", "")
+    return value
+
+
 def configuration(row, target, location):
     settings = {}
 
@@ -310,6 +322,8 @@ class Run:
     config_id: str
     configuration: str
     selection: dict
+    validation_score: str
+    run_index: int | None
 
     @property
     def location(self):
@@ -341,9 +355,15 @@ def make_run(row, group, source, line, requested):
                       if populated(row.get(key)))
     selection = object_json(row["selection"], f"{location}: selection") if populated(row.get("selection")) else {}
     seed = first(row, "seed", "random_seed", "run_seed")
+    run_index = None
+    if populated(row.get("run_index")):
+        index = finite(row["run_index"], f"{location}: run_index")
+        if index < 0 or not index.is_integer():
+            raise SummaryError(f"{location}: run_index must be a nonnegative integer")
+        run_index = int(index)
     return Run(group, str(source), line, row, dataset, method, privacy, epsilon, delta,
                target, split, metric, score, canonical(seed) if seed else "", settings,
-               config_id, description, selection)
+               config_id, description, selection, validation_field(row, metric, selection), run_index)
 
 
 def expand_patterns(patterns, base, label):
@@ -533,24 +553,37 @@ def bootstrap_interval(run, diagnostics):
     return lower, upper, level
 
 
-def output_row(run, value, n, seeds, sources):
+def output_row(run, value, n, seeds, sources, validation_value=None):
     return {
         "group": run.group, "dataset": run.dataset, "method": run.method,
         "privacy": run.privacy, "epsilon": run.epsilon, "delta": run.delta,
         "split": run.split, "metric": run.metric, "config_id": run.config_id,
         "configuration": run.configuration, "n": n, "seeds": ";".join(seeds),
-        "value": value, "uncertainty": "N/A", "uncertainty_type": "none",
+        "value": value, "validation_value": validation_value if validation_value is not None else "",
+        "_run_index": run.run_index,
+        "uncertainty": "N/A", "uncertainty_type": "none",
         "ci_lower": "", "ci_upper": "", "confidence_level": "",
         "selection": "all", "sources": ";".join(sorted(sources)),
     }
 
 
-def summarize(runs, seed_mode, diagnostics):
-    scored = [(run, value) for run in runs if (value := usable_score(run, diagnostics)) is not None]
+def summarize(runs, seed_mode, diagnostics, require_validation=False):
+    scored = []
+    for run in runs:
+        value = usable_score(run, diagnostics)
+        if value is None:
+            continue
+        try:
+            validation = finite(run.validation_score, f"{run.location}: validation score for {run.metric}")
+        except SummaryError:
+            if require_validation:
+                raise
+            validation = None
+        scored.append((run, value, validation))
     if not seed_mode:
         rows = []
-        for run, value in scored:
-            result = output_row(run, value, 1, [run.seed] if run.seed else [], {run.source})
+        for run, value, validation in scored:
+            result = output_row(run, value, 1, [run.seed] if run.seed else [], {run.source}, validation)
             interval = bootstrap_interval(run, diagnostics)
             if interval is not None:
                 lower, upper, level = interval
@@ -561,23 +594,33 @@ def summarize(runs, seed_mode, diagnostics):
         return rows
     cells = defaultdict(dict)
     sources = defaultdict(set)
-    for run, value in scored:
+    indices = defaultdict(list)
+    for run, value, validation in scored:
         if not run.seed:
             raise SummaryError(f"{run.location}: --seed requires a seed ID for every usable final run")
         key = run.identity() + (run.config_id,)
         prior = cells[key].get(run.seed)
-        if prior is not None and prior[1] != value:
+        if prior is not None and (prior[1] != value or (
+            prior[2] is not None and validation is not None and prior[2] != validation
+        )):
             raise SummaryError(f"conflicting results for seed {run.seed}, group {run.group!r}, "
                                f"{run.dataset}/{run.method}, configuration {run.config_id}: "
                                f"{prior[0].location} versus {run.location}; use separate groups")
-        cells[key][run.seed] = (run, value)
+        if prior is None or validation is not None:
+            cells[key][run.seed] = (run, value, validation)
+        if run.run_index is not None:
+            indices[key].append(run.run_index)
         sources[key].add(run.source)
     rows = []
     for key, seeds in cells.items():
         ordered = sorted(seeds)
         run = seeds[ordered[0]][0]
         values = [seeds[seed][1] for seed in ordered]
-        result = output_row(run, statistics.mean(values), len(values), ordered, sources[key])
+        validation_values = [seeds[seed][2] for seed in ordered]
+        validation = (statistics.mean(validation_values)
+                      if all(value is not None for value in validation_values) else None)
+        result = output_row(run, statistics.mean(values), len(values), ordered, sources[key], validation)
+        result["_run_index"] = min(indices[key], default=None)
         result["uncertainty_type"] = "sample_sd"
         if len(values) > 1:
             result["uncertainty"] = statistics.stdev(values)
@@ -609,6 +652,26 @@ def select_best(rows, diagnostics):
     return list(chosen.values())
 
 
+def select_best_validation(rows, diagnostics):
+    chosen = {}
+    candidates = sorted(rows, key=lambda row: (
+        row["_run_index"] is None, row["_run_index"] if row["_run_index"] is not None else 0,
+        ordering(row),
+    ))
+    for row in candidates:
+        score = finite(row["validation_value"], "best-validation: validation score")
+        key = tuple(row[field] for field in (
+            "group", "dataset", "method", "privacy", "epsilon", "delta", "split", "metric"))
+        if row["privacy"] != "non-private" and row["epsilon"] == "unknown":
+            diagnostics.warn(f"group {row['group']!r}, {row['dataset']}/{row['method']}: unknown private epsilon; "
+                             "--best-validation keeps different configurations separate")
+            key += (row["config_id"],)
+        if key not in chosen or score > chosen[key]["validation_value"]:
+            row["selection"] = "best_validation"
+            chosen[key] = row
+    return list(chosen.values())
+
+
 def markdown_cell(value):
     return str(value).replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ").replace("\r", " ")
 
@@ -626,7 +689,7 @@ def export(rows, outputs, args, diagnostics):
     with outputs[0].open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=OUTPUT_COLUMNS)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows({key: row[key] for key in OUTPUT_COLUMNS} for row in rows)
     headers = ["Group", "Dataset / split", "Method", "ε", "δ", "Metric",
                "Test result", "n", "Seeds", "Configuration"]
     if args.bootstrap:
@@ -657,6 +720,8 @@ def export(rows, outputs, args, diagnostics):
     lines.append("- Scores remain on their input scale. Different datasets, methods, privacy budgets, splits, metrics, and named groups remain separate. `unknown` epsilon never means non-private.")
     if args.best:
         lines.append("- **TEST-selection bias:** these best-test summaries are optimistically selected and are not validation-selected or unbiased comparisons.")
+    if args.best_validation:
+        lines.append("- `--best-validation` ranks by validation performance and retains the winner's TEST statistics. In seed mode validation and test means use the same unique seeds; ties use the lowest run index when available, otherwise deterministic input ordering.")
     if diagnostics.warnings:
         lines.extend(["", "## Warnings", ""])
         lines.extend("- " + markdown_cell(warning) for warning in diagnostics.warnings)
@@ -672,7 +737,9 @@ def parser():
     mode = cli.add_mutually_exclusive_group(required=True)
     mode.add_argument("--bootstrap", action="store_true", help="report final-run point estimates with their stored bootstrap CIs")
     mode.add_argument("--seed", action="store_true", help="mean ± sample SD over unique seed IDs, separately per configuration")
-    cli.add_argument("--best", action="store_true", help="select highest TEST score (bootstrap) or configuration mean TEST score (seed); selection bias applies")
+    selection = cli.add_mutually_exclusive_group()
+    selection.add_argument("--best", action="store_true", help="select highest TEST score (bootstrap) or configuration mean TEST score (seed); selection bias applies")
+    selection.add_argument("--best-validation", action="store_true", help="select by validation score using the same unique seeds as test aggregation; retain the winner's test statistics")
     cli.add_argument("--groups", metavar="FILE.json", help='JSON: {"groups":[{"name":"regime","files":["*.csv"],"where":{"lr":[0.01]}}]}; paths relative to JSON')
     cli.add_argument("--out", required=True, metavar="PREFIX", help="write PREFIX.csv and PREFIX.md")
     cli.add_argument("--metric", choices=("auto",) + METRICS, default="auto", help="auto respects row metric/primary_metric, otherwise infers populated test columns")
@@ -697,12 +764,15 @@ def main(argv=None):
         rows = []
         for name, files, where in groups:
             runs = read_group(name, files, where, args.metric, diagnostics)
-            results = summarize(final_runs(runs, diagnostics), args.seed, diagnostics)
+            results = summarize(final_runs(runs, diagnostics), args.seed, diagnostics,
+                                require_validation=args.best_validation)
             if not results:
                 raise SummaryError(f"group {name!r}: no usable final results; check outcome status, final step/budget, metric, and warnings")
             rows.extend(results)
         if args.best:
             rows = select_best(rows, diagnostics)
+        elif args.best_validation:
+            rows = select_best_validation(rows, diagnostics)
         export(rows, outputs, args, diagnostics)
     except (SummaryError, OSError) as exc:
         cli.error(str(exc))

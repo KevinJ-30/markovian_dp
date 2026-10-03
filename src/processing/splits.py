@@ -108,7 +108,8 @@ def _num_classes(data: Any, multilabel: bool = False, regression: bool = False) 
         raise ValueError("inductive node classification requires categorical "
                          "labels (pass multilabel=True for a 0/1 label matrix, "
                          "or regression=True for a continuous target)")
-    return int(labels.max()) + 1
+    declared_classes = getattr(data, "num_classes", None)
+    return int(declared_classes) if declared_classes is not None else int(labels.max()) + 1
 
 
 def _split_indices(labels: torch.Tensor, seed: int) -> dict[str, torch.Tensor]:

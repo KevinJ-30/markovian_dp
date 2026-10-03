@@ -240,33 +240,94 @@ def test_progap_depth_and_stage_count_are_distinct_settings(tmp_path):
     assert float(rows[0]["uncertainty"]) == pytest.approx(math.sqrt(.02))
 
 
-def test_queue_best_test_uses_complete_seed_means_and_preserves_p2(tmp_path):
-    from scripts.full_matrix_queue import _seed_tables
+@pytest.mark.parametrize("validation", [(0.8, 0.6), (0.8, 0.8)])
+def test_best_validation_precedes_test_and_breaks_ties_by_run_index(tmp_path, validation):
+    source = _csv(tmp_path / "screen.csv", [
+        _row(batch_size=1024, validation_metric=validation[1], test_acc=.95, run_index=9),
+        _row(batch_size=256, validation_metric=validation[0], test_acc=.4, run_index=2),
+    ])
+    rows, _, _ = _summary(tmp_path, source, "--bootstrap", "--best-validation")
+    assert len(rows) == 1
+    assert float(rows[0]["value"]) == .4
+    assert float(rows[0]["validation_value"]) == .8
+    assert rows[0]["selection"] == "best_validation"
+    assert rows[0]["seeds"] == "0" and int(rows[0]["n"]) == 1
+    assert _missing(rows[0]["uncertainty"])
 
-    results = []
-    for p2, lr, scores in (
-        (0.1, .01, (.9, .5, .4)),
-        (0.1, .001, (.6, .65, .7)),
-        (0.5, .01, (.65, .7, .75)),
-        (1.0, .01, (.99,)),
-    ):
-        for seed, score in enumerate(scores):
-            results.append(_row(
-                seed=seed, lr=lr, p2=p2, test_acc=score, status="completed",
-                result_csv=str(tmp_path / f"p{p2}_lr{lr}_s{seed}.csv"),
-            ))
-    _seed_tables(tmp_path, results)
-    with (tmp_path / "seed_summary.csv").open() as handle:
-        all_rows = list(csv.DictReader(handle))
-    assert sorted(int(row["n"]) for row in all_rows) == [1, 3, 3, 3]
-    with (tmp_path / "best_test.csv").open() as handle:
-        best = list(csv.DictReader(handle))
-    assert len(best) == 1
-    assert float(best[0]["value"]) == pytest.approx(.7)
-    assert float(best[0]["uncertainty"]) == pytest.approx(.05)
-    assert best[0]["seeds"] == "0;1;2"
-    with (tmp_path / "best_test_by_p2.csv").open() as handle:
-        per_p2 = {row["group"]: row for row in csv.DictReader(handle)}
-    assert set(per_p2) == {"p2=0.1", "p2=0.5"}
-    assert float(per_p2["p2=0.1"]["value"]) == pytest.approx(.65)
-    assert "lr=0.001" in per_p2["p2=0.1"]["configuration"]
+
+def test_validation_mean_uses_exact_test_cohort_and_unique_seeds(tmp_path):
+    first = _row(lr=.01, seed=0, test_acc=.2, validation_metric=.6, run_index=8)
+    source = _csv(tmp_path / "seeds.csv", [
+        first, first,
+        _row(lr=.01, seed=1, test_acc=.4, validation_metric=.8, run_index=1),
+        _row(lr=.01, seed=2, test_acc="nan", validation_metric=0, run_index=0),
+        _row(lr=.02, seed=0, test_acc=.8, validation_metric=.65, run_index=3),
+        _row(lr=.02, seed=1, test_acc=.9, validation_metric=.65, run_index=4),
+    ])
+    rows, _, _ = _summary(tmp_path, source, "--seed", "--best-validation")
+    assert len(rows) == 1
+    assert float(rows[0]["value"]) == pytest.approx(.3)
+    assert float(rows[0]["validation_value"]) == pytest.approx(.7)
+    assert float(rows[0]["uncertainty"]) == pytest.approx(math.sqrt(.02))
+    assert rows[0]["seeds"] == "0;1"
+    assert int(rows[0]["n"]) == 2
+
+
+def test_validation_seed_tie_uses_lowest_index_in_whole_cohort(tmp_path):
+    source = _csv(tmp_path / "tie.csv", [
+        _row(lr=.01, seed=0, test_acc=.8, validation_metric=.7, run_index=2),
+        _row(lr=.01, seed=1, test_acc=.9, validation_metric=.7, run_index=3),
+        _row(lr=.02, seed=0, test_acc=.2, validation_metric=.6, run_index=8),
+        _row(lr=.02, seed=1, test_acc=.4, validation_metric=.8, run_index=1),
+    ])
+    rows, _, _ = _summary(tmp_path, source, "--seed", "--best-validation")
+    assert float(rows[0]["value"]) == pytest.approx(.3)
+    assert float(rows[0]["validation_value"]) == pytest.approx(.7)
+
+
+@pytest.mark.parametrize("validation", ["", "nan", "inf", "-inf"])
+def test_best_validation_requires_finite_score_for_every_usable_seed(tmp_path, validation):
+    source = _csv(tmp_path / "missing.csv", [
+        _row(seed=0, validation_metric=.8),
+        _row(seed=1, validation_metric=validation),
+    ])
+    result, prefix = _invoke(tmp_path, source, "--seed", "--best-validation")
+    assert result.returncode == 2
+    assert not prefix.with_suffix(".csv").exists()
+
+
+def test_conflicting_validation_for_duplicate_seed_is_rejected(tmp_path):
+    source = _csv(tmp_path / "duplicate.csv", [
+        _row(validation_metric=.4), _row(validation_metric=.9),
+    ])
+    result, _ = _invoke(tmp_path, source, "--seed", "--best-validation")
+    assert result.returncode == 2
+
+
+def test_best_selectors_are_mutually_exclusive(tmp_path):
+    source = _csv(tmp_path / "source.csv", [_row(validation_metric=.5)])
+    result, _ = _invoke(tmp_path, source, "--seed", "--best", "--best-validation")
+    assert result.returncode == 2
+
+
+def test_validation_metric_override_does_not_relabel_primary_selection(tmp_path):
+    source = _csv(tmp_path / "metrics.csv", [_row(
+        test_auroc=.8, validation_metric=.9,
+        selection=json.dumps({"metric": "accuracy", "validation_score": .9}),
+    )])
+    result, _ = _invoke(tmp_path, source, "--bootstrap", "--best-validation", "--metric", "auroc")
+    assert result.returncode == 2
+    _csv(source, [_row(test_auroc=.8, val_auroc=.6, validation_metric=.9)])
+    rows, _, _ = _summary(tmp_path, source, "--bootstrap", "--best-validation", "--metric", "auroc")
+    assert float(rows[0]["validation_value"]) == .6
+
+
+def test_historical_validation_ties_keep_deterministic_order_without_indices(tmp_path):
+    entries = [_row(lr=.01, test_acc=.3, validation_metric=.7),
+               _row(lr=.02, test_acc=.9, validation_metric=.7)]
+    source = _csv(tmp_path / "history.csv", entries)
+    forward, _, _ = _summary(tmp_path, source, "--seed", "--best-validation", name="forward")
+    _csv(source, list(reversed(entries)))
+    backward, _, _ = _summary(tmp_path, source, "--seed", "--best-validation", name="backward")
+    assert forward[0]["configuration"] == backward[0]["configuration"]
+    assert forward[0]["value"] == backward[0]["value"]

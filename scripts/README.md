@@ -1,8 +1,8 @@
 # Supporting scripts
 
-Training entry points are `python -m src.experiments.sparse` and
-`python -m src.experiments.run`. The legacy local experiment drivers and
-study-specific figure recipes have been removed.
+Use `python scripts/run_experiments.py CONFIG.json --gpus auto` for new
+experiments. One JSON-driven runner schedules all supported methods; dataset
+presets and training implementations remain in its single-run worker.
 
 ## Reusable utilities
 
@@ -11,9 +11,9 @@ study-specific figure recipes have been removed.
 | `setup_graphsaint.sh` | Extract and check manually downloaded GraphSAINT datasets. |
 | `calibrate_grid.py` | Emit noise multipliers for a grid of privacy targets. |
 | `ceiling_fullbatch.py` | Run a non-private full-batch classification comparison. |
-| `full_matrix.sh` | Run the complete sequential final-experiment grid, then export best-test bootstrap summaries. |
-| `full_matrix_run.py` | Execute one matrix cell with method-specific calibration and normalized CSV/JSON results. |
-| `ideation_study.py` | Prepare/run/report the approved 280-cell, seed-0 corrected FB gender / Physics screen on GPUs 4–7. |
+| `run_experiments.py` | Expand JSON configurations, pack owned GPU jobs, retain logs/results, and resume. |
+| `run_experiment.py` | Execute one experiment with method-specific calibration and normalized CSV/JSON results. |
+| `runner_runtime.py` | Shared GPU authorization, process supervision, and ownership-safe cleanup. |
 | `summarize_sweep.py` | Select a validation-best step and report seed-averaged test results; one configuration per child directory. |
 | `summarize_matched_eps.py` | Summarize matched-budget studies using their expected directory naming conventions. |
 | `summarize_results.py` | Combine arbitrary result CSVs into CSV/Markdown tables using stored bootstrap CIs or seed mean ± sample SD; optional best-test selection and named regimes. |
@@ -23,22 +23,105 @@ study-specific figure recipes have been removed.
 The Python utilities expose `--help`. GraphSAINT setup accepts an input ZIP
 directory and an optional destination; see the root README.
 
-`full_matrix_run.py` defaults to ProGAP propagation depth **1**: two native
-training stages, each using `--epochs` (40 stage-epochs at `--epochs 20`).
-Use `--progap-depth 2` for three stages. Privacy calibration accounts for the
+`run_experiment.py` defaults to ProGAP propagation depth **3**: four native
+training stages, each using `--epochs` (80 stage-epochs at `--epochs 20`).
+Explicit positive depths override it. Privacy calibration accounts for the
 requested depth; equal per-stage epochs do not make different depths compute-matched.
+
+### Unified experiment runner
+
+```bash
+python scripts/run_experiments.py configs/main.json --gpus 4,5 --dry-run
+python scripts/run_experiments.py configs/main.json --gpus 4,5 \
+  --progap-python /path/to/progap/bin/python
+python scripts/run_experiments.py configs/main.json --gpus 4,5 --resume
+```
+
+The output defaults to `results/<name>/` relative to the repository, not the
+current directory. `name` defaults to the config filename stem; `--out-dir`
+overrides the root. Existing roots require `--resume`; failed jobs are retried
+only with `--resume --retry-failed`. Changed scientific parameters require a new
+root. GPU choices, concurrency cap, timeout, and ProGAP interpreter may change
+on resume. A moved root remains readable for analysis but cannot be resumed.
+
+Example config with eight jobs:
+
+```json
+{
+  "name": "amazon-sgnn",
+  "defaults": {
+    "dataset": "saint-amazon", "batch_size": 1024,
+    "epochs": 20, "bootstrap_resamples": 0
+  },
+  "grid": {"seed": [0, 1], "lr": [0.001]},
+  "runs": [
+    {"parameters": {"method": "sparse_sage"},
+     "grid": {"epsilon": [2, 8], "p2": [0.1, 0.5]}}
+  ]
+}
+```
+
+`defaults` and block `parameters` are scalar worker settings. `grid` explicitly
+declares Cartesian axes; lists/objects inside scalar settings remain literal.
+Block parameters replace a common scalar or axis, and block axes replace a
+common axis or scalar. A key cannot be both scalar and axis in the same scope.
+Use separate blocks for method-specific epsilon, p2, pooling, or depth settings.
+Unknown/inapplicable settings, duplicate scientific jobs, and invalid numbers
+are errors. `domain_split` accepts canonical-domain train/val/test lists, seed,
+and val_ratio; it cannot override a named preset's domains.
+
+Optional JSON `gpus` accepts an index/UUID list or string; CLI `--gpus` takes
+precedence. Inherited GPU visibility is always respected. GPUs must initially
+have no compute processes, utilization <=5%, and <=1024 MiB used memory across
+two recent observations and a fresh check under the UUID lock. The runner never
+preempts other users. Later foreign activity stops additional admissions.
+
+There is **no default jobs-per-GPU cap or wall timeout**. Unknown memory shapes
+run alone for their full first execution; successful whole-run peaks allow
+later matching jobs to overlap. Admission prefers GPUs with fewer active jobs,
+filling eligible idle GPUs before packing busy ones, including waiting for the
+second idle observation. The controller refreshes observations between launches
+and waits for host-memory evidence before acquiring an idle GPU lease. Admission
+revalidates recorded process identities rather than rescanning every host process;
+unobserved children block sharing until the observer records them. Discovery and
+termination retain exhaustive ownership checks. Shared GPU reservations add 25% plus 512 MiB
+per job, leaving at least 2 GiB or 10% device headroom; host reservations also
+have a 25% margin. On an idle GPU, a successful measured whole-run peak needs
+only that much free memory: sharing margins must not reject a shape that fits
+alone. ProGAP profiles include its child process. Missing observations block
+further sharing, not healthy training. Optional block `resources` estimates
+(`gpu_memory_mib`, `host_memory_mib`) authorize initial packing with the same
+margins. Unmeasured GPU estimates, or estimates above the measured peak, retain
+the margins even for solo admission. Estimates and measured peaks are not OOM
+guarantees. Shared CUDA OOM triggers one fresh exclusive retry without changing
+scientific settings.
+
+Use `--max-jobs-per-gpu N` for an explicit upper bound and
+`--timeout-seconds SECONDS` for a wall deadline. `--device cpu` runs serially
+and rejects GPU options; CUDA never silently falls back to CPU. `--dry-run`
+creates no files, probes no GPUs, and does not import training dependencies.
+`--progap-python` selects the separate native environment if needed; paths in
+the config are config-relative, while `split_root` is repository-relative.
+
+Each root contains `experiment.json`, atomic `state.json`, aggregate JSON-lines
+`runner.log`, and `results.csv` with one row per planned job. Each attempt is
+retained under `runs/<run-id>/attempts/<number>/`: `process.log`, operational
+launch/exit/ownership records, and `output/` with config, results, and native
+artifacts. Summarize the root CSV rather than globbing all attempts, so retries
+do not become extra seeds. No sealed manifests, source snapshots, or hashes are
+required. See the [script retirement inventory](RETIRED_SCRIPTS.md) for replacements and removal prerequisites.
 
 ### FB gender / Physics initial screen
 
-`ideation_study.py` seals **280 configurations**, with adaptive rounds disabled.
+`configs/gender_physics.json` contains **280 configurations**.
 Each of five protocols has 24 SGNN-SAGE, 24 SGNN-mean-GIN, and eight ProGAP
 configurations: batch `{256,1024}`, LR `{0.01,0.001}`, epsilon `{2,8}`, and
 SGNN-only p2 `{0.1,0.5,1}`. Training seed is **0 only**; bootstrap is disabled.
 SGNN uses 20 epochs, hidden 128, dropout 0.5, radius 1, outgoing cap 10,
 incoming sampling cap 20, clip 1, weight decay 0.0005, p1=batch/N_train, and
-the repository's mixture accountant. This fixed study explicitly pins ProGAP to
-depth 2, independently of the runner default: 20 epochs per each of three native
-stages, degree bound 10, and its existing weight decay **0**.
+the repository's mixture accountant. This config explicitly pins ProGAP to
+depth 3: 20 epochs per each of four native stages, degree bound 10, and its
+existing weight decay **0**. Historical depth-2 results remain unchanged.
 Every method uses delta=1/N_train; epsilon is per run, not sweep-composed.
 
 | Protocol | Training schools / graph | N_train |
@@ -58,40 +141,32 @@ Physics uses raw PyG features and one shared seed-0 stratified 60/20/20
 graph-disjoint split. Mean-GIN averages **neighbors only**, then adds the root
 before the unchanged GIN MLP; fixed epsilon_GIN=0.
 
+The separate worker protocol `--dataset fb100-year-6` reuses the six training
+schools above, Cornell validation, and Penn test, but loads `facebook100-year`.
+It keeps only years 2004–2009 (classes 0–5), excludes year from input features,
+and induces the retained-node graphs: **16,557 / 15,374 / 33,748** nodes in
+train/validation/test, with **13,697** features. It is not part of the fixed
+280-run gender/Physics grid. The default ProGAP depth 3 has four native stages
+(80 stage-epochs at `--epochs 20`); SGNN still uses 20 epochs. Historical
+hyperparameters can be reused, but noise and delta must be recalibrated for
+the year-task population using the current accountants.
+
 ```bash
-PYTHON=/usr/scratch/asaha92/envs/graph_subsampling/bin/python
-OUT_ROOT=results/ideation_gender_physics_initial
-$PYTHON scripts/ideation_study.py dry-run
-$PYTHON scripts/ideation_study.py prepare --out-root \"$OUT_ROOT\"
-$PYTHON scripts/ideation_study.py run --out-root \"$OUT_ROOT\" \\
-  --gpus 4,5,6,7 --max-jobs-per-gpu 2
-$PYTHON scripts/ideation_study.py report --out-root \"$OUT_ROOT\"
-$PYTHON scripts/ideation_study.py verify --out-root \"$OUT_ROOT\"
+python scripts/run_experiments.py configs/gender_physics.json --gpus 4,5,6,7 \
+  --progap-python /path/to/progap/bin/python
+python scripts/summarize_results.py results/gender_physics/results.csv \
+  --seed --best-validation --out results/gender_physics/comparison
 ```
 
-Use a fresh root for preparation; `run --resume` revalidates frozen source,
-packages, prepared partitions, and attempt evidence. Only physical GPUs 4–7
-are permitted. Each GPU has one controller-owned cooperative lease and at
-most two concurrent workers. Unseen shapes run alone; sharing requires a
-successful full-run peak profile for both shapes, verified owned processes,
-utilization <=70%, host capacity, 25% memory margin plus 512 MiB per job, and
-at least 10% device headroom (minimum 2 GiB). ProGAP profiles include its child
-process tree. Busy/full-memory jobs remain exclusive; unrelated jobs are never
-preempted. Profiles are relearned after OOM and reconstructed on resume.
-
-`requests.json` and `campaign_manifest.json` define the immutable initial
-screen; `queue_state.json` is progress, not scientific evidence. Reports retain
-all attempts in `attempts.csv` and per-request results/coverage in
-`results.csv`/`coverage.csv`, select configurations by
-**validation** score within protocol/method/epsilon (ordinal breaks ties),
-and report the selected final test score in `summary.csv` and `comparison.csv`.
-One seed and no bootstrap means uncertainty is unavailable, not zero.
+GPU selection is not hard-coded to this study. Configuration selection uses
+validation, never test; ties use the run ordinal. One seed and no bootstrap means
+uncertainty is unavailable, not zero.
 
 ### SparseExpand paper ablations
 
-All **60 one-factor configurations** belong to one `OUT_ROOT`, following the
-`full_matrix.sh` layout. The study uses `ogbn-arxiv`, `saint-yelp`, and
-`twitch-allbut2`, both SAGE and GIN backends, epsilon 8, and training seed 0.
+All **60 one-factor configurations** in `configs/sparse_ablation.json` share one
+output root. The study uses `ogbn-arxiv`, `saint-yelp`, and `twitch-allbut2`,
+both SAGE and GIN backends, epsilon 8, and training seed 0.
 The anchor is radius 1, edge-retention probability 0.5, and outgoing-degree
 cap 10. Vary radius `{1,2,3}`, probability `{0.05,0.1,0.25,0.5,1}`, or outgoing
 cap `{5,10,20,40}` while holding the other two at the anchor. The shared anchor
@@ -105,57 +180,27 @@ per configuration at the dataset-specific delta using the repository's mixture
 formula with non-root shells `2*K_out**ell`. This setting alone does not establish
 a privacy guarantee.
 
-Sequential execution, followed by rendering:
+Run both studies through the same scheduler, then render without training:
 
 ```bash
-PYTHON=/path/to/environment/bin/python DEVICE=cuda \
-  OUT_ROOT=results/sparse_ablation_ofat \
-  bash scripts/sparse_ablation_ofat.sh
+python scripts/run_experiments.py configs/sparse_ablation.json --gpus auto
+python scripts/run_experiments.py configs/depth_ablation.json --gpus auto \
+  --progap-python /path/to/progap/bin/python
+python scripts/sparse_ablation.py --ofat-root results/sparse_ablation \
+  --depth-root results/depth_ablation --out-dir results/depth_ablation/figures
 ```
 
-Alternatively, use the existing opportunistic multi-GPU queue, validation, and
-rendering pipeline:
-
-```bash
-PYTHON=/path/to/environment/bin/python \
-  OUT_ROOT=results/sparse_ablation_ofat \
-  bash scripts/sparse_ablation_paper.sh
-```
-
-Choose one mode, not both. Add `--dry-run` to either script to preview the
-60 worker commands and rendering commands without creating files or training.
-Paths are relative to the repository; use a fresh `OUT_ROOT` for new training.
-Queued resumes/retries use `full_matrix_queue.py --ablation-ofat --batch-size 256`
-with the same root; diagnose cleanly exited failures before `--retry-failed`.
-`--report-only` validates completed outputs without launching training.
-Changed source fingerprints require a fresh training study, not mixed versions.
-Keep historical outputs and their source snapshots unchanged; use a fresh
-study with the current accountant for rendering or depth-baseline comparisons.
-
-To extend a completed SGNN study with **27 depth-baseline runs**, use the same
-supervised pathway with `OFAT_ROOT` pointing to a completed 60-run study:
-
-```bash
-PYTHON=/usr/scratch/asaha92/envs/graph_subsampling/bin/python GPUS=auto \
-  OFAT_ROOT=results/sparse_ablation_ofat \
-  OUT_ROOT=results/sparse_ablation_depth \
-  bash scripts/sparse_ablation_paper.sh
-```
+`--dry-run` previews either config; `--resume` and `--resume --retry-failed`
+use the same generic execution path. Preserve historical roots unchanged.
 
 This runs DP-GNN-SAGE and DP-GNN-GIN at radius `{1,2,3}` and ProGAP at depth
 `{1,2,3}` on the same three datasets. Epsilon 8, seed 0, batch 256, LR 0.01,
-hidden 128, dropout 0.5, and 20 epochs remain fixed. ProGAP uses the existing
-separate interpreter configured by `full_matrix_records.PROGAP_PYTHON`; its
-20 epochs apply **per stage**, and depth `d` trains `d+1` stages. DP-GNN uses
-20 training-population epochs at each radius. Both baselines retain degree
-bound 5 and recalibrate noise for the complete requested schedule.
-
-The original SGNN study is read-only. The new root gets its own manifest,
-source snapshot, attempts, accepted runs, tables, and comparative figures.
-`--dry-run` prints all 27 baseline worker commands without launching them.
-Resume/report/retry this study with
-`full_matrix_queue.py --ablation-depth-baselines --batch-size 256 --out-root OUT_ROOT`;
-add `--report-only` or, after diagnosing failed attempts, `--retry-failed`.
+hidden 128, dropout 0.5, and 20 epochs remain fixed. ProGAP can use the separate
+interpreter selected by `--progap-python`; its 20 epochs apply **per stage**, and
+depth `d` trains `d+1` stages. DP-GNN uses 20 training-population epochs at each
+radius. Both baselines retain degree bound 5 and recalibrate noise for the
+complete requested schedule. Explicit depth values 1/2/3 are unchanged by the
+new default.
 
 Re-render a completed comparison without training:
 
@@ -166,8 +211,8 @@ python scripts/sparse_ablation.py \
   --out-dir results/sparse_ablation_depth_supervised_20260925/figures_rebuilt
 ```
 
-`--depth-root` requires all 27 baseline runs and verifies matching dataset/task/
-partition evidence across both studies. Its default output is `DEPTH_ROOT/figures`.
+`--depth-root` requires all 27 baseline runs and matching dataset/task/split
+identities across both studies. Its default output is `DEPTH_ROOT/figures`.
 
 The renderer consumes that **same run folder**, without retraining:
 
@@ -177,29 +222,11 @@ python scripts/sparse_ablation.py \
   --out-dir results/sparse_ablation_ofat_supervised_20260925/figures_compact
 ```
 
-Layout:
-
-```text
-OUT_ROOT/
-  runs/<dataset>/<backend>/<configuration>/seed0/
-  manifest.json
-  source_snapshot/
-  figures/
-    ablation_sage.png
-    ablation_sage.pdf
-    ablation_gin.png
-    ablation_gin.pdf
-    per_run.csv
-    curves.csv
-    provenance.json
-```
-
-Sequential workers write directly under `runs/`, with logs under `logs/`.
-The supervised queue retains immutable `attempts/` and publishes relative
-`runs/` links to accepted outputs; it also writes `requests.json`,
-`queue_state.json`, `results.csv`, and `summary.csv`/`summary.md` at the run root.
-Keep the entire folder when archiving. Historical source snapshots and invocation
-paths remain unchanged evidence, even if the current renderer has moved.
+The renderer reads the root `results.csv`, or historical `summary.csv` with
+`result_csv` pointers, without manifests or hashes. It writes `ablation_sage`
+and `ablation_gin` PNG/PDF pairs, `per_run.csv`, `curves.csv`, and ordinary
+`analysis.json` metadata. The training root and its per-attempt outputs remain
+unchanged.
 
 Each backend gets three horizontal panels: **(a) depth lines**, **(b) probability
 bars**, and **(c) outgoing-cap bars**, with labels inside the upper-left corners.
@@ -210,7 +237,7 @@ depth curves appear. Depth lines are fully opaque and 3 points wide, with no
 uncertainty whiskers. Panels (b)/(c) remain SGNN-only grouped bars with intervals.
 The shared legend sits to the left and contains only dataset colors and method
 line styles; backend and privacy headings are omitted. Backend identity remains
-in the filenames and privacy settings in the CSV/provenance. The compact canvas
+in the filenames and privacy settings in the CSV exports. The compact canvas
 is 18.7 × 3.6 inches (before tight cropping), with a shared 0–1 metric scale.
 The y-axis reads "Test metric": accuracy for ogbn-arxiv, micro-F1 for Yelp, and
 AUROC for Twitch. These different metrics are not averaged. Bar panels show the
@@ -239,129 +266,42 @@ and CPU CUDA values are unavailable rather than zero. ProGAP trains in a child
 process, so these runner metrics do not measure its child-process memory usage.
 Timing includes calibration, training, and final evaluation but excludes loading.
 
-The renderer verifies manifests, artifact hashes, actual settings, and checkpoint
-selection. It never overwrites a figure directory. For another reconstruction,
-pass a fresh `--out-dir`, as in the `figures_compact` example above; choose a new
-directory name for subsequent renders. Provenance records input/output hashes,
-analysis sources, and versions. Existing full-matrix studies and original raw
-ablation outputs are never rewritten.
+The renderer checks required curve membership, duplicate settings, split/metric
+consistency, and stored intervals required for bar panels. It never overwrites
+a figure directory; pass a fresh `--out-dir` for another reconstruction.
 
-### Full final-experiment matrix
+### Main experiment matrix
 
-For the fixed **1,584-run** campaign (528 configurations, three seeds each),
-start the direct opportunistic queue in a fresh output root:
+`configs/main.json` contains **1,584 runs** across the eight dataset protocols:
+`ogbn-arxiv`, `ogbn-products`, `saint-reddit`, `saint-yelp`, `saint-amazon`,
+`twitch-allbut2`, `facebook100-allbut2`, and `mag-allbut2`. The domain protocols
+hold out `engb/es`, `cornell5/penn94`, and `cn/de` respectively; split seed 0 is
+independent of training seeds 0/1/2.
 
-```bash
-python scripts/full_matrix_queue.py --out-root results/full_matrix_k10_s012_YYYYMMDD --gpus auto
-```
+Methods are non-private MLP/GraphSAGE/GIN and private DP-MLP, ProGAP, DPAR,
+DP-GNN-SAGE/GIN, and SparseGNN-SAGE/GIN. LR is .01/.001, requested batch 1024,
+epochs 20, private epsilon 2/8, SparseGNN-only p2 .1/.25/.5/.75/1, dropout .5,
+and hidden width 64 for MLPs or 128 for graph methods. Degree controls are 10;
+bootstrap is disabled. These controls have method-specific meanings: fanout,
+PPR top-k, preprocessing cap, and graph-degree bounds are not interchangeable.
 
-The main matrix fixes requested batch size at 1024. Historical single-seed
-campaigns have different registries and must not be resumed with this grid.
-The separate ablation modes retain their batch-256 and bootstrap contracts.
-
-
-It admits authorized GPUs at utilization strictly below 30% with positive free
-memory, including GPUs with other workloads. Two distinct eligible samples and
-a fresh probe under the UUID lock are required. Running workers are not cancelled
-when utilization rises. Each attempt has a **3,600-second wall deadline**,
-including loading, calibration, and training; owned processes receive termination
-and then forced cleanup after the standard grace period. Timed-out jobs retain
-their logs and artifacts, and the next pending job fills the GPU slot. OOMs
-retain their attempt evidence and defer for five minutes after three attempts.
-Reuse the same output root to resume. After diagnosing a cleanly exited failure,
-use `--retry-failed` to retry it in a new attempt directory; unresolved ownership
-remains blocked. `--report-only` validates saved commitments and regenerates tables
-without GPU discovery or process recovery, returning zero only for 1,584 valid results.
-These two flags are mutually exclusive.
-
-`summary.md`, `summary.csv`, and `results.csv` retain every run in registry order,
-including pending, failed, and timed-out rows, actual parameters, and original
-per-attempt CSV paths. Raw attempt outputs are never rewritten by reporting.
-The queue also publishes CSV/Markdown pairs:
-
-- `seed_summary`: mean and sample SD across available seeds for every configuration;
-  the `n` and `seeds` columns expose incomplete cohorts.
-- `best_test`: highest mean test score across configurations within each comparable
-  dataset/privacy/method cell, using only complete seed sets `0;1;2`.
-- `best_test_by_p2`: the same selection while retaining a separate SparseGNN group
-  for each `p2`; baseline methods are grouped separately.
-
-Bootstrap is disabled. Best-test selection is explicitly labeled as test-selected
-and does not provide unbiased model-selection estimates. Checkpoints within each
-training run are still selected by validation. No separate dataset-preparation
-campaign is required.
-
-The general sequential shell utility remains available:
-
-Preview without loading data, creating outputs, or allocating a GPU:
+Private noise is calibrated per configuration at delta=1/N_train. SparseGNN
+retains its mixture formula, which alone does not establish a privacy guarantee.
+ProGAP is explicitly depth 3, with four native drop-last stages at 20 epochs
+each; DPAR retains ppr_num=70 and sampled_train_rate=.09, so its effective batch
+is at most 70 released roots. Actual schedules and privacy values are recorded.
+Historical ProGAP depths are not rewritten or silently reproduced by this config.
 
 ```bash
-bash scripts/full_matrix.sh --dry-run
+python scripts/run_experiments.py configs/main.json --gpus auto \
+  --progap-python /path/to/progap/bin/python
+python scripts/summarize_results.py results/main/results.csv \
+  --seed --best-validation --out results/main/summary
 ```
 
-Run from the repository root with the appropriate Python environments:
-
-```bash
-PYTHON=python PROGAP_PYTHON=/path/to/progap/bin/python \
-  bash scripts/full_matrix.sh
-```
-
-`PROGAP_PYTHON` defaults to `PYTHON`; use a separate environment if the retained
-ProGAP implementation's dependencies differ. Dataset assets and training
-dependencies must already be available. The launcher is sequential, defaults to
-`DEVICE=cuda`, performs no GPU scheduling, stops on failure, and refuses existing
-run directories. Use a fresh `OUT_ROOT` for a new campaign.
-
-The default grid contains **1,584 runs total**: non-private MLP/GraphSAGE/GIN,
-private DP-MLP/ProGAP/DPAR/DP-GNN-SAGE/DP-GNN-GIN/SparseGNN-SAGE/SparseGNN-GIN,
-learning rates `0.01 0.001`, requested batch `1024`, epochs `20`, private epsilon
-targets `2 8`, seeds `0 1 2`, and SparseGNN-only `p2=0.1 0.25 0.5 0.75 1.0`.
-Hidden sizes are 64 for MLP/DP-MLP and 128 for graph methods; dropout is 0.5.
-GraphSAGE/GIN use fanout 10, SparseGNN outgoing cap 10, DP-GNN/ProGAP degree
-bound 10, and DPAR PPR `topk=10`. These controls have method-specific meanings;
-PPR top-k and neighborhood fanout are not graph-degree guarantees. MLPs have no
-graph-degree parameter. No bootstrap resampling is performed.
-
-The eight protocols are `ogbn-arxiv`, `ogbn-products`, `saint-reddit`,
-`saint-yelp`, `saint-amazon`, `twitch-allbut2`, `facebook100-allbut2`, and
-`mag-allbut2`. The last three train on all registered domains except the
-validation/test pair: respectively `engb/es`, `cornell5/penn94`, and `cn/de`.
-Splits remain fixed at seed 0 across training seeds.
-
-Private noise is calibrated per configuration at `delta=1/N_train`.
-SparseGNN uses `p1=min(batch_size,N_train)/N_train`, `r=1`, directed outgoing
-degree cap 10, clip 1, and the mixture formula with non-root shells
-`2*K_out**ell`. This setting alone does not establish a privacy guarantee.
-SparseGNN and DP-GNN
-use `E*ceil(N_train/effective_batch)` updates and validate each such epoch.
-ProGAP retains its native **E epochs per stage**, three stages, and drop-last
-batch convention. DPAR retains `ppr_num=70` and `sampled_train_rate=0.09`,
-with unchanged native privacy accounting. Its requested batch 1024 therefore
-has an effective batch of at most 70 released roots and one update per epoch;
-smaller sampled graphs use fewer roots.
-Actual root counts, effective batches, updates, and calibration are recorded.
-
-Outputs default to `results/full_matrix/`: isolated
-`runs/<dataset>/<method>/<privacy>/<regime>/seed<seed>/` directories contain
-`config.json`, `result.json`, and `result.csv`; `logs/` contains per-run logs.
-After every run succeeds, the launcher writes `summary.csv` and `summary.md`.
-Regenerate those tables independently, including from a partially completed
-campaign's successful runs:
-
-```bash
-python scripts/summarize_results.py 'results/full_matrix/runs/**/result.csv' \
-  --seed --best --out results/full_matrix/summary
-```
-
-The summary selects the configuration with the highest mean test result within
-each comparable dataset/privacy/method-backbone cell, retaining its sample SD;
-it labels test-selection bias. To inspect every configuration, omit `--best`.
-The generic reporter exposes partial cohorts through `n`; the supervised queue's
-best-test tables additionally require all three seeds before admitting a winner.
-Space-separated environment overrides `DATASETS`, `METHODS`, `EPSILONS`,
-`SEEDS`, `LEARNING_RATES`, `BATCH_SIZES`, `EPOCHS`, and `P2_VALUES` can restrict or
-extend the grid. `BOOTSTRAP_RESAMPLES` controls the final-test bootstrap count.
-See `bash scripts/full_matrix.sh --help` for the complete launch interface.
+Edit JSON blocks/axes for future experiments rather than adding a launcher.
+Omit the selection flag to report every configuration; `--best` still supports
+explicitly labeled test-based selection, with its test-selection bias warning.
 
 ### Result tables
 
@@ -394,6 +334,12 @@ the highest-scoring final run and its CI; seed mode picks the configuration with
 the highest mean test score and retains its mean/SD. This introduces test-selection
 bias, which the output labels. It never chooses an intermediate checkpoint by
 test score. Without `--best`, all final runs/configurations remain in the table.
+`--best-validation` instead ranks by validation score, averaged over the exact
+same unique-seed cohort as the reported test result under `--seed`. It retains
+test statistics and emits `validation_value` and `selection=best_validation`.
+Missing/nonfinite validation is an error; ties use the lowest `run_index` when
+available, otherwise deterministic historical ordering. The two selection
+flags are mutually exclusive.
 `--metric auto` respects declared primary metrics; `--metric accuracy`, `auroc`,
 `micro_f1`, `r2`, or `macro_f1` selects a particular available test metric.
 Scores stay on their input scale.

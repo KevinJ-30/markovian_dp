@@ -31,6 +31,7 @@ SUPPORTED_DATASETS = {
     'twitch-explicit': 'Twitch-Explicit',
     'facebook100': 'Facebook100',
     'facebook100-gender': 'Facebook100-Gender',
+    'facebook100-year': 'Facebook100-Year',
     'mag-countries': 'MAG-Countries',
     # GraphSAINT benchmark graphs (Zeng et al., ICLR 2020), loaded from the
     # authors' released files under their inductive protocol.  Shorthands for
