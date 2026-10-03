@@ -315,22 +315,6 @@ def test_idle_gpu_observation_warmup_precedes_busy_gpu_packing(tmp_path, monkeyp
     assert controller.idle_history[idle_gpu["uuid"]][1] == 1
 
 
-def test_unknown_shape_stays_solo_even_if_other_gpu_learns_its_profile(tmp_path):
-    controller = _controller(tmp_path)
-    candidate = controller.jobs[-1]
-    assert controller._gpu_fits(candidate, GPU, _snapshot())
-    snapshot = _activate(controller, 1, estimates=False)
-    active = next(iter(controller.active.values()))
-    active["isolated"] = True
-    assert not controller._gpu_fits(candidate, GPU, snapshot)
-    completed_elsewhere = controller.jobs[1]
-    completed_elsewhere.update(gpu_model=GPU["name"], exit={
-        "owned_process_exited": True, "returncode": 0,
-        "peak_rss_bytes": 64 * runner.MIB, "peak_gpu_memory_mib": 3072})
-    controller._learn(completed_elsewhere, {"resources": {}})
-    assert not controller._gpu_fits(candidate, GPU, snapshot)
-    controller.active.clear()
-    assert controller._gpu_fits(candidate, GPU, _snapshot())
 
 
 def test_larger_explicit_estimate_retains_solo_safety_margins(tmp_path):
@@ -679,15 +663,15 @@ def test_spreads_real_jobs_across_idle_gpus_before_packing(
         assert _maximum_overlap([row for row in lifetimes if row["cuda_visible_devices"] == uuid]) == 2
 
 
-def test_first_unknown_job_is_isolated_and_completed_profile_enables_overlap(
+def test_live_profile_allows_overlap_before_first_job_finishes(
         tmp_path, monkeypatch, supervised_children):
-    supervised_children["cohort"] = [1, 2, 3]
+    monkeypatch.setattr(runner, "EARLY_PROFILE_SECONDS", .25)
+    supervised_children["cohort"] = [0, 1, 2]
     controller = _gpu_controller(tmp_path, monkeypatch, _config(range(4)))
     assert _run_bounded(controller) == 0
     lifetimes = _lifetimes(controller)
-    assert all(row["start"] >= lifetimes[0]["end"] for row in lifetimes[1:])
-    assert _maximum_overlap(lifetimes[1:]) == 3
-    assert controller.profiles[runner.profile_key(controller.jobs[0]["parameters"], GPU["name"])]["gpu_bytes"] == 3 * runner.GIB
+    assert _maximum_overlap(lifetimes) == 3
+    assert all(lifetimes[index]["start"] < lifetimes[0]["end"] for index in (1, 2))
 
 
 @pytest.mark.parametrize("scenario,final_status", [("shared_oom", "completed"), ("shared_oom_twice", "failed")])
@@ -890,3 +874,79 @@ def test_resume_cannot_reuse_cached_success_after_output_or_exit_damage(
     assert "result_row" not in restored
     row = _read_csv(root / "results.csv")[0]
     assert row.get("test_metric", "") == "" and row["status"] == "failed"
+
+
+def _warming_controller(tmp_path, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(runner.time, "monotonic", lambda: clock[0])
+    controller = _controller(tmp_path, _config((0, 1)))
+    _activate(controller, 1, estimates=False)
+    controller.owned_pids = frozenset({1000})
+    utilization = [100]
+    controller.sampler = SimpleNamespace(snapshot=lambda uuid: _snapshot(
+        (1000,), utilization=utilization[0]))
+    active = next(iter(controller.active.values()))
+
+    def advance(seconds):
+        clock[0] += seconds
+        active["sample"]["observed_monotonic"] = clock[0]
+        controller._refresh_live_profiles()
+
+    return controller, active, utilization, advance, clock
+
+
+def test_live_profile_needs_activity_and_stability_and_is_not_persisted(tmp_path, monkeypatch):
+    controller, active, utilization, advance, _ = _warming_controller(tmp_path, monkeypatch)
+    candidate = controller.jobs[1]
+    utilization[0] = 0
+    advance(0)
+    advance(90)
+    assert controller._peaks(candidate, GPU)[0] is None
+    utilization[0] = 100
+    advance(0)
+    advance(runner.EARLY_PROFILE_SECONDS - 1)
+    assert not controller._gpu_fits(candidate, GPU, controller.sampler.snapshot(GPU["uuid"]))
+    advance(1)
+    assert controller._gpu_fits(candidate, GPU, controller.sampler.snapshot(GPU["uuid"]))
+    assert controller._peaks(candidate, GPU)[0] == 3 * runner.GIB
+    assert active["job"]["status"] == "running"
+    controller.save()
+    assert _read_json(controller.root / "state.json")["profiles"] == {}
+    controller.active.clear()
+    controller._refresh_live_profiles()
+    assert controller._peaks(candidate, GPU)[0] is None
+
+
+def test_live_memory_growth_and_stale_observations_revoke_admission(tmp_path, monkeypatch):
+    controller, active, _, advance, clock = _warming_controller(tmp_path, monkeypatch)
+    candidate = controller.jobs[1]
+    advance(0)
+    advance(runner.EARLY_PROFILE_SECONDS)
+    assert controller._gpu_fits(candidate, GPU, controller.sampler.snapshot(GPU["uuid"]))
+    active["sample"]["peak_rss_bytes"] *= 2
+    advance(1)
+    assert controller._peaks(candidate, GPU)[0] is None
+    advance(runner.EARLY_PROFILE_SECONDS)
+    assert controller._gpu_fits(candidate, GPU, controller.sampler.snapshot(GPU["uuid"]))
+    active["sample"]["peak_gpu_memory_mib"] *= 2
+    advance(1)
+    assert controller._peaks(candidate, GPU)[0] is None
+    advance(runner.EARLY_PROFILE_SECONDS)
+    assert controller._peaks(candidate, GPU)[0] == 6 * runner.GIB
+    assert not controller._gpu_fits(candidate, GPU, controller.sampler.snapshot(GPU["uuid"]))
+    clock[0] += 1000
+    controller._refresh_live_profiles()
+    assert controller._peaks(candidate, GPU)[0] is None
+
+
+def test_provisional_peak_cannot_reject_solo_or_override_exclusive_retry(tmp_path, monkeypatch):
+    controller, active, _, advance, _ = _warming_controller(tmp_path, monkeypatch)
+    candidate = controller.jobs[1]
+    active["sample"]["peak_gpu_memory_mib"] = 14 * 1024
+    advance(0)
+    advance(runner.EARLY_PROFILE_SECONDS)
+    assert controller._peaks(candidate, GPU)[0] == 14 * runner.GIB
+    assert controller._solo_gpu_requirement(candidate, GPU) is None
+    controller.exclusive.add(runner.profile_key(candidate["parameters"]))
+    controller._refresh_live_profiles()
+    assert controller._peaks(candidate, GPU)[0] is None

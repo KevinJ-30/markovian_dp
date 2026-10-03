@@ -18,7 +18,6 @@ import math
 import os
 from pathlib import Path
 import random
-import re
 import resource
 import shutil
 import sys
@@ -699,11 +698,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     load_started = time.perf_counter()
-    from scripts.runner_runtime import atomic_json, file_lock
-    canonical_dataset, _ = _protocol(args.dataset)
-    lock_name = re.sub(r"[^A-Za-z0-9._-]", "_", canonical_dataset)
-    with file_lock(args.split_root / f".load-{lock_name}.lock"):
-        dataset, split, task, strategy = _load_split(args.dataset, args.split_root, args.domain_split)
+    from scripts.runner_runtime import atomic_json
+    dataset, split, task, strategy = _load_split(args.dataset, args.split_root, args.domain_split)
     loading_seconds = time.perf_counter() - load_started
     population = int(split.train.data.num_nodes)
     batch = min(args.batch_size, population)

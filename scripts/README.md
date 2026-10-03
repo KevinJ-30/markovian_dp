@@ -75,8 +75,12 @@ two recent observations and a fresh check under the UUID lock. The runner never
 preempts other users. Later foreign activity stops additional admissions.
 
 There is **no default jobs-per-GPU cap or wall timeout**. Unknown memory shapes
-run alone for their full first execution; successful whole-run peaks allow
-later matching jobs to overlap. Admission prefers GPUs with fewer active jobs,
+start alone. After GPU activity and 30 seconds of stable observed GPU and host
+memory peaks, provisional profiles permit matching jobs to overlap before the
+first execution finishes. Growth above 10% restarts this warm-up; stale or
+unverified observations revoke provisional profiles. These profiles are not
+persisted; successful whole-run peaks remain the durable measurements. Admission
+prefers GPUs with fewer active jobs,
 filling eligible idle GPUs before packing busy ones, including waiting for the
 second idle observation. The controller refreshes observations between launches
 and waits for host-memory evidence before acquiring an idle GPU lease. Admission
@@ -100,6 +104,12 @@ and rejects GPU options; CUDA never silently falls back to CPU. `--dry-run`
 creates no files, probes no GPUs, and does not import training dependencies.
 `--progap-python` selects the separate native environment if needed; paths in
 the config are config-relative, while `split_root` is repository-relative.
+
+Workers load and reconstruct cached datasets independently; there is no
+dataset-wide exclusive loading lock. Split and GraphSAINT label caches lock
+only first creation and publish atomically. OGB/PyG constructors use shared
+locks for concurrent warm reads and exclusive locks for cold download/processing.
+Raw domain downloads similarly lock only acquisition or required checksum repair.
 
 All private jobs use the hardcoded target `delta = N_train ** -1.01`, where
 `N_train` is the training partition's node count. Historical `1/N_train` results
@@ -125,6 +135,10 @@ All runs use dropout 0.5, degree setting 5, bootstrap resamples 0, and 20 epochs
 ProGAP applies those epochs **per stage**. The config names GPUs 0–7, the existing
 split cache, and the workstation's ProGAP interpreter. Adjust those paths/device
 choices when moving the study. No per-GPU concurrency limit is imposed.
+Queue blocks prioritize SparseSAGE (192 jobs), SparseGIN (192), and ProGAP (192)
+before nonprivate models (96) and the other private baselines (256). The repeat
+generator preserves this group order. Memory-aware admission can still skip
+ahead to a fitting job; these are priorities, not completion barriers.
 
 `configs/main_r1_repeat_selection.json` is **generator settings, not a runner
 config**. It names the tuning config/results, generated output, seeds `{1,2,3,4,5}`,

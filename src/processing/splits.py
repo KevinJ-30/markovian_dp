@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence
+from tempfile import NamedTemporaryFile
+from typing import Any, Callable, Literal, Mapping, Sequence
 
 import torch
+
+from src.processing.cache import cache_creation_lock
 
 _SPLITS = ("train", "val", "test")
 
@@ -433,6 +436,28 @@ def _validated_context_indices(
     return contexts
 
 
+def _load_or_create_split_payload(
+    path: Path, create: Callable[[], Mapping[str, Any]]
+) -> Any:
+    """Serialize only cold publication, never cached reads or reconstruction."""
+    if not path.exists():
+        with cache_creation_lock(path):
+            if not path.exists():
+                payload = create()
+                with NamedTemporaryFile(
+                    dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
+                ) as stream:
+                    temporary = Path(stream.name)
+                    try:
+                        torch.save(payload, stream)
+                        stream.close()
+                        temporary.replace(path)
+                    finally:
+                        temporary.unlink(missing_ok=True)
+                return payload
+    return torch.load(path, map_location="cpu")
+
+
 def load_or_create_inductive_split(
     data: Any,
     dataset: str,
@@ -491,81 +516,64 @@ def load_or_create_inductive_split(
         current_indices = {
             name: torch.where(current_masks[name])[0] for name in _SPLITS
         }
-        if path.exists():
-            payload = torch.load(path, map_location="cpu")
-            if not isinstance(payload, Mapping) or payload.get("num_nodes") != n:
-                raise ValueError(f"saved domain split {path} is corrupt or has the wrong node count")
-            if payload.get("split_strategy") != "domain":
-                raise ValueError(f"saved domain split {path} has a mismatched strategy")
-            if payload.get("domain_split_id") != resolved_domain_split_id:
-                raise ValueError(f"saved domain split {path} has a mismatched domain_split_id")
-            try:
-                saved_domain_split = _normalized_domain_split(payload.get("domain_split"))
-            except ValueError as error:
-                raise ValueError(f"saved domain split {path} has invalid configuration") from error
-            if saved_domain_split != normalized_domain_split:
-                raise ValueError(f"saved domain split {path} has a mismatched configuration")
-            indices = _validated_indices(
-                n, payload.get("indices", {}), f"saved domain split {path}"
-            )
-            contexts = _validated_context_indices(
-                n, payload.get("context_indices"), f"saved domain split {path}"
-            )
-            saved_masks = payload.get("masks")
-            if not isinstance(saved_masks, Mapping):
-                raise ValueError(f"saved domain split {path} is missing global masks")
-            for name in _SPLITS:
-                mask = saved_masks.get(name)
-                if (
-                    not isinstance(mask, torch.Tensor)
-                    or mask.dtype != torch.bool
-                    or mask.ndim != 1
-                    or mask.numel() != n
-                ):
-                    raise ValueError(f"saved domain split {path} has an invalid {name} mask")
-                if (
-                    not torch.equal(indices[name], current_indices[name])
-                    or not torch.equal(mask.cpu(), current_masks[name])
-                    or not torch.equal(contexts[name], current_contexts[name])
-                ):
-                    raise ValueError(
-                        f"saved domain split {path} does not match current dataset metadata"
-                    )
-        else:
-            indices = current_indices
-            contexts = current_contexts
-            payload = {
+
+        def create_domain_payload() -> Mapping[str, Any]:
+            return {
                 "num_nodes": n,
                 "seed": normalized_domain_split["seed"],
                 "split_strategy": "domain",
-                "indices": indices,
+                "indices": current_indices,
                 "masks": current_masks,
-                "context_indices": contexts,
+                "context_indices": current_contexts,
                 "domain_split": normalized_domain_split,
                 "domain_split_id": resolved_domain_split_id,
             }
-            temporary = path.with_suffix(".tmp")
-            torch.save(payload, temporary)
-            temporary.replace(path)
+
+        payload = _load_or_create_split_payload(path, create_domain_payload)
+        if not isinstance(payload, Mapping) or payload.get("num_nodes") != n:
+            raise ValueError(f"saved domain split {path} is corrupt or has the wrong node count")
+        if payload.get("split_strategy") != "domain":
+            raise ValueError(f"saved domain split {path} has a mismatched strategy")
+        if payload.get("domain_split_id") != resolved_domain_split_id:
+            raise ValueError(f"saved domain split {path} has a mismatched domain_split_id")
+        try:
+            saved_domain_split = _normalized_domain_split(payload.get("domain_split"))
+        except ValueError as error:
+            raise ValueError(f"saved domain split {path} has invalid configuration") from error
+        if saved_domain_split != normalized_domain_split:
+            raise ValueError(f"saved domain split {path} has a mismatched configuration")
+        indices = _validated_indices(
+            n, payload.get("indices", {}), f"saved domain split {path}"
+        )
+        contexts = _validated_context_indices(
+            n, payload.get("context_indices"), f"saved domain split {path}"
+        )
+        saved_masks = payload.get("masks")
+        if not isinstance(saved_masks, Mapping):
+            raise ValueError(f"saved domain split {path} is missing global masks")
+        for name in _SPLITS:
+            mask = saved_masks.get(name)
+            if (
+                not isinstance(mask, torch.Tensor)
+                or mask.dtype != torch.bool
+                or mask.ndim != 1
+                or mask.numel() != n
+            ):
+                raise ValueError(f"saved domain split {path} has an invalid {name} mask")
+            if (
+                not torch.equal(indices[name], current_indices[name])
+                or not torch.equal(mask.cpu(), current_masks[name])
+                or not torch.equal(contexts[name], current_contexts[name])
+            ):
+                raise ValueError(
+                    f"saved domain split {path} does not match current dataset metadata"
+                )
         masks = _masks_from_indices(n, indices)
     else:
         suffix = "-native" if split_strategy == "native" else ""
         path = root / f"{dataset.lower()}{suffix}-seed{seed}.pt"
-        if path.exists():
-            payload = torch.load(path, map_location="cpu")
-            if not isinstance(payload, Mapping) or "num_nodes" not in payload:
-                raise ValueError(f"saved split {path} is corrupt")
-            if payload["num_nodes"] != n:
-                raise ValueError(
-                    f"saved split {path} has {payload['num_nodes']} nodes, dataset has {n}"
-                )
-            if split_strategy == "native" and payload.get("split_strategy") != "native":
-                raise ValueError(f"saved native split {path} has a mismatched strategy")
-            saved_indices = payload.get("indices")
-            if not isinstance(saved_indices, Mapping):
-                raise ValueError(f"saved split {path} is missing indices")
-            indices = _validated_indices(n, saved_indices, f"saved split {path}")
-        else:
+
+        def create_disjoint_payload() -> Mapping[str, Any]:
             indices = (
                 _native_split_indices(data, n)
                 if split_strategy == "native"
@@ -574,9 +582,21 @@ def load_or_create_inductive_split(
             payload = {"num_nodes": n, "seed": seed, "indices": indices}
             if split_strategy == "native":
                 payload["split_strategy"] = "native"
-            temporary = path.with_suffix(".tmp")
-            torch.save(payload, temporary)
-            temporary.replace(path)
+            return payload
+
+        payload = _load_or_create_split_payload(path, create_disjoint_payload)
+        if not isinstance(payload, Mapping) or "num_nodes" not in payload:
+            raise ValueError(f"saved split {path} is corrupt")
+        if payload["num_nodes"] != n:
+            raise ValueError(
+                f"saved split {path} has {payload['num_nodes']} nodes, dataset has {n}"
+            )
+        if split_strategy == "native" and payload.get("split_strategy") != "native":
+            raise ValueError(f"saved native split {path} has a mismatched strategy")
+        saved_indices = payload.get("indices")
+        if not isinstance(saved_indices, Mapping):
+            raise ValueError(f"saved split {path} is missing indices")
+        indices = _validated_indices(n, saved_indices, f"saved split {path}")
         masks = _masks_from_indices(n, indices)
         contexts = indices
 

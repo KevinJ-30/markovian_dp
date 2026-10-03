@@ -27,6 +27,8 @@ import torch
 from torch_geometric.data import Data
 from torch_geometric.utils import to_undirected
 
+from src.processing.cache import cache_creation_lock
+
 TWITCH_REVISION = "af14a88470d30b1dadd3803d911dfc1064bcf172"
 TWITCH_RAW_URL = (
     "https://raw.githubusercontent.com/CUAI/Non-Homophily-Benchmarks/"
@@ -309,11 +311,12 @@ def _download_atomic(
 
 
 def _ensure_file(url: str, destination: Path) -> Path:
-    if destination.is_file():
-        return destination
-    if destination.exists():
-        raise ValueError(f"Dataset cache path is not a regular file: {destination}")
-    return _download_atomic(url, destination)
+    with cache_creation_lock(destination):
+        if destination.is_file():
+            return destination
+        if destination.exists():
+            raise ValueError(f"Dataset cache path is not a regular file: {destination}")
+        return _download_atomic(url, destination)
 
 
 def _ensure_mag_file(
@@ -328,16 +331,29 @@ def _ensure_mag_file(
             )
             return destination
         except ValueError:
-            if destination.is_file():
-                destination.unlink()
-            else:
+            if not destination.is_file():
                 raise
-    return _download_atomic(
-        url,
-        destination,
-        expected_size=expected_size,
-        expected_md5=expected_md5,
-    )
+    # Use a separate, never-published coordination key because a failed
+    # checksum needs the same exclusion as a missing file. Valid reads above
+    # remain lock-free, and replacement never removes the old file first.
+    with cache_creation_lock(destination.with_name(f".{destination.name}.acquire")):
+        if destination.exists():
+            try:
+                _check_file(
+                    destination,
+                    expected_size=expected_size,
+                    expected_md5=expected_md5,
+                )
+                return destination
+            except ValueError:
+                if not destination.is_file():
+                    raise
+        return _download_atomic(
+            url,
+            destination,
+            expected_size=expected_size,
+            expected_md5=expected_md5,
+        )
 
 
 def _parse_bool(value: str, *, path: Path, row_number: int) -> int:

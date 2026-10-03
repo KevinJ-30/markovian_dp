@@ -1,87 +1,92 @@
-# Reproduction of Results in the Main Paper
+# Reproducing the experiments
 
-To reproduce the results in the main paper, you can use the following commands. 
+Run these commands from the repository directory after following the [installation and dataset instructions](README.md). The examples use GPU 0; replace `--gpus 0` with the devices available to you. The numerical experiments run on the CPU.
 
-## Main Experiments
+## Main experiments
 
-The first step is to run all of the primary experiments, which is summarized in the following bash script and ablates over all relevant parameters.
+The main configuration evaluates SparseGNN and the baselines on Arxiv, Products, Reddit, Yelp, Amazon, Twitch, Facebook, and MAG. It tunes learning rate and batch size, along with the edge-retention probability for SparseGNN, using training seed 0. SparseGNN uses expansion radius 1, and ProGAP is evaluated at depths 1, 3, and 5.
 
-```bash
+Twitch predicts the binary mature-content label and reports AUROC. Facebook predicts the six year cohorts from 2004 through 2009 using the `fb100-year-6` school split. Yelp and Amazon report micro-F1, and the other datasets report accuracy. The runners select checkpoints using validation performance.
 
-```
-
-The second step is to reproduce a markdown table that contains the main results of all the experiments.
+First, preview the grid and run the tuning experiments:
 
 ```bash
-
+python scripts/run_experiments.py configs/main_r1_tune.json --gpus 0 --dry-run
+python scripts/run_experiments.py configs/main_r1_tune.json --gpus 0
 ```
 
-This should render a Markdown table in ```enter me later```, which can be used to directly create the primary table in the experiments section of the main paper.
+Results are saved in `results/main_r1_tune/`. Add `--resume` to continue an interrupted run, or `--resume --retry-failed` to retry failed jobs after addressing their errors.
 
-## Ablation Studies
-
-We also provide a set of scripts to run, create Markdown tables for all ablation studies, and render plots for all ablation studies in relevant folder(s).
-
-First, we consider the ablation study over the out-degree cap. 
+Once tuning is complete, select configurations by validation score and generate runs for seeds 1 through 5:
 
 ```bash
-
+python scripts/make_repeat_config.py configs/main_r1_repeat_selection.json
+python scripts/run_experiments.py configs/main_r1_repeats.json --gpus 0
 ```
 
-Now, we consider the ablation study over the model depth.
+The selection settings choose over learning rate, batch size, and SparseGNN edge-retention probability. They keep the three ProGAP depths separate. The generated configuration is saved as `configs/main_r1_repeats.json`, and the repeated runs write to `results/main_r1_repeats/`.
+
+Summarize the repeated runs with:
 
 ```bash
-
+python scripts/summarize_results.py results/main_r1_repeats/results.csv \
+  --seed --out results/main_r1_repeats/summary
 ```
 
-Finally, we consider the ablation study over the sparsification parameter $p_2$, which can be run using the following command.
+This writes `summary.csv` and `summary.md` with mean test scores and sample standard deviations across seeds 1 through 5. The tuning seed is not included in these statistics, and test scores are not used to choose configurations.
+
+## Ablation studies
+
+The SparseGNN ablation configuration varies expansion radius, edge-retention probability, and outgoing-degree cap on Arxiv, Yelp, and Twitch. The depth configuration adds DP-GNN and ProGAP comparisons. Run both studies with:
 
 ```bash
-
-
+python scripts/run_experiments.py configs/sparse_ablation.json --gpus 0
+python scripts/run_experiments.py configs/depth_ablation.json --gpus 0
 ```
 
+After they finish, write the result tables:
 
-This should render a Markdown table in ```enter me later```, which can be used 
+```bash
+python scripts/summarize_results.py results/sparse_ablation/results.csv \
+  --bootstrap --out results/sparse_ablation/summary
+python scripts/summarize_results.py results/depth_ablation/results.csv \
+  --bootstrap --out results/depth_ablation/summary
+```
 
-## Numerical Experiments
+Render the depth, probability, and degree-cap panels with:
 
-To reproduce the numerical experiments used in the main paper, you can use the following command.
+```bash
+python scripts/sparse_ablation.py \
+  --ofat-root results/sparse_ablation \
+  --depth-root results/depth_ablation \
+  --out-dir results/ablation_figures
+```
+
+The output directory contains `ablation_sage.png`, `ablation_gin.png`, their PDF versions, and the plotted data. Choose a new output directory when rendering again. These ablations use seed 0; the stored confidence intervals describe test-node bootstrap uncertainty rather than variation across training seeds.
+
+## Numerical experiments
+
+Generate the main privacy-accounting comparison with:
 
 ```bash
 python numerics/compare.py
 ```
 
-This will render the combined `numerics/figures/comparison.png` and
-`comparison.pdf`, alongside numerical CSVs and metadata.
+The figure is saved as `numerics/figures/comparison.png` and `comparison.pdf`, alongside the numerical data.
 
-
-### Appendix Figures
-
-Run from `markovian_dp/` with Python and `numpy`, `scipy`, `matplotlib`, and
-`dp-accounting` installed:
+Generate all appendix figures with:
 
 ```bash
 python numerics/run_all.py
 ```
 
-This computes and renders all four assembled figures below. Each of the rows are a different subgraph depth, such that `r = 1, 2, 3`. 
+You can also generate them individually:
 
-| Figure | Individual command | Columns |
-| --- | --- | --- |
-| Expanded comparison (3 × 4) | `python numerics/compare_expanded.py` | ε(T) through T = 1000; δ(ε) at T = 1, 100, 1000 |
-| Noise dependence (3 × 3) | `python numerics/noise.py` | ε versus σ at T = 1, 100, 1000 |
-| Root-sampling dependence (3 × 3) | `python numerics/root_sampling.py` | ε versus p₁ at T = 1, 100, 1000 |
-| Degree dependence (3 × 3) | `python numerics/degree.py` | ε versus K at T = 1, 100, 1000 |
+```bash
+python numerics/compare_expanded.py
+python numerics/noise.py
+python numerics/root_sampling.py
+python numerics/degree.py
+```
 
-The default parameters chosen are p₁ = 0.01, p₂ ∈ {0.1, 0.25, 0.5, 0.75}, K = 5, σ = 2,
-N = 100,000, and δ = 10⁻⁵, except for the parameter being swept. Noise uses
-10 equally spaced values from 1 to 10. Root sampling uses 10 logarithmically
-spaced batch sizes from 100 to 10,000, rounded to integers, with p₁ = batch/N.
-Degree uses integers 1 through 8. Composition horizons stay fixed during sweeps.
-The PLD discretization interval is 10⁻³, and the expanded privacy profiles use
-ε ∈ [0.1, 10].
-
-Each script writes one PNG/PDF figure, numerical CSVs, and `parameters.json`
-(including actual grids, source hashes, and package versions) under
-`numerics/figures/{expanded,noise,root_sampling,degree}/`. 
+These commands write figures and data under `numerics/figures/expanded/`, `noise/`, `root_sampling/`, and `degree/`, respectively. The scripts expose their numerical parameters through `--help`; the full sweeps can take several hours.

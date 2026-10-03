@@ -3,10 +3,39 @@ Unified dataset loading for Planetoid, OGB, and PyG benchmark datasets.
 """
 
 import os
+import tempfile
+from pathlib import Path
 
 import torch
 from torch_geometric.data import Data
 from torch_geometric.datasets import Planetoid
+
+from src.processing.cache import cache_access_lock, cache_creation_lock
+
+
+def _cached_pyg_dataset(dataset_class, cache_root, required_files, **kwargs):
+    """Allow concurrent cached constructors; isolate upstream in-place writers."""
+    cache_root = Path(cache_root)
+
+    def ready():
+        return all((cache_root / path).is_file() for path in required_files)
+
+    # Keep the lock outside the root: OGB replaces that directory on download.
+    with cache_access_lock(cache_root, ready=ready):
+        return dataset_class(**kwargs)
+
+
+def _download_dataset_file(url, path):
+    """Acquire standalone raw files without exposing a downloader's partial file."""
+    from torch_geometric.data import download_url
+
+    path = Path(path)
+    with cache_creation_lock(path):
+        if not path.exists():
+            with tempfile.TemporaryDirectory(
+                    prefix=f".{path.name}.", dir=path.parent) as temporary:
+                downloaded = download_url(url, temporary)
+                os.replace(downloaded, path)
 
 
 SUPPORTED_DATASETS = {
@@ -78,8 +107,15 @@ def _load_ogb_node(name):
     _orig_load = torch.load
     torch.load = lambda *a, **kw: _orig_load(*a, **{**kw, 'weights_only': False})
     root = os.environ.get('OGB_DATA_ROOT', f'data/{name}')
+    directory = Path(root) / name.replace('-', '_')
+    if directory.with_name(directory.name + '_pyg').exists():
+        directory = directory.with_name(directory.name + '_pyg')
     try:
-        dataset = PygNodePropPredDataset(name=name, root=root)
+        dataset = _cached_pyg_dataset(
+            PygNodePropPredDataset, directory,
+            ('processed/geometric_data_processed.pt', 'raw/edge.csv.gz',
+             'raw/node-feat.csv.gz', 'RELEASE_v1.txt'),
+            name=name, root=root)
     finally:
         torch.load = _orig_load
     data = dataset[0]
@@ -219,30 +255,11 @@ def _load_graphsaint(name, root=None):
         masks[split] = m
 
     labels_npy = os.path.join(d, 'labels.npy')
-    cache = os.path.join(d, '_labels_cache.pt')
     if multilabel and os.path.exists(labels_npy):
         # amazon ships this alongside a 523 MB class_map.json; same content.
         y = torch.from_numpy(np.load(labels_npy)).float()
-    elif os.path.exists(cache):
-        y = torch.load(cache)
     else:
-        # yelp's class_map.json is 367 MB and amazon's 523 MB; a sweep invokes
-        # run.py once per cell, so parse once and cache the tensor beside it.
-        cm = json.load(open(os.path.join(d, 'class_map.json')))
-        first = next(iter(cm.values()))
-        if multilabel:
-            C = len(first)
-            y = torch.zeros(n, C, dtype=torch.float)
-            for k, v in cm.items():
-                y[int(k)] = torch.tensor(v, dtype=torch.float)
-        else:
-            y = torch.zeros(n, dtype=torch.long)
-            for k, v in cm.items():
-                y[int(k)] = int(v)
-        try:
-            torch.save(y, cache)
-        except OSError:
-            pass          # read-only data dir is fine, just slower next time
+        y = _graphsaint_labels(d, n, multilabel)
 
     data = Data(x=x, y=y, edge_index=edge_index)
     data.train_edge_index = train_edge_index
@@ -254,6 +271,50 @@ def _load_graphsaint(name, root=None):
                           multilabel=multilabel), data
 
 
+def _graphsaint_labels(directory, num_nodes, multilabel):
+    import json
+
+    directory = Path(directory)
+    cache = directory / '_labels_cache.pt'
+    if cache.exists():
+        return torch.load(cache)
+
+    def parse_labels():
+        # Yelp/Amazon class maps are hundreds of MB: cache the parsed tensor.
+        with (directory / 'class_map.json').open() as stream:
+            class_map = json.load(stream)
+        if multilabel:
+            labels = torch.zeros(
+                num_nodes, len(next(iter(class_map.values()))), dtype=torch.float)
+            for key, value in class_map.items():
+                labels[int(key)] = torch.tensor(value, dtype=torch.float)
+        else:
+            labels = torch.zeros(num_nodes, dtype=torch.long)
+            for key, value in class_map.items():
+                labels[int(key)] = int(value)
+        return labels
+
+    labels = None
+    temporary = None
+    try:
+        with cache_creation_lock(cache):
+            if not cache.exists():
+                labels = parse_labels()
+                with tempfile.NamedTemporaryFile(
+                        prefix=f".{cache.name}.", suffix=".tmp",
+                        dir=directory, delete=False) as stream:
+                    temporary = Path(stream.name)
+                    torch.save(labels, stream)
+                os.replace(temporary, cache)
+    except OSError:
+        # A read-only data directory still supports uncached loading.
+        return labels if labels is not None else parse_labels()
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return labels if labels is not None else torch.load(cache)
+
+
 def _load_cora_ml():
     """Load the Cora-ML sparse graph distributed with DPAR.
 
@@ -262,14 +323,13 @@ def _load_cora_ml():
     """
     import numpy as np
     import scipy.sparse as sp
-    from torch_geometric.data import download_url
 
     root = os.environ.get('CORA_ML_DATA_ROOT', 'data/cora_ml')
     os.makedirs(root, exist_ok=True)
     path = os.path.join(root, 'cora_ml.npz')
-    if not os.path.exists(path):
-        download_url('https://raw.githubusercontent.com/Emory-AIMS/DPAR/'
-                     'b31f371522af8a5142f4c6b34f712cff30623b31/data/cora_ml.npz', root)
+    _download_dataset_file(
+        'https://raw.githubusercontent.com/Emory-AIMS/DPAR/'
+        'b31f371522af8a5142f4c6b34f712cff30623b31/data/cora_ml.npz', path)
     with np.load(path, allow_pickle=True) as archive:
         raw = dict(archive)
 
@@ -318,7 +378,6 @@ def _load_facebook(name='UIllinois20', target='year', min_count=1000,
     import pandas as pd
     from scipy.io import loadmat
     from torch_geometric.utils import subgraph
-    from torch_geometric.data import download_url
 
     targets = ['status', 'gender', 'major', 'minor', 'housing', 'year']
     root = os.environ.get('FACEBOOK_DATA_ROOT', 'data/facebook100')
@@ -328,8 +387,9 @@ def _load_facebook(name='UIllinois20', target='year', min_count=1000,
         ctx = ssl._create_default_https_context
         ssl._create_default_https_context = ssl._create_unverified_context
         try:
-            download_url('https://github.com/sisaman/pyg-datasets/raw/main/'
-                         f'datasets/facebook100/{name}.mat', root)
+            _download_dataset_file(
+                'https://github.com/sisaman/pyg-datasets/raw/main/'
+                f'datasets/facebook100/{name}.mat', mat_path)
         finally:
             ssl._create_default_https_context = ctx
 
@@ -451,7 +511,10 @@ def load_dataset(name, device='cpu', domain_split=None, *, root=None):
     if key == 'reddit':
         from torch_geometric.datasets import Reddit
         root = os.environ.get('REDDIT_DATA_ROOT', 'data/Reddit')
-        dataset = Reddit(root=root)
+        dataset = _cached_pyg_dataset(
+            Reddit, root,
+            ('processed/data.pt', 'raw/reddit_data.npz', 'raw/reddit_graph.npz'),
+            root=root)
         data = dataset[0].to(device)
         return dataset, data
 
@@ -460,7 +523,11 @@ def load_dataset(name, device='cpu', domain_split=None, *, root=None):
         # builds the train-induced graph.
         from torch_geometric.datasets import Flickr
         root = os.environ.get('FLICKR_DATA_ROOT', 'data/Flickr')
-        dataset = Flickr(root=root)
+        dataset = _cached_pyg_dataset(
+            Flickr, root,
+            ('processed/data.pt', 'raw/adj_full.npz', 'raw/feats.npy',
+             'raw/class_map.json', 'raw/role.json'),
+            root=root)
         data = dataset[0].to(device)
         return dataset, data
 
@@ -470,6 +537,11 @@ def load_dataset(name, device='cpu', domain_split=None, *, root=None):
         return dataset, data
 
     canonical = SUPPORTED_DATASETS[key]
-    dataset = Planetoid(root=f'/tmp/{canonical}', name=canonical)
+    dataset = _cached_pyg_dataset(
+        Planetoid, Path(f'/tmp/{canonical}') / canonical,
+        ('processed/data.pt',) + tuple(
+            f'raw/ind.{canonical.lower()}.{suffix}'
+            for suffix in ('x', 'tx', 'allx', 'y', 'ty', 'ally', 'graph', 'test.index')),
+        root=f'/tmp/{canonical}', name=canonical)
     data = dataset[0].to(device)
     return dataset, data

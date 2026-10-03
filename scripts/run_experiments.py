@@ -25,6 +25,8 @@ from scripts import runner_runtime as runtime
 MIB = 1024 ** 2
 GIB = 1024 ** 3
 POLL_SECONDS = 2.0
+EARLY_PROFILE_SECONDS = 30.0
+EARLY_PROFILE_GROWTH = 1.10
 
 
 def _object(value, label):
@@ -211,6 +213,7 @@ class ExperimentRunner:
         self.events = queue.Queue()
         self.stop = threading.Event()
         self.active, self.leases, self.profiles = {}, {}, {}
+        self.live_profiles = {}
         self.exclusive, self.quarantined = set(), set()
         self.idle_history = {}
         self.owned_pids = frozenset()
@@ -340,17 +343,62 @@ class ExperimentRunner:
             self.quarantined.add(uuid)
             runtime.atomic_json(self.lock_dir / f'{uuid}.quarantine.json', {'attempt': str(folder)})
 
+    def _refresh_live_profiles(self):
+        """Use stable live peaks provisionally, never persist unfinished profiles."""
+        self.live_profiles = {}
+        now = time.monotonic()
+        for active in self.active.values():
+            gpu, job = active['gpu'], active['job']
+            sample = active.get('sample', {})
+            snapshot = self.sampler.snapshot(gpu['uuid']) if gpu else None
+            observed = sample.get('observed_monotonic', -math.inf)
+            gpu_peak = max(sample.get('peak_gpu_memory_mib') or 0,
+                           sample.get('owned_gpu_memory_mib') or 0) * MIB
+            host_peak = max(sample.get('peak_rss_bytes') or 0,
+                            sample.get('tree_rss_bytes') or 0)
+            if (not _fresh(snapshot) or not active.get('ownership_known') or
+                    profile_key(job['parameters']) in self.exclusive or
+                    sample.get('host_error') or not sample.get('tree_rss_bytes') or
+                    not sample.get('owned_gpu_memory_mib') or not gpu_peak or not host_peak or
+                    now - observed > POLL_SECONDS + 2 * runtime.NVIDIA_TIMEOUT or
+                    any(p['pid'] not in self.owned_pids for p in snapshot['compute_processes'])):
+                active.pop('warmup', None)
+                continue
+            warmup = active.get('warmup')
+            if warmup is None:
+                if snapshot['utilization_gpu'] <= 0:
+                    continue
+                warmup = active['warmup'] = {
+                    'since': observed, 'gpu_bytes': gpu_peak, 'host_bytes': host_peak}
+            if (gpu_peak > EARLY_PROFILE_GROWTH * warmup['gpu_bytes'] or
+                    host_peak > EARLY_PROFILE_GROWTH * warmup['host_bytes']):
+                warmup.update(since=observed, gpu_bytes=gpu_peak, host_bytes=host_peak)
+            if observed - warmup['since'] < EARLY_PROFILE_SECONDS:
+                continue
+            key = profile_key(job['parameters'], gpu['name'])
+            previous = self.live_profiles.get(key, {})
+            self.live_profiles[key] = {
+                'gpu_bytes': max(previous.get('gpu_bytes', 0), gpu_peak),
+                'host_bytes': max(previous.get('host_bytes', 0), host_peak)}
+
     def _peaks(self, job, gpu):
-        profile = self.profiles.get(profile_key(job['parameters'], gpu['name'] if gpu else 'cpu'), {})
+        key = profile_key(job['parameters'], gpu['name'] if gpu else 'cpu')
+        profile = self.profiles.get(key, {})
+        live = self.live_profiles.get(key, {})
         estimates = job['resources']
-        return (max(profile.get('gpu_bytes', 0), estimates.get('gpu_memory_mib', 0) * MIB) or None,
-                max(profile.get('host_bytes', 0), estimates.get('host_memory_mib', 0) * MIB) or 8 * GIB)
+        return (max(profile.get('gpu_bytes', 0), live.get('gpu_bytes', 0),
+                    estimates.get('gpu_memory_mib', 0) * MIB) or None,
+                max(profile.get('host_bytes', 0), live.get('host_bytes', 0),
+                    estimates.get('host_memory_mib', 0) * MIB) or 8 * GIB)
 
     def _solo_gpu_requirement(self, job, gpu):
-        peak, _ = self._peaks(job, gpu)
-        if peak is None:
-            return None
         profile = self.profiles.get(profile_key(job['parameters'], gpu['name']), {})
+        # A provisional live peak may permit sharing, but must never reject a
+        # potentially fitting solo job through inflated sharing reservations.
+        peak = max(profile.get('gpu_bytes', 0),
+                   job['resources'].get('gpu_memory_mib', 0) * MIB)
+        if not peak:
+            return None
         if profile.get('gpu_bytes', 0) >= peak:
             # A successful whole-run peak already includes the CUDA context.
             # Sharing margins must not disqualify a shape that fits alone.
@@ -429,7 +477,7 @@ class ExperimentRunner:
         for attempt in active:
             previous, _ = self._peaks(attempt['job'], gpu)
             sample = attempt.get('sample', {})
-            if (previous is None or attempt.get('isolated') or not attempt.get('ownership_known') or
+            if (previous is None or not attempt.get('ownership_known') or
                     profile_key(attempt['job']['parameters']) in self.exclusive or
                     sample.get('owned_gpu_memory_mib') is None or
                     time.monotonic() - sample.get('observed_monotonic', -math.inf) > POLL_SECONDS + 2 * runtime.NVIDIA_TIMEOUT):
@@ -514,8 +562,7 @@ class ExperimentRunner:
         same_gpu = [a for a in self.active.values() if a['job'].get('gpu_uuid') == job['gpu_uuid']]
         for active in same_gpu:
             active['shared'] = True
-        active = {'job': job, 'gpu': gpu, 'folder': folder, 'shared': bool(same_gpu),
-                  'isolated': gpu is not None and self._peaks(job, gpu)[0] is None}
+        active = {'job': job, 'gpu': gpu, 'folder': folder, 'shared': bool(same_gpu)}
         self.log('started', job)
         self.save()
         command = worker_command(job['parameters'], folder / 'output', self.args.device)
@@ -599,6 +646,7 @@ class ExperimentRunner:
                 return True
             return False
         self._refresh_owned()
+        self._refresh_live_profiles()
         changed = False
         for job in pending[:]:
             sizes = [(self._solo_gpu_requirement(job, gpu), gpu['memory_total_mib'] * MIB) for gpu in self.gpus.values()]

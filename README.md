@@ -1,12 +1,10 @@
 # Learning Privately from Graphs: Privacy Amplification via Structured Subsampling
 
-This repository contains the code for the experiments in the paper Learning Privately from Graphs: Privacy Amplification via Structured Subsampling, which is currently under submission at the 30th International Conference on Artificial Intelligence and Statistics (AISTATS) 2027.
-
-This document will contain some brief details about the codebase and experiments. For precise commands required to reproduce the experiments, please refer to `reproduce.md`, which contains the exact commands utilized to run the experiments. 
+This repository contains the code for *Learning Privately from Graphs: Privacy Amplification via Structured Subsampling*, including SparseGNN, baseline methods, and the training and numerical experiments.
 
 ## Installation
 
-From the repository root, run the following commands to create & activate the environment.
+Run the following commands from this directory to create and activate the environment:
 
 ```bash
 conda env create -f environment.yml
@@ -14,523 +12,46 @@ conda activate graph-subsampling
 python -m pip check
 ```
 
-`environment.yml` creates a Python 3.10 environment and installs
-`requirements.txt`. The requirements pin direct dependencies for training,
-privacy accounting, datasets, figures, tests, and the retained native ProGAP
-adapter. One environment covers these methods; `--progap-python` is only needed
-when deliberately using another interpreter.
-
-The supplied profile targets **Linux x86_64 (glibc 2.28+)**, with **PyTorch 2.13.0 / CUDA 13.2**, **PyG 2.8.0.post1**, and the matching **pyg-lib 0.9.0** wheel. GPU execution requires an NVIDIA driver compatible with CUDA 13.2; We stress that CUDA doesn't actually install the driver. CPU execution is supported with
-`--device cpu`, but this profile still installs CUDA-enabled wheels.
-
+The environment targets Linux x86_64 and includes the dependencies for all methods. GPU experiments require an NVIDIA driver compatible with CUDA 13.2.
 
 ## Datasets
 
-Most datasets download themselves on first use, into `data/` (gitignored).
-Planetoid, OGB node datasets, and PyG's Reddit/Flickr need no setup.
+OGB, Twitch, Facebook, and MAG datasets download automatically when an experiment first loads them. Downloads and processed data are cached under `data/`, so the first run needs an internet connection and may take longer.
 
-Supported dataset keys:
-
-| Family | Dataset keys |
-|---|---|
-| Citation networks | `cora`, `cora-ml`, `citeseer`, `pubmed` |
-| OGB node classification | `ogbn-arxiv`, `ogbn-products` |
-| PyG node classification | `reddit`, `flickr`, `coauthor-physics` |
-| Single-university Facebook | `facebook` |
-| GraphSAINT | `ppi-large`, `saint-flickr`, `saint-reddit`, `saint-yelp`, `saint-amazon` |
-| Domain-disjoint classification | `twitch-explicit`, `facebook100`, `facebook100-gender`, `facebook100-year`, `mag-countries` |
-
-`coauthor-physics` loads PyG Coauthor Physics without feature normalization or
-compression (34,493 nodes, 8,415 features, five classes). Its cache defaults to
-`data/Coauthor`, overridable with `COAUTHOR_DATA_ROOT` or the loader's `root=`.
-It has no native masks; the comparison runner uses a cached seed-0 stratified
-60/20/20 split into separate induced graphs (20,696 / 6,899 / 6,898 nodes).
-
-GraphSAINT also accepts `graphsaint:<name>` for `ppi-large`, `flickr`,
-`reddit`, `yelp`, and `amazon`. Bare `reddit` and `flickr` retain their
-distinct PyG releases; `ppi-large` uses the GraphSAINT release.
-
-**The four large GraphSAINT graphs are the exception and need a manual
-download.** Zeng et al. distribute them as a Google Drive folder with no
-programmatic endpoint, so nothing in this repo can fetch them for you, and a
-fresh clone will fail on `--dataset ppi-large` until you do this:
-
-```bash
-# 1. Download from the Google Drive link in github.com/GraphSAINT/GraphSAINT
-#    (README, "Dataset"). Drive splits a folder into -001, -002, ... parts;
-#    take all of them for each dataset you want. They land in ~/Downloads.
-
-# 2. Unpack into the layout the loader expects, and verify.
-./scripts/setup_graphsaint.sh ~/Downloads
-
-# 3. Point the loader at the result (add to your shell profile to make it stick).
-export GRAPHSAINT_DATA_ROOT=$PWD/data/graphsaint
-```
-
-`GRAPHSAINT_DATA_ROOT` defaults to `data/graphsaint`, so step 3 is only needed
-if you extracted somewhere else — `setup_graphsaint.sh <zips> <dest>` takes a
-destination, which is what you want on a cluster where the data belongs on
-scratch rather than in the repo. The script is idempotent; re-run it freely.
-
-| `--dataset` | nodes | edges (Table 1) | labels | extracted |
-|---|---:|---:|---|---:|
-| `ppi-large`    |    56,944 |     818,716 | 121 multilabel | 36 MB |
-| `saint-flickr` |    89,250 |     899,756 | 7 classes      | — |
-| `saint-reddit` |   232,965 |  11,606,919 | 41 classes     | 1.2 GB |
-| `saint-yelp`    |   716,847 |   6,977,410 | 100 multilabel | 2.2 GB |
-| `saint-amazon`  | 1,598,960 | 132,169,734 | 107 multilabel | 3.7 GB |
-
-The edge column is GraphSAINT's Table 1 verbatim, and the loader reproduces it
-from the raw files — but **that figure counts self-loops and the loaded graph
-does not**, because the accounting counts paths in a simple graph. PPI-large
-carries 25,084 of them, so `data.edge_index` holds 793,632 undirected edges,
-not 818,716. Reddit has none and is unaffected. Extracted sizes are measured
-except `saint-flickr`, which the loader supports but we have never downloaded
-or run — treat that row as untested. First load writes a `_labels_cache.pt`
-next to the raw files (27 MB on PPI-large), so budget roughly double the
-extracted size.
-
-All four public aliases use the `saint-` prefix: `saint-flickr`,
-`saint-reddit`, `saint-yelp`, and `saint-amazon`. For Flickr and Reddit the
-prefix also distinguishes GraphSAINT's releases from the bare PyG datasets;
-PyG's Reddit has 57.3M undirected edges against GraphSAINT's 11.6M, and the
-splits differ too. The raw GraphSAINT directory names remain `flickr`, `reddit`,
-`yelp`, and `amazon`. The `_load_graphsaint` docstring documents the
-preprocessing needed to reconcile the released files with the paper's Table 1.
-
-### Domain-disjoint datasets
-
-Five dataset names expose provenance-defined domains rather than a random node
-split. `facebook100`, `facebook100-gender`, and `facebook100-year` share the
-18-school raw benchmark but define different targets. The existing `facebook`
-dataset remains the single UIllinois20 graph and is unchanged.
-
-| dataset | canonical domains | default train | default validation | default test | reported metric |
-|---|---|---|---|---|---|
-| `twitch-explicit` | `de`, `engb`, `es`, `fr`, `ptbr`, `ru`, `tw` | `de` | `engb` | `es`, `fr`, `ptbr`, `ru`, `tw` | AUROC |
-| `facebook100` | `penn94`, `amherst41`, `cornell5`, `johns-hopkins55`, `reed98`, `caltech36`, `berkeley13`, `brown11`, `columbia2`, `yale4`, `virginia63`, `texas80`, `bingham82`, `duke14`, `princeton12`, `washu32`, `brandeis99`, `carnegie49` | `johns-hopkins55`, `caltech36`, `amherst41` | `cornell5`, `yale4` | `penn94`, `brown11`, `texas80` | accuracy |
-| `facebook100-gender` | same 18 schools as `facebook100` | same default schools | same default schools | same default schools | accuracy |
-| `facebook100-year` | same 18 schools as `facebook100` | same default schools | same default schools | same default schools | accuracy |
-| `mag-countries` | `us`, `cn`, `de`, `fr`, `ru`, `jp` | `us` | `cn` | `cn` | accuracy |
-
-The defaults apply when no domain role is supplied. A custom split must provide
-all of `train`, `val`, and `test`, with nonempty lists of canonical lower-case
-names. Names cannot repeat within a role, and no training domain may occur in
-either held-out role. Validation and test may overlap. Their overlapping domain
-is present in full in both evaluation graphs, so message passing has the same
-complete target-domain context; deterministic, class-stratified, complementary
-node masks decide which nodes each role scores. `seed` controls that assignment
-and `val_ratio` is its validation fraction (defaults: `0` and `0.2`). Classes
-with at least two nodes contribute to both masks. Thus the default shared `cn`
-MAG target implements a 20/80 validation/test split without cutting its
-topology. Different normalized domain selections receive different split,
-cache, and result fingerprints.
-
-Configuration-driven experiments put the mapping at the top level. For example,
-save the following as `/tmp/mag-domain.json` and run
-`python -m src.experiments.run --config /tmp/mag-domain.json`:
-
-```json
-{
-  "dataset": "mag-countries",
-  "method": "graphsage",
-  "seed": 0,
-  "device": "auto",
-  "split_root": "data/inductive_splits",
-  "domain_split": {
-    "train": ["us"],
-    "val": ["cn"],
-    "test": ["cn"],
-    "seed": 0,
-    "val_ratio": 0.2
-  },
-  "parameters": {
-    "epochs": 100,
-    "layers": 2,
-    "batch_size": 1024,
-    "max_fanout": 10,
-    "graphsage_sampling": "hierarchical"
-  }
-}
-```
-
-The same dataset metadata is consumed by the first-party `mlp`, `dp_mlp`,
-`graphsage`, `gin`, `dpar`, and `dp_gnn` methods and by the retained ProGAP adapter.
-
-The first-party GraphSAGE and GIN trainers share compiled `pyg-lib` sampling to
-draw fresh fixed-fanout neighborhoods without replacement for each root minibatch.
-`graphsage_sampling: "hierarchical"` (the default) uses
-the same sampled seed-node computation as `"neighbor"`, but progressively
-trims the deepest unused hop before each layer. Set `max_fanout` to the per-layer
-bound; the trainer repeats it for `layers` hops. Each training root appears
-once per shuffled epoch, with a final partial batch. Validation and test use
-deterministic full-neighbor propagation over each complete held-out context
-graph and score only its `eval_mask`.
-The sampling graph stays on the CPU, while training features and labels reside
-on the selected device throughout fitting; GPU runs require room for those
-tensors as well as minibatch activations. Sampling has its own seeded RNG
-stream, independent of model/dropout draws. Seeds remain reproducible, but
-sampled neighborhoods need not match historical runs of the Python sampler.
-
-Select the non-private GIN baseline with `"method": "gin"` in the configuration
-or `--method gin` on the comparison CLI. It uses the existing sum-aggregating
-GIN layers: fixed epsilon=0 and `Linear(in, out) -> ReLU -> Linear(out, out)`
-per message-passing layer, with ReLU/dropout between layers. The same settings
-apply as for GraphSAGE, including `graphsage_sampling`, `max_fanout`, `layers`,
-`hidden_size`, and optimizer settings. Binary, multiclass, multilabel, and
-regression tasks use their existing task-specific losses and metrics.
-
-The first-party DPAR trainer retains the sampled subgraph as feature context
-but supervises only its `M = min(ppr_num, sampled_nodes)` selected APPR roots.
-The APPR matrix is `M × sampled_nodes`; it has no identity rows for other
-nodes. Each epoch visits those `M` roots once, including a final partial batch,
-so it makes `ceil(M / batch_size)` updates. SGD calibration uses
-`min(batch_size, M) / M`, separately from outer graph sampling amplification.
-The ISTA recurrence uses float64 to prevent residual roundoff from blocking
-convergence at the requested tolerance. Converged weights are converted to
-float32 before clipping, noise addition, and release.
-The released PPR/SGD accounting arithmetic remains a qualified repository
-convention, not an independently certified node-level DP guarantee.
-
-SparseGNN uses matching flags instead:
-
-```bash
-python -m src.experiments.sparse \
-    --dataset twitch-explicit --model binary_gnn \
-    --train_domains de --val_domains engb --test_domains es fr ptbr ru tw \
-    --domain_split_seed 0 --domain_val_ratio 0.2 \
-    --T 500 --seeds 3 --out_dir results/twitch-explicit/default
-```
-
-Twitch is binary and must use `binary_gnn`; it trains a single logit and reports
-tie-correct AUROC (`validation_auroc` and `test_auroc`), not accuracy.
-`facebook100` retains the historical GraphOOD **missing-versus-recorded** task:
-raw gender `0` maps to class `0`, and both positive categories map to class `1`.
-`facebook100-gender` instead predicts the recorded categories: raw `1/2` map to
-`0/1`; raw `0` nodes and their incident edges are excluded, with retained edges
-reindexed. Both use the same feature vocabulary fitted over all raw nodes in
-all 18 schools (13,778 columns), excluding the gender column. Their processed
-split identities are distinct; historical missingness results are not gender
-classification results. The corrected task stores label mapping, provenance,
-and per-domain raw/retained/excluded node counts.
-
-`facebook100-year` predicts the six fixed cohorts **2004–2009**, mapped to
-classes **0–5**. Unknown year 0 and every out-of-cohort node are removed before
-inducing and reindexing edges. The input excludes year (raw column 5) and
-encodes columns **0, 1, 2, 3, 4, 6**, including gender and high school, using the
-same all-18-school categorical-vocabulary policy (13,697 columns). The six-class
-head remains fixed even when a requested subset lacks a cohort. Its cache
-identity is separate from both gender tasks. This is a school-held-out year
-task, not an exact reproduction of upstream ProGAP's 100-school frequency filter
-or feature/split recipe.
-
-MAG is a 20-class task. Label 19 participates in training loss but is excluded
-from validation/test accuracy.
-
-All three families download automatically on first use over HTTPS. The cache
-roots can be overridden, and otherwise are:
-
-| variable | default | acquisition |
-|---|---|---|
-| `GRAPHOOD_TWITCH_DATA_ROOT` | `data/graphood/twitch` | selected domains only, from `CUAI/Non-Homophily-Benchmarks` commit `af14a88470d30b1dadd3803d911dfc1064bcf172` |
-| `GRAPHOOD_FB100_DATA_ROOT` | `data/graphood/facebook100` | all 18 schools, from `sisaman/pyg-datasets` commit `9a92bf1e84f73b7b24dd745eb14f13e4d1979769` |
-| `PAIR_ALIGN_MAG_DATA_ROOT` | `data/pair_align_mag` | selected countries only, from Zenodo record `10681285` |
-
-FB-100 downloads all schools even when only one is selected because GraphOOD's
-categorical feature vocabulary is shared across the 18 matrices. Twitch and MAG
-download only selected domains. First use therefore needs network access and
-enough space in the chosen roots; subsequent loads reuse valid cached files and
-can run offline. Downloads go to temporary files and are renamed atomically, so
-an interrupted transfer is not accepted as cache and a retry is safe. A failure
-reports both the source URL and cache root.
-
-MAG files are untrusted until both their published byte size and MD5 digest have
-been checked; only then are the PyTorch products deserialized. The record's
-digests are `us` `677b46f78e5fb946b2d9d2e4f76418fb`, `cn`
-`3e09b899d12d5801f39bf9cd187edcad`, `de`
-`3e3830bd6102db954f1b0163761aebc3`, `fr`
-`a2387bdff7841edb395f23d224b0b1c5`, `ru`
-`3c86cf9b3b2052d31a433d5422a7ec5f`, and `jp`
-`7910d054a972897fc2466f177cb9fed4`. GitHub sources are pinned to immutable
-commits and their parsed filenames and schemas are validated, but those
-upstreams do not publish conventional artifact checksums.
-
-## Usage
-
-Utility is measured first; epsilon is attached afterwards from the mechanism
-parameters recorded in the CSV. Accounting never touches training.
-
-```bash
-# 1. train (--dp adds clip+noise; omit it for the non-private reference)
-python -m src.experiments.sparse --dataset ppi-large --model multilabel_gnn --direction in \
-    --dp --p1 0.01 --p2 0.1 --r 1 --num_layers 2 --T 2000 --sigma 5 \
-    --K_in 5 --K_out 5 --lr 0.3 --seeds 3 --track_every 50 \
-    --out_dir results/ppi-large/myrun
-
-# 2. attach epsilon
-python -m src.experiments.compute_epsilon \
-    --csv results/ppi-large/myrun/sparse_gnn_ppi-large_dp_results.csv --delta 1e-6
-```
-
-Select the SparseGNN architecture with `--aggr mean` (the default GraphSAGE),
-`--aggr gcn`, `--aggr gin`, or `--aggr gin_mean`. GIN uses
-`MLP((1 + epsilon) * x + aggregate(neighbors))`, with fixed `epsilon=0`:
-`gin` sums neighbors; `gin_mean` averages neighbors without averaging the
-separate root term. Isolated nodes contribute a zero neighbor vector, and
-padded nodes/edges do not affect the mean.
-Each layer's MLP is `Linear(in, out) -> ReLU -> Linear(out, out)`, without
-batch normalization; `--hidden` and `--num_layers` set the stack dimensions.
-It supports non-private training, padded per-root Opacus clipping/noise, and
-full-graph CSR inference. For the existing study runner, `"aggregation": "gin"`
-selects sum-GIN; `"mean"` remains GraphSAGE. The matrix worker selects mean-GIN
-with `--method sparse_gin --gin-pooling mean`.
-Changing the architecture does not change calibration for fixed sampling,
-degree bounds, clipping, and update count.
-
-`--track_every N` evaluates every N steps and writes one CSV row per
-checkpoint. Intermediate rows describe the models at those actual updates.
-The final row keeps `step=T` for full-run privacy accounting but reports the
-validation-selected model, whose update is recorded in `selection.step`.
-Tracking consumes no sampling randomness and does not change the validation
-candidate schedule or training trajectory.
-
-Reusable setup, calibration, reporting, and plotting tools live in `scripts/`;
-see [scripts/README.md](scripts/README.md).
-
-The SparseGNN study runner (`results/eight_gpu_domain_graphsaint/sparse/run.py`)
-accepts a positive integer `batch_size <= n_train` in its JSON cell. This is
-the expected Poisson root count: set `p1 = batch_size / n_train`,
-`steps_per_epoch = ceil(n_train / batch_size)`, and
-`steps = epochs * steps_per_epoch` for a full run. Changing batch size at a
-fixed epoch budget changes both sampling probability and update count;
-recalibrate noise for the new schedule rather than reusing the old multiplier.
-
-### Validation checkpoint selection
-
-SparseGNN and DP-GNN train for the full requested schedule, then restore the
-checkpoint with the highest validation **primary metric** before final test
-evaluation and test bootstrapping. Accuracy, AUROC, micro-F1, and R² are all
-maximized; ties retain the earliest candidate. If every validation score is
-undefined, the first evaluated candidate is retained and its selection score
-is reported as null.
-
-SparseGNN validates every `--eval_every` updates (CLI default: 0), independently
-of verbosity, and always at the final update. The default zero uses `ceil(1/p1)`
-updates, one expected epoch; for zero root-sampling probability, it uses the
-final update. DP-GNN's `parameters.evaluate_every` also defaults to zero and
-uses `ceil(n_train/batch_size)` updates plus the final update. Explicit positive
-intervals override these defaults; negative intervals are rejected.
-`--progress_every` only controls SparseGNN logging, not selection.
-
-Both return `selection` metadata: metric, selected `step`, `validation_score`,
-and effective `evaluate_every`. SparseGNN stores it as JSON in its CSV.
-Ordinary training-time validation scores only validation nodes; explicitly
-requested SparseGNN tracking may still report intermediate test metrics.
-Neither validation nor tracking performs bootstrapping. Privacy accounting
-still charges **all** training updates, never just the selected update.
-
-### Test confidence intervals
-
-Both maintained runners (`src.experiments.run` and `src.experiments.sparse`)
-calculate **95% node-wise percentile bootstrap intervals using 1,000 resamples**
-by default. Only the final test evaluation is bootstrapped, after restoring the
-validation-selected model. Training, validation, and intermediate tracked rows
-are not bootstrapped. Resamples reuse the existing fixed test predictions,
-including the same sampled evaluation graph/noisy ProGAP aggregates.
-
-Both runners accept:
+The GraphSAINT datasets require a manual download. Download the Reddit, Yelp, and Amazon folders from the [GraphSAINT dataset collection](https://drive.google.com/open?id=1zycmmDES39zVlbVCYs88JTJ1Wm5FbfLz), linked from the [GraphSAINT repository](https://github.com/GraphSAINT/GraphSAINT#datasets), and extract them into this layout:
 
 ```text
---bootstrap-confidence 0.95 --bootstrap-resamples 1000 --bootstrap-seed 0
+data/graphsaint/
+    reddit/
+    yelp/
+    amazon/
 ```
 
-Confidence is a fraction strictly between 0 and 1 (`0.95` means 95%).
-Use `--bootstrap-resamples 0` to disable intervals. The configuration-driven
-runner also accepts top-level JSON keys `bootstrap_confidence`,
-`bootstrap_resamples`, and `bootstrap_seed`; supplied CLI flags override them.
-These are evaluation controls, not entries in the model's `parameters` object.
+Each dataset folder should contain `adj_full.npz`, `adj_train.npz`, `feats.npy`, `role.json`, and `class_map.json`. If the download is split across several archives, extract all parts into the same dataset folder. The experiment configurations refer to these datasets as `saint-reddit`, `saint-yelp`, and `saint-amazon`.
 
-Results contain `test_confidence_intervals`, with confidence level, requested
-resamples, local seed, scored-node count, and per-metric `lower`, `upper`, and
-`valid_resamples`. SparseGNN stores the same object in a JSON-valued CSV column;
-intermediate rows leave it blank. Metric names are canonical (`accuracy`,
-`macro_f1`, `micro_f1`, `auroc`, `micro_auroc`, `r2`), independent of legacy point
-estimate field aliases. Only metrics reported by that evaluator receive intervals.
-Multilabel micro-AUROC resamples whole nodes with all their labels together.
-Undefined replicates (e.g. AUROC with one class) are excluded and counted,
-not redrawn; undefined original metrics or no valid replicates yield null bounds.
+You can store the GraphSAINT folders elsewhere by setting `GRAPHSAINT_DATA_ROOT` to their parent directory before running an experiment.
 
-The bootstrap has an independent RNG and does not change training or point
-estimates. These are approximate test-sample intervals conditional on a fixed
-model and graph, not training-seed uncertainty or a correction for graph
-dependence/test-based tuning. Test data are assumed public/fixed, as in the
-existing evaluation protocol; private test releases need separate accounting.
-Historical result files and archived study runners are not rewritten.
+## Running the experiments
 
-### Degree capping
+The [reproduction guide](reproduce.md) gives the commands for training, repeated runs, result tables, ablations, and numerical figures. Experiment settings are stored in `configs/`.
 
-SparseGNN's default `--cap_mode auto` resolves to `directed`: after removing
-self-loops, symmetrizing, and deduplicating, it retains a random subset of up to
-`--K_out` outgoing arcs per node. Incoming degree is unrestricted, and reverse
-arcs are selected independently. The cap is applied once per seed, not per
-training step; `--cap_seed` shares a capped graph across seeds.
-
-`--K_out` can be supplied alone. If omitted, it defaults to `--K_in`.
-`--K_in` remains an accounting parameter but does not cap incoming arcs in
-directed mode; when omitted, its recorded value comes from the capped graph's
-observed maximum incoming degree. `--cap_mode undirected` is unchanged:
-it requires equal `K_in` and `K_out`, bounds both endpoints' degrees, and keeps
-both arcs of each retained edge. Evaluation graphs remain uncapped.
-
-Separately, incoming SparseExpand sampling now caps retained arcs at **20 per
-expanded node per hop**, in both private and non-private SparseGNN runs.
-`MAX_INCOMING_EDGES` in `src/processing/sparse_expand.py` sets this cap.
-The sampler draws the capped Binomial count and samples CSR positions directly;
-it does not construct a candidate tensor spanning a high-degree node's entire
-neighborhood. This bounds local expansion work, not the total number of roots
-or nodes in a batch. Outgoing expansion, preprocessing degree limits, other
-models, and full-graph evaluation are unchanged. Accounting formulas are
-unchanged; this implementation change does not revalidate them for the cap.
-
-
-## Accounting
-
-`src/privacy/accounting.py` constructs the manuscript's **Theorem 5.4 node-
-substitution pair** for incoming-edge expansion. The pair is represented as two
-Gaussian mixtures through `DoubleMixtureGaussianPrivacyLoss`; Google's
-`dp_accounting` performs pessimistic connect-the-dots discretization,
-composition, and epsilon(delta).
-
-The training `direction` is not inspected by the accountant: it always applies
-the in-expansion shell law. The private optimizer is likewise separate from
-accounting—Opacus computes per-root gradients, clips at `C`, and injects noise
-with standard deviation `sigma*C`; no generic Opacus accountant is attached.
-
-Under in-expansion, accounting uses a root shell of size one
-and non-root shells of size `2*K_out^d` (not `(2*K_out)^d`). The **out**-degree
-cap therefore prices the guarantee. Utility only sees `E[min(deg, K)]`, which
-saturates: on a heavy-tailed degree distribution a generous cap costs a great
-deal of epsilon for very little signal.
-
-Historical results are not relabeled: their epsilon must be recomputed under
-the current formula at the recorded noise, or noise recalibrated and training
-rerun to meet the original target epsilon.
-
-## DP-GNN baseline
-
-DP-GNN is a separate learner, not SparseGNN with different sampling flags:
-
-Create a configuration outside the repository, for example
-`/tmp/dpgnn-smoke.json`:
-
-```json
-{
-  "dataset": "cora-ml",
-  "method": "dp_gnn",
-  "seed": 0,
-  "device": "cpu",
-  "parameters": {
-    "steps": 1, "batch_size": 32, "noise_multiplier": 2.0,
-    "clip": 1.0, "architecture": "graphsage"
-  }
-}
-```
+To preview the main experiment grid and then run it on GPU 0:
 
 ```bash
-python -m src.experiments.run --config /tmp/dpgnn-smoke.json \
-    --out /tmp/dpgnn-smoke-result.json
+python scripts/run_experiments.py configs/main_r1_tune.json --gpus 0 --dry-run
+python scripts/run_experiments.py configs/main_r1_tune.json --gpus 0
 ```
 
-Its training partition is sampled once: incoming arcs are retained independently
-with probability `min(1, K/(2*d))`, selected neighbors are deduplicated, and an
-entire incoming list is discarded if it exceeds `K`. Each update draws a fresh
-fixed-size root batch **without replacement**, then gathers complete radius-`r`
-outgoing neighborhoods (default `r=1`). The incoming degree bound controls how
-many roots one node can influence; it does not cap a root's outgoing neighborhood.
-This follows the subset sampling in the
-[DP-GNN paper's Algorithm 4](https://arxiv.org/html/2111.15521), rather than the
-replacement draws in Google's executable implementation.
+Replace `0` with the GPUs you want to use, such as `0,1`. Results and logs are written to `results/main_r1_tune/`. To continue an interrupted run, use the same command with `--resume`.
 
-The direct trainer accepts `DPGNNConfig(radius=r)` for actual GraphSAGE/GIN
-message-passing depth; the ablation worker exposes it as `--dpgnn-radius`.
-GCN and the manifest-based comparison adapter remain one-hop.
+We also note that the configuration files use a custom-written scheduler, which attempts to add as many jobs as possible to each GPU, since the jobs are largely CPU-dependent. 
 
-Method `parameters` for the manifest-based adapter accept:
-- `clip` (default `1.0`): global L2 bound `C` on each root's complete gradient.
-- `dropout` (default `0.5`): hidden-activation dropout before the decoder for
-  one-hop models and after each message-passing layer for deeper SAGE/GIN.
-  Disabled during evaluation; set `0.0` to disable it during training as well.
-- `max_private_batch_nodes` (default `8192`): physical padded-slot budget.
-  Chunking preserves one noise addition and one Adam update per logical batch;
-  a single oversized neighborhood is processed alone, never silently truncated.
-- `batch_size`: positive logical batch size `B`, no larger than training size `N`.
-- `noise_multiplier`: sensitivity-normalized multiplier `lambda`.
-- `architecture` (default `graphsage`): `graphsage` uses separate root and
-  mean-neighbor transforms; `gcn` selects the original one-hop model; `gin`
-  sums the root and non-self neighbors with fixed epsilon=0, then applies a
-  two-layer ReLU MLP at each hop. Radius one retains the existing one-hop models;
-  larger radii stack real neighborhood aggregations and recalibrate sensitivity.
+## Code and tests
 
-For `M = min(1 + K + ... + K^r, N)`, Opacus adds isotropic Gaussian noise with standard deviation
-`2*M*C*lambda` to the clipped sum, then divides by `B`. Its internal multiplier
-is therefore `2*M*lambda`, **not** the value passed to the hypergeometric multi-term
-RDP accountant in `src/privacy/dpgnn.py`. No SparseGNN PLD or generic Opacus
-accountant is used. The former per-parameter percentile clipping and manual
-noise path have been removed.
+The `src/` directory contains the models, sampling, training, and privacy accounting code. The `scripts/` directory contains experiment runners and result summaries, while `numerics/` contains the numerical privacy experiments. See [the script guide](scripts/README.md) for additional command-line options.
 
-The influence bound is conditional on a fixed sampled topology and adjacency
-in node features/labels. It does not establish privacy for raw-graph node
-deletion or the data-dependent edge preprocessing. At `K=5`, radii 1, 2, and 3
-give bounds 6, 31, and 156 before population clipping.
-
-Graph-disjoint partitions and sampled full-partition evaluation are retained.
-Root neighborhoods are complete; the former silent 100-node truncation is removed.
-DP-GNN uses `evaluate_every` for validation-best selection with a fixed validation
-graph seed, restores training mode after each validation, and evaluates/bootstraps
-test once from the restored model. Historical results are not rewritten.
-
-The direct trainer also accepts `DPGNNConfig(multilabel=True)` for multi-hot
-targets. It averages binary cross-entropy over labels within each root, retains
-the same global per-root clipping and accounting, and returns
-`validation_micro_f1` / `test_micro_f1`. The default remains categorical
-cross-entropy with accuracy.
-
-## Tests
+To run the tests:
 
 ```bash
-pytest tests/
+python -m pytest tests/
 ```
-
-- `test_accounting.py` — dominating-pair weights and epsilon, with degenerate
-  cases cross-checked against Opacus.
-- `test_dp_mechanics.py` — measures the Opacus DP path: per-subgraph (not
-  per-batch) clipping, the 2C substitution sensitivity bound, noise calibrated
-  to `sigma*C` and drawn once per step, Poisson root sampling with the right
-  variance, and that model depth cannot widen the privacy radius.
-- `test_theorem_numerical.py` — verifies Theorem 5.4 itself (Theorem 6.4 in
-  manuscript v36), by computing the
-  hockey-stick divergence of the actual mechanism on a star graph and checking
-  the dominating pair upper-bounds it.
-- `test_sparse_expand.py`, `test_mechanisms.py` — expansion, orientation,
-  degree capping, and the base mechanisms.
-- `test_dpgnn_sampling.py`, `test_dpgnn_training.py`, `test_dpgnn_accounting.py` —
-  DP-GNN sampler semantics, padded per-root gradients, global clipping/noise,
-  physical-chunk equivalence, and hypergeometric accounting.
-
-## Things worth knowing before reading SparseGNN results
-
-- **Aggregator.** `--aggr mean` uses GraphSAGE neighbor means; `--aggr gin`
-  uses neighbor sums and a two-layer MLP; `--aggr gcn` uses symmetric degree
-  normalization. Sparse and padded implementations compute the same function
-  on a given rooted subgraph. This does not imply equality with full-graph
-  inference: edge sampling, expansion depth, and degree caps can remove needed
-  context. GCN additionally depends on source degrees at the subgraph boundary.
-- **Separate graphs.** Training always uses the loader's training graph or the
-  graph induced by `train_mask`; evaluation always receives the separate,
-  uncapped test graph.
-- **Metrics.** For multilabel tasks, micro-F1 depends on a fixed decision
-  threshold and can be misleading for poorly calibrated predictions. AUROC
-  is recorded alongside micro-F1 to measure ranking quality.
-- **Inductive settings differ.** GraphSAINT releases supply training-only
-  adjacency. For ogbn-arxiv, Flickr, Reddit, and other single graphs,
-  `src.experiments.sparse` drops arcs whose endpoints are not both training nodes.
