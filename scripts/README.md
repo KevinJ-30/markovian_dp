@@ -10,6 +10,7 @@ presets and training implementations remain in its single-run worker.
 |---|---|
 | `run_experiments.py` | Expand JSON configurations, pack owned GPU jobs, retain logs/results, and resume. |
 | `run_experiment.py` | Execute one experiment with method-specific calibration and normalized CSV/JSON results. |
+| `make_repeat_config.py` | Generate additional-seed jobs from validation winners of a complete single-seed study. |
 | `runner_runtime.py` | Shared GPU authorization, process supervision, and ownership-safe cleanup. |
 | `summarize_sweep.py` | Select a validation-best step and report seed-averaged test results; one configuration per child directory. |
 | `summarize_matched_eps.py` | Summarize matched-budget studies using their expected directory naming conventions. |
@@ -100,6 +101,11 @@ creates no files, probes no GPUs, and does not import training dependencies.
 `--progap-python` selects the separate native environment if needed; paths in
 the config are config-relative, while `split_root` is repository-relative.
 
+All private jobs use the hardcoded target `delta = N_train ** -1.01`, where
+`N_train` is the training partition's node count. Historical `1/N_train` results
+retain their original budget; use a fresh output root rather than resuming an
+older study and mixing delta conventions.
+
 Each root contains `experiment.json`, atomic `state.json`, aggregate JSON-lines
 `runner.log`, and `results.csv` with one row per planned job. Each attempt is
 retained under `runs/<run-id>/attempts/<number>/`: `process.log`, operational
@@ -107,6 +113,45 @@ launch/exit/ownership records, and `output/` with config, results, and native
 artifacts. Summarize the root CSV rather than globbing all attempts, so retries
 do not become extra seeds. No sealed manifests, source snapshots, or hashes are
 required. See the [script retirement inventory](RETIRED_SCRIPTS.md) for replacements and removal prerequisites.
+
+### Two-stage radius-1 comparison
+
+`configs/main_r1_tune.json` defines **928 seed-0 tuning jobs** across the eight
+standard datasets, including Amazon and `fb100-year-6`. Both MLP and GNN hidden
+widths are 128. Batch sizes are `{256,1024}`, learning rates `{0.01,0.001}`,
+and private epsilon targets `{2,8}`. SparseSAGE and SparseGIN (sum) use radius 1
+and p2 `{0.1,0.5,1}`. ProGAP depths `{1,3,5}` remain separate comparisons.
+All runs use dropout 0.5, degree setting 5, bootstrap resamples 0, and 20 epochs;
+ProGAP applies those epochs **per stage**. The config names GPUs 0–7, the existing
+split cache, and the workstation's ProGAP interpreter. Adjust those paths/device
+choices when moving the study. No per-GPU concurrency limit is imposed.
+
+`configs/main_r1_repeat_selection.json` is **generator settings, not a runner
+config**. It names the tuning config/results, generated output, seeds `{1,2,3,4,5}`,
+and `select_over: ["lr","batch_size","p2"]`. All other scientific parameters
+define separate selection groups, preserving dataset, method, epsilon, hidden
+width, pooling, radius, and ProGAP depth. Settings paths are relative to that JSON.
+
+After every tuning job completes, generate and inspect the repeat configuration:
+
+```bash
+python scripts/make_repeat_config.py configs/main_r1_repeat_selection.json
+python scripts/run_experiments.py configs/main_r1_repeats.json --dry-run
+```
+
+The generator reads the runner state and per-job results, checks that the complete
+study matches the source config, and maximizes **validation_metric only**.
+Exact ties keep the first candidate in source-config expansion order. It copies
+each winner's worker parameters, including the ProGAP interpreter, replacing only
+the training seed. This yields **168 winners × 5 additional seeds = 840 jobs**,
+for **1,768 total executions**. Retain each selected seed-0 result for the final
+six-seed comparison; it is not rerun.
+
+The generator accepts `--results-dir`, `--out`, and `--seeds` overrides. CLI paths
+are relative to the current directory. It refuses incomplete/mismatched studies,
+nonfinite metrics, reused tuning seeds, and existing output files. No speculative
+`main_r1_repeats.json` is committed before validation results exist. Neither
+generation nor runner `--dry-run` launches training or probes GPUs.
 
 ### Facebook dataset presets
 
@@ -261,7 +306,7 @@ and hidden width 64 for MLPs or 128 for graph methods. Degree controls are 10;
 bootstrap is disabled. These controls have method-specific meanings: fanout,
 PPR top-k, preprocessing cap, and graph-degree bounds are not interchangeable.
 
-Private noise is calibrated per configuration at delta=1/N_train. SparseGNN
+Private noise is calibrated per configuration at `delta = N_train ** -1.01`. SparseGNN
 retains its mixture formula, which alone does not establish a privacy guarantee.
 ProGAP is explicitly depth 3, with four native drop-last stages at 20 epochs
 each; DPAR retains ppr_num=70 and sampled_train_rate=.09, so its effective batch

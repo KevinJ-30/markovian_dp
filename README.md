@@ -1,81 +1,12 @@
-# Privacy Amplification by Composite Subsampling for GNNs
+# Learning Privately from Graphs: Privacy Amplification via Structured Subsampling
 
-This repository contains the code for the experiments in the paper [blank]. 
+This repository contains the code for the experiments in the paper Learning Privately from Graphs: Privacy Amplification via Structured Subsampling, which is currently under submission at the 30th International Conference on Artificial Intelligence and Statistics (AISTATS) 2027.
 
-## Layout
+This document will contain some brief details about the codebase and experiments. For precise commands required to reproduce the experiments, please refer to `reproduce.md`, which contains the exact commands utilized to run the experiments. 
 
-```
-src/
-  data/
-    datasets.py           dataset dispatch and graph loaders
-    domain_datasets.py    domain-disjoint Twitch, Facebook100, and MAG loaders
-  processing/
-    splits.py             saved graph-disjoint inductive partitions
-    graphs.py             separate training-graph selection
-    sparse_expand.py      SparseExpand, root sampling, degree capping
-    padded.py             lossless root-first private batch representation
-    dpgnn.py              DP-GNN degree sampling and complete rooted batches
-  models/
-    base_mechanism.py      g0 interface, optimizer, and evaluation helpers
-    *_mechanism.py        task-specific networks and mechanisms
-    layers.py             sparse PyG and padded batch-first message passing
-    baselines.py          MLP, GraphSAGE, GIN, DPAR, and DP-GNN networks
-    objectives.py         shared baseline losses, metrics, trivial predictors
-  training/
-    sparse_gnn.py         model-agnostic non-DP and DP training engine
-    baselines.py          portable MLP/GraphSAGE/GIN/DP-MLP training
-    dpar.py               DPAR training and private PPR
-    dpgnn.py              partitioned DP-GNN training
-  privacy/
-    accounting.py         dominating pairs -> Google dp_accounting
-    privacy_loss.py       two-mixture Gaussian dp_accounting primitive
-    accountants.py        baseline accounting and calibration adapters
-    dpgnn.py              DP-GNN multi-term RDP accounting
-  experiments/
-    sparse.py             SparseGNN experiment CLI
-    compute_epsilon.py    post-hoc epsilon for a results CSV
-    run.py                graph-disjoint comparison CLI
-    upstream.py           external baseline manifest/result integration
-    dpgnn_adapter.py      first-party DP-GNN manifest/result adapter
+## Installation
 
-scripts/                   drivers and figures (see scripts/README.md)
-tests/                     mechanism, accounting, and integration tests
-results/                   experiment output, grouped by dataset (results/README.md)
-paper/                     manuscript and figures
-```
-
-The source packages are organized by responsibility; method-specific training
-loops and graph protocols remain separate. 
-
-Entry points:
-- `python scripts/run_experiments.py CONFIG.json --gpus auto` — the unified
-  configuration-driven experiment runner; see [configuration, scheduling, logs,
-  and resume](scripts/README.md#unified-experiment-runner).
-- `python -m src.experiments.compute_epsilon` — post-hoc privacy accounting.
-
-The runner covers MLP, DP-MLP, GraphSAGE, GIN, DPAR, DP-GNN-SAGE/GIN, ProGAP,
-and SparseGNN-SAGE/GIN through one scientific worker. HeterPoisson support,
-presets, and vendored PNPiGNNs source have been removed; historical result
-artifacts are retained but are not supported launch configurations.
-
-Baseline dropout defaults to `0.5` for MLP, GraphSAGE, GIN, DP-MLP, DPAR, DP-GNN,
-and ProGAP. Shipped baseline presets use the same default. Set `dropout` in
-the unified runner's JSON defaults or run parameters to override it;
-`0.0` disables dropout.
-Historical experiment recipes and recorded results retain their original rates.
-
-The scientific worker (`scripts/run_experiment.py`) defaults to ProGAP
-depth **3**, giving four native training stages. Its `--epochs` budget is per
-stage: 20 means 80 stage-epochs. Set `progap_depth` explicitly in a run block
-to override it. The main config pins depth 3; the depth
-ablation retains its explicit 1/2/3 sweep. Historical results remain unchanged.
-
-The old SparseGNN import and CLI paths have been removed. Existing command-line
-flags, dataset/split caches, and result filenames and schemas are unchanged.
-
-## Install
-
-From the repository root:
+From the repository root, run the following commands to create & activate the environment.
 
 ```bash
 conda env create -f environment.yml
@@ -87,32 +18,11 @@ python -m pip check
 `requirements.txt`. The requirements pin direct dependencies for training,
 privacy accounting, datasets, figures, tests, and the retained native ProGAP
 adapter. One environment covers these methods; `--progap-python` is only needed
-when deliberately using another interpreter. Transitive dependencies are resolved
-by pip, so this is not a complete environment lockfile.
-Opacus 1.4.0 supplies PRV accounting while retaining ProGAP's
-`forbid_accumulation_hook` API. The torchmetrics 0.11.4 and setuptools 79.0.1
-pins preserve the native adapter's legacy interfaces, including `pkg_resources`.
+when deliberately using another interpreter.
 
-The supplied profile targets **Linux x86_64 (glibc 2.28+)**, with
-**PyTorch 2.13.0 / CUDA 13.2**, **PyG 2.8.0.post1**, and the matching **pyg-lib 0.9.0**
-wheel. GPU execution requires an NVIDIA driver compatible with CUDA 13.2;
-Conda does not install the driver. CPU execution is supported with
+The supplied profile targets **Linux x86_64 (glibc 2.28+)**, with **PyTorch 2.13.0 / CUDA 13.2**, **PyG 2.8.0.post1**, and the matching **pyg-lib 0.9.0** wheel. GPU execution requires an NVIDIA driver compatible with CUDA 13.2; We stress that CUDA doesn't actually install the driver. CPU execution is supported with
 `--device cpu`, but this profile still installs CUDA-enabled wheels.
 
-For an existing **Python 3.10** environment, the equivalent pip installation is:
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-The requirements include the official PyTorch and PyG wheel sources; no separate
-`pyg-lib` installation is needed. When changing the Torch/CUDA build, update the
-matching pins and wheel sources together using the
-[official PyG wheel instructions](https://github.com/pyg-team/pyg-lib#installation).
-The differently named `pyg-library` package is not a substitute. Do not install
-the historical `third_party/ProGAP/requirements.txt` over this environment.
-
-Dataset downloads and manually supplied assets remain separate; see below.
 
 ## Datasets
 
@@ -125,10 +35,16 @@ Supported dataset keys:
 |---|---|
 | Citation networks | `cora`, `cora-ml`, `citeseer`, `pubmed` |
 | OGB node classification | `ogbn-arxiv`, `ogbn-products` |
-| PyG node classification | `reddit`, `flickr` |
+| PyG node classification | `reddit`, `flickr`, `coauthor-physics` |
 | Single-university Facebook | `facebook` |
 | GraphSAINT | `ppi-large`, `saint-flickr`, `saint-reddit`, `saint-yelp`, `saint-amazon` |
 | Domain-disjoint classification | `twitch-explicit`, `facebook100`, `facebook100-gender`, `facebook100-year`, `mag-countries` |
+
+`coauthor-physics` loads PyG Coauthor Physics without feature normalization or
+compression (34,493 nodes, 8,415 features, five classes). Its cache defaults to
+`data/Coauthor`, overridable with `COAUTHOR_DATA_ROOT` or the loader's `root=`.
+It has no native masks; the comparison runner uses a cached seed-0 stratified
+60/20/20 split into separate induced graphs (20,696 / 6,899 / 6,898 nodes).
 
 GraphSAINT also accepts `graphsaint:<name>` for `ppi-large`, `flickr`,
 `reddit`, `yelp`, and `amazon`. Bare `reddit` and `flickr` retain their
@@ -144,24 +60,17 @@ fresh clone will fail on `--dataset ppi-large` until you do this:
 #    (README, "Dataset"). Drive splits a folder into -001, -002, ... parts;
 #    take all of them for each dataset you want. They land in ~/Downloads.
 
-# 2. Extract every downloaded part into the same destination.
-export GRAPHSAINT_DATA_ROOT="${GRAPHSAINT_DATA_ROOT:-$PWD/data/graphsaint}"
-mkdir -p "$GRAPHSAINT_DATA_ROOT"
-for archive in "$HOME"/Downloads/{ppi-large,flickr,reddit,yelp,amazon}-*.zip; do
-  [ -f "$archive" ] || continue
-  unzip -oq "$archive" -d "$GRAPHSAINT_DATA_ROOT"
-done
+# 2. Unpack into the layout the loader expects, and verify.
+./scripts/setup_graphsaint.sh ~/Downloads
+
+# 3. Point the loader at the result (add to your shell profile to make it stick).
+export GRAPHSAINT_DATA_ROOT=$PWD/data/graphsaint
 ```
 
-Run these commands in Bash with `unzip` installed. Each Drive part is an
-independent ZIP containing a subset of the files, not a split ZIP archive.
-Set `GRAPHSAINT_DATA_ROOT` before extraction to use a different destination.
-The loader otherwise defaults to `data/graphsaint`.
-
-Verify that each requested dataset has
-`$GRAPHSAINT_DATA_ROOT/<name>/{adj_full.npz,adj_train.npz,feats.npy,role.json}`
-and either `class_map.json` or `labels.npy`. Files must be directly inside
-the dataset directory, not an extra Drive-export wrapper directory.
+`GRAPHSAINT_DATA_ROOT` defaults to `data/graphsaint`, so step 3 is only needed
+if you extracted somewhere else — `setup_graphsaint.sh <zips> <dest>` takes a
+destination, which is what you want on a cluster where the data belongs on
+scratch rather than in the repo. The script is idempotent; re-run it freely.
 
 | `--dataset` | nodes | edges (Table 1) | labels | extracted |
 |---|---:|---:|---|---:|
@@ -188,29 +97,6 @@ PyG's Reddit has 57.3M undirected edges against GraphSAINT's 11.6M, and the
 splits differ too. The raw GraphSAINT directory names remain `flickr`, `reddit`,
 `yelp`, and `amazon`. The `_load_graphsaint` docstring documents the
 preprocessing needed to reconcile the released files with the paper's Table 1.
-
-### Scalar regression
-
-Generic scalar regression remains supported for caller-supplied graph data;
-no bundled regression dataset loader is provided. Models use one scalar output
-and MSE loss. Evaluation and validation-based checkpoint selection use whole-split
-R² (`r2`), with higher scores preferred even when all candidates are negative.
-Legacy result fields named `*_accuracy` or `*_acc` can contain R².
-
-R² uses the evaluated split's own target mean as its baseline. The trivial
-reference predictor instead predicts the training mean and can score below zero.
-As in scikit-learn's default `r2_score`, constant targets score 1 for perfect
-predictions and 0 otherwise; fewer than two scored nodes yield NaN.
-
-The ProGAP inductive adapter accepts regression partition metadata with
-`primary_metric: "r2"`. It uses scalar predictions, per-root MSE, and whole-split
-R² independent of evaluation chunk size, while retaining its NAP, private
-optimization, and composed calibration mechanisms. The adapter requires at
-least two scored nodes for defined regression evaluation.
-
-Data-dependent preprocessing, private validation selection, and private test
-releases require separate privacy treatment; training accounting does not
-automatically cover them.
 
 ### Domain-disjoint datasets
 

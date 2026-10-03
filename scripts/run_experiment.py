@@ -707,7 +707,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     loading_seconds = time.perf_counter() - load_started
     population = int(split.train.data.num_nodes)
     batch = min(args.batch_size, population)
-    delta = 1.0 / population
+    delta = population ** -1.01
     interval = math.ceil(population / batch)
     if device.type == "cuda":
         # The allocator peak covers the whole backend, including calibration,
