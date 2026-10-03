@@ -8,20 +8,17 @@ presets and training implementations remain in its single-run worker.
 
 | Script | Purpose |
 |---|---|
-| `setup_graphsaint.sh` | Extract and check manually downloaded GraphSAINT datasets. |
-| `calibrate_grid.py` | Emit noise multipliers for a grid of privacy targets. |
-| `ceiling_fullbatch.py` | Run a non-private full-batch classification comparison. |
 | `run_experiments.py` | Expand JSON configurations, pack owned GPU jobs, retain logs/results, and resume. |
 | `run_experiment.py` | Execute one experiment with method-specific calibration and normalized CSV/JSON results. |
 | `runner_runtime.py` | Shared GPU authorization, process supervision, and ownership-safe cleanup. |
 | `summarize_sweep.py` | Select a validation-best step and report seed-averaged test results; one configuration per child directory. |
 | `summarize_matched_eps.py` | Summarize matched-budget studies using their expected directory naming conventions. |
 | `summarize_results.py` | Combine arbitrary result CSVs into CSV/Markdown tables using stored bootstrap CIs or seed mean ± sample SD; optional best-test selection and named regimes. |
+| `sparse_ablation.py` | Render current ablation figures from ordinary result indexes or supported historical summaries. |
 | `plot_frontier.py` | Plot privacy–utility curves from an explicit CSV glob. |
-| `plot_sparse_frontier.py` | Plot a compatible SparseGNN CSV containing epsilon values. |
 
-The Python utilities expose `--help`. GraphSAINT setup accepts an input ZIP
-directory and an optional destination; see the root README.
+The Python utilities expose `--help`. For manual GraphSAINT download and
+extraction instructions, see the [root README](../README.md#datasets).
 
 `run_experiment.py` defaults to ProGAP propagation depth **3**: four native
 training stages, each using `--epochs` (80 stage-epochs at `--epochs 20`).
@@ -111,18 +108,10 @@ artifacts. Summarize the root CSV rather than globbing all attempts, so retries
 do not become extra seeds. No sealed manifests, source snapshots, or hashes are
 required. See the [script retirement inventory](RETIRED_SCRIPTS.md) for replacements and removal prerequisites.
 
-### FB gender / Physics initial screen
+### Facebook dataset presets
 
-`configs/gender_physics.json` contains **280 configurations**.
-Each of five protocols has 24 SGNN-SAGE, 24 SGNN-mean-GIN, and eight ProGAP
-configurations: batch `{256,1024}`, LR `{0.01,0.001}`, epsilon `{2,8}`, and
-SGNN-only p2 `{0.1,0.5,1}`. Training seed is **0 only**; bootstrap is disabled.
-SGNN uses 20 epochs, hidden 128, dropout 0.5, radius 1, outgoing cap 10,
-incoming sampling cap 20, clip 1, weight decay 0.0005, p1=batch/N_train, and
-the repository's mixture accountant. This config explicitly pins ProGAP to
-depth 3: 20 epochs per each of four native stages, degree bound 10, and its
-existing weight decay **0**. Historical depth-2 results remain unchanged.
-Every method uses delta=1/N_train; epsilon is per run, not sweep-composed.
+These dataset presets remain available in the scientific worker for custom
+JSON configurations. The exploratory sweep config has been removed.
 
 | Protocol | Training schools / graph | N_train |
 |---|---|---:|
@@ -130,37 +119,24 @@ Every method uses delta=1/N_train; epsilon is per run, not sweep-composed.
 | `fb100-gender-3` | previous + Caltech, Amherst | 7,497 |
 | `fb100-gender-6` | previous + Reed, Brandeis, Princeton | 17,782 |
 | `fb100-gender-16` | all schools except Cornell and Penn | 145,535 |
-| `coauthor-physics` | seed-0 stratified 60% induced training graph | 20,696 |
 
 All FB protocols validate on Cornell (16,822 nodes) and test on Penn
 (38,815 nodes). `facebook100-gender` maps raw gender 1/2 to 0/1 and excludes
 unknown raw-0 nodes before inducing graphs. Its 13,778-column categorical
 vocabulary is fitted on all 18 raw schools, including unknown-label nodes.
 Old `facebook100` missingness-target results remain separate and incomparable.
-Physics uses raw PyG features and one shared seed-0 stratified 60/20/20
-graph-disjoint split. Mean-GIN averages **neighbors only**, then adds the root
-before the unchanged GIN MLP; fixed epsilon_GIN=0.
+Mean-GIN averages **neighbors only**, then adds the root before the unchanged
+GIN MLP; fixed epsilon_GIN=0.
 
 The separate worker protocol `--dataset fb100-year-6` reuses the six training
 schools above, Cornell validation, and Penn test, but loads `facebook100-year`.
 It keeps only years 2004–2009 (classes 0–5), excludes year from input features,
 and induces the retained-node graphs: **16,557 / 15,374 / 33,748** nodes in
-train/validation/test, with **13,697** features. It is not part of the fixed
-280-run gender/Physics grid. The default ProGAP depth 3 has four native stages
-(80 stage-epochs at `--epochs 20`); SGNN still uses 20 epochs. Historical
+train/validation/test, with **13,697** features. The default ProGAP depth 3
+has four native stages (80 stage-epochs at `--epochs 20`); SGNN still uses
+20 epochs. Historical
 hyperparameters can be reused, but noise and delta must be recalibrated for
 the year-task population using the current accountants.
-
-```bash
-python scripts/run_experiments.py configs/gender_physics.json --gpus 4,5,6,7 \
-  --progap-python /path/to/progap/bin/python
-python scripts/summarize_results.py results/gender_physics/results.csv \
-  --seed --best-validation --out results/gender_physics/comparison
-```
-
-GPU selection is not hard-coded to this study. Configuration selection uses
-validation, never test; ties use the run ordinal. One seed and no bootstrap means
-uncertainty is unavailable, not zero.
 
 ### SparseExpand paper ablations
 
@@ -377,11 +353,3 @@ never inferred from `epsilon_context`; private rows without epsilon are labeled
 separate rather than comparing unrecorded privacy budgets. The CSV includes
 configuration IDs/settings, selected seeds, source paths, and selection labels.
 
-## Study-specific campaign helpers
-
-`sparsegnn_final_sweep.py`, `sparsegnn_final_reports.py`,
-`sparsegnn_final_verification.py`, and `sparsegnn_partial_nonprivate.py` are
-retained for the initial-tuning study. They depend on that study's Python
-modules and original layout; they are not general-purpose experiment commands.
-Moving the study under `results/old_stuff/` does not automatically migrate
-their imports or paths.

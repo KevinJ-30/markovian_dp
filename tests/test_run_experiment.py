@@ -134,7 +134,7 @@ def test_invalid_domain_split_structure_is_rejected_without_loading(split):
 
 def test_custom_domains_cannot_replace_named_presets_or_nondomain_data():
     split = {"train": ["de"], "val": ["engb"], "test": ["es"]}
-    for dataset in ("twitch-allbut2", "fb100-gender-3", "coauthor-physics"):
+    for dataset in ("twitch-allbut2", "fb100-gender-3", "flickr"):
         with pytest.raises(ValueError, match="domain_split"):
             worker.normalize_parameters(_parameters(dataset=dataset, domain_split=split))
 

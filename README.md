@@ -39,7 +39,6 @@ src/
     dpgnn_adapter.py      first-party DP-GNN manifest/result adapter
 
 scripts/                   drivers and figures (see scripts/README.md)
-  setup_graphsaint.sh      unpack the manually-downloaded GraphSAINT graphs
 tests/                     mechanism, accounting, and integration tests
 results/                   experiment output, grouped by dataset (results/README.md)
 paper/                     manuscript and figures
@@ -60,15 +59,15 @@ presets, and vendored PNPiGNNs source have been removed; historical result
 artifacts are retained but are not supported launch configurations.
 
 Baseline dropout defaults to `0.5` for MLP, GraphSAGE, GIN, DP-MLP, DPAR, DP-GNN,
-and ProGAP. Shipped baseline presets and the non-private full-batch ceiling use
-the same default. Explicit overrides remain supported: set `parameters.dropout`
-in a baseline JSON config, or `--dropout` for the ceiling CLI; `0.0` disables it.
+and ProGAP. Shipped baseline presets use the same default. Set `dropout` in
+the unified runner's JSON defaults or run parameters to override it;
+`0.0` disables dropout.
 Historical experiment recipes and recorded results retain their original rates.
 
 The scientific worker (`scripts/run_experiment.py`) defaults to ProGAP
 depth **3**, giving four native training stages. Its `--epochs` budget is per
 stage: 20 means 80 stage-epochs. Set `progap_depth` explicitly in a run block
-to override it. The main and gender/Physics configs pin depth 3; the depth
+to override it. The main config pins depth 3; the depth
 ablation retains its explicit 1/2/3 sweep. Historical results remain unchanged.
 
 The old SparseGNN import and CLI paths have been removed. Existing command-line
@@ -126,16 +125,10 @@ Supported dataset keys:
 |---|---|
 | Citation networks | `cora`, `cora-ml`, `citeseer`, `pubmed` |
 | OGB node classification | `ogbn-arxiv`, `ogbn-products` |
-| PyG node classification | `reddit`, `flickr`, `coauthor-physics` |
+| PyG node classification | `reddit`, `flickr` |
 | Single-university Facebook | `facebook` |
 | GraphSAINT | `ppi-large`, `saint-flickr`, `saint-reddit`, `saint-yelp`, `saint-amazon` |
 | Domain-disjoint classification | `twitch-explicit`, `facebook100`, `facebook100-gender`, `facebook100-year`, `mag-countries` |
-
-`coauthor-physics` loads PyG Coauthor Physics without feature normalization or
-compression (34,493 nodes, 8,415 features, five classes). Its cache defaults to
-`data/Coauthor`, overridable with `COAUTHOR_DATA_ROOT` or the loader's `root=`.
-It has no native masks; the comparison runner uses a cached seed-0 stratified
-60/20/20 split into separate induced graphs (20,696 / 6,899 / 6,898 nodes).
 
 GraphSAINT also accepts `graphsaint:<name>` for `ppi-large`, `flickr`,
 `reddit`, `yelp`, and `amazon`. Bare `reddit` and `flickr` retain their
@@ -151,17 +144,24 @@ fresh clone will fail on `--dataset ppi-large` until you do this:
 #    (README, "Dataset"). Drive splits a folder into -001, -002, ... parts;
 #    take all of them for each dataset you want. They land in ~/Downloads.
 
-# 2. Unpack into the layout the loader expects, and verify.
-./scripts/setup_graphsaint.sh ~/Downloads
-
-# 3. Point the loader at the result (add to your shell profile to make it stick).
-export GRAPHSAINT_DATA_ROOT=$PWD/data/graphsaint
+# 2. Extract every downloaded part into the same destination.
+export GRAPHSAINT_DATA_ROOT="${GRAPHSAINT_DATA_ROOT:-$PWD/data/graphsaint}"
+mkdir -p "$GRAPHSAINT_DATA_ROOT"
+for archive in "$HOME"/Downloads/{ppi-large,flickr,reddit,yelp,amazon}-*.zip; do
+  [ -f "$archive" ] || continue
+  unzip -oq "$archive" -d "$GRAPHSAINT_DATA_ROOT"
+done
 ```
 
-`GRAPHSAINT_DATA_ROOT` defaults to `data/graphsaint`, so step 3 is only needed
-if you extracted somewhere else — `setup_graphsaint.sh <zips> <dest>` takes a
-destination, which is what you want on a cluster where the data belongs on
-scratch rather than in the repo. The script is idempotent; re-run it freely.
+Run these commands in Bash with `unzip` installed. Each Drive part is an
+independent ZIP containing a subset of the files, not a split ZIP archive.
+Set `GRAPHSAINT_DATA_ROOT` before extraction to use a different destination.
+The loader otherwise defaults to `data/graphsaint`.
+
+Verify that each requested dataset has
+`$GRAPHSAINT_DATA_ROOT/<name>/{adj_full.npz,adj_train.npz,feats.npy,role.json}`
+and either `class_map.json` or `labels.npy`. Files must be directly inside
+the dataset directory, not an extra Drive-export wrapper directory.
 
 | `--dataset` | nodes | edges (Table 1) | labels | extracted |
 |---|---:|---:|---|---:|

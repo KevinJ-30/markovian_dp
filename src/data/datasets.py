@@ -22,7 +22,6 @@ SUPPORTED_DATASETS = {
     'reddit': 'Reddit',
     # Inductive node classification benchmarks
     'flickr': 'Flickr',
-    'coauthor-physics': 'Coauthor-Physics',
     # GAP/ProGAP's Facebook: the UIllinois20 FB100 network, year label filtered
     # to classes with >=1000 nodes.  For head-to-head comparison with those
     # papers on a dataset where the graph actually carries signal.
@@ -412,7 +411,7 @@ def load_dataset(name, device='cpu', domain_split=None, *, root=None):
         device: Device to move data to.
         domain_split: Optional train/validation/test domain selection for the
             domain-disjoint datasets. Supplying any role requires all three.
-        root: Optional cache directory for domain, GraphSAINT, and Coauthor datasets.
+        root: Optional cache directory for domain and GraphSAINT datasets.
 
     Returns:
         (dataset, data) tuple.
@@ -448,13 +447,6 @@ def load_dataset(name, device='cpu', domain_split=None, *, root=None):
         dataset, data = _load_ogb_node(key)
         data = data.to(device)
         return dataset, data
-
-    if key == 'coauthor-physics':
-        from torch_geometric.datasets import Coauthor
-        cache = root if root is not None else os.environ.get(
-            'COAUTHOR_DATA_ROOT', 'data/Coauthor')
-        dataset = Coauthor(root=cache, name='Physics')
-        return dataset, dataset[0].to(device)
 
     if key == 'reddit':
         from torch_geometric.datasets import Reddit
