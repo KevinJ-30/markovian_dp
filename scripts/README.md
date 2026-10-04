@@ -26,13 +26,30 @@ training stages, each using `--epochs` (80 stage-epochs at `--epochs 20`).
 Explicit positive depths override it. Privacy calibration accounts for the
 requested depth; equal per-stage epochs do not make different depths compute-matched.
 
+All methods default to **`weight_decay=0.0`**, including ProGAP. Set JSON
+`weight_decay` or single-run `--weight-decay` to a finite nonnegative value
+to override it; explicit values are preserved. The local baseline/DPAR training
+configs and standalone SparseGNN CLI also default to zero.
+`configs/main_r1_eps15_tune.json` explicitly sets zero in its shared defaults.
+Historical results retain their recorded weight decay. Use a fresh output root
+for these defaults: do not resume an older nonzero-decay study or select repeats
+using a modified source config against historical results.
+
+The `main_r1_tune.json` (epsilon 2, 8) and `main_r1_eps15_tune.json`
+(epsilon 1, 5) campaigns explicitly sweep ProGAP depths **1 and 5 only**.
+Each expands to 864 tuning jobs and 152 validation-selection groups, yielding
+760 follow-up jobs across seeds 1–5. Both repeat-selection settings inherit
+the depth set from their source tuning config. Repeat configs are generated
+only after matching tuning results exist; historical depth-3 results are retained.
+
 ### Unified experiment runner
 
 ```bash
-python scripts/run_experiments.py configs/main.json --gpus 4,5 --dry-run
-python scripts/run_experiments.py configs/main.json --gpus 4,5 \
-  --progap-python /path/to/progap/bin/python
-python scripts/run_experiments.py configs/main.json --gpus 4,5 --resume
+python scripts/run_experiments.py configs/main_r1_tune.json --gpus 4,5 --dry-run
+python scripts/run_experiments.py configs/main_r1_tune.json --gpus 4,5 \
+  --out-dir results/main_r1_zero_decay_tune --progap-python /path/to/progap/bin/python
+python scripts/run_experiments.py configs/main_r1_tune.json --gpus 4,5 \
+  --out-dir results/main_r1_zero_decay_tune --resume
 ```
 
 The output defaults to `results/<name>/` relative to the repository, not the
@@ -74,10 +91,14 @@ have no compute processes, utilization <=5%, and <=1024 MiB used memory across
 two recent observations and a fresh check under the UUID lock. The runner never
 preempts other users. Later foreign activity stops additional admissions.
 
-There is **no default jobs-per-GPU cap or wall timeout**. Unknown memory shapes
-start alone. After GPU activity and 30 seconds of stable observed GPU and host
-memory peaks, provisional profiles permit matching jobs to overlap before the
-first execution finishes. Growth above 10% restarts this warm-up; stale or
+There is **no default jobs-per-GPU cap or wall timeout**. An unprofiled candidate
+can share an occupied GPU using **30% of device memory as an estimated peak**,
+with the normal sharing margins below; this is not a memory cap. All existing
+jobs on that GPU still need measured profiles or explicit estimates before
+another admission, so a new unmeasured shape must warm up before further packing.
+After GPU activity and 30 seconds of stable observed GPU and host memory peaks,
+provisional profiles permit further sharing before the first execution finishes.
+Growth above 10% restarts this warm-up; stale or
 unverified observations revoke provisional profiles. These profiles are not
 persisted; successful whole-run peaks remain the durable measurements. Admission
 prefers GPUs with fewer active jobs,
@@ -93,8 +114,8 @@ only that much free memory: sharing margins must not reject a shape that fits
 alone. ProGAP profiles include its child process. Missing observations block
 further sharing, not healthy training. Optional block `resources` estimates
 (`gpu_memory_mib`, `host_memory_mib`) authorize initial packing with the same
-margins. Unmeasured GPU estimates, or estimates above the measured peak, retain
-the margins even for solo admission. Estimates and measured peaks are not OOM
+margins. Explicit GPU estimates above the measured peak retain the margins even
+for solo admission. Estimates and measured peaks are not OOM
 guarantees. Shared CUDA OOM triggers one fresh exclusive retry without changing
 scientific settings.
 
@@ -126,16 +147,19 @@ required. See the [script retirement inventory](RETIRED_SCRIPTS.md) for replacem
 
 ### Two-stage radius-1 comparison
 
-`configs/main_r1_tune.json` defines **928 seed-0 tuning jobs** across the eight
+`configs/main_r1_tune.json` defines **864 seed-0 tuning jobs** across the eight
 standard datasets, including Amazon and `fb100-year-6`. Both MLP and GNN hidden
 widths are 128. Batch sizes are `{256,1024}`, learning rates `{0.01,0.001}`,
 and private epsilon targets `{2,8}`. SparseSAGE and SparseGIN (sum) use radius 1
-and p2 `{0.1,0.5,1}`. ProGAP depths `{1,3,5}` remain separate comparisons.
+and p2 `{0.1,0.5,1}`. ProGAP depths `{1,5}` remain separate comparisons.
 All runs use dropout 0.5, degree setting 5, bootstrap resamples 0, and 20 epochs;
-ProGAP applies those epochs **per stage**. The config names GPUs 0–7, the existing
-split cache, and the workstation's ProGAP interpreter. Adjust those paths/device
-choices when moving the study. No per-GPU concurrency limit is imposed.
-Queue blocks prioritize SparseSAGE (192 jobs), SparseGIN (192), and ProGAP (192)
+ProGAP applies those epochs **per stage**. The config uses automatic GPU selection,
+the existing split cache, and the workstation's dedicated ProGAP interpreter
+(`/usr/scratch/asaha92/envs/progap/bin/python`, Opacus 1.1.3). Keep that interpreter
+setting: the main environment's Opacus lacks `forbid_accumulation_hook`, which
+upstream ProGAP imports. Adjust paths/device choices when moving the study.
+No per-GPU concurrency limit is imposed.
+Queue blocks prioritize SparseSAGE (192 jobs), SparseGIN (192), and ProGAP (128)
 before nonprivate models (96) and the other private baselines (256). The repeat
 generator preserves this group order. Memory-aware admission can still skip
 ahead to a fitting job; these are priorities, not completion barriers.
@@ -146,10 +170,13 @@ and `select_over: ["lr","batch_size","p2"]`. All other scientific parameters
 define separate selection groups, preserving dataset, method, epsilon, hidden
 width, pooling, radius, and ProGAP depth. Settings paths are relative to that JSON.
 
-After every tuning job completes, generate and inspect the repeat configuration:
+After every tuning job completes in the fresh root above, generate and inspect
+the repeat configuration. The epsilon-1/5 pair uses
+`main_r1_eps15_tune.json` and `main_r1_eps15_repeat_selection.json` analogously.
 
 ```bash
-python scripts/make_repeat_config.py configs/main_r1_repeat_selection.json
+python scripts/make_repeat_config.py configs/main_r1_repeat_selection.json \
+  --results-dir results/main_r1_zero_decay_tune
 python scripts/run_experiments.py configs/main_r1_repeats.json --dry-run
 ```
 
@@ -157,8 +184,8 @@ The generator reads the runner state and per-job results, checks that the comple
 study matches the source config, and maximizes **validation_metric only**.
 Exact ties keep the first candidate in source-config expansion order. It copies
 each winner's worker parameters, including the ProGAP interpreter, replacing only
-the training seed. This yields **168 winners × 5 additional seeds = 840 jobs**,
-for **1,768 total executions**. Retain each selected seed-0 result for the final
+the training seed. This yields **152 winners × 5 additional seeds = 760 jobs**,
+for **1,624 total executions per epsilon pair**. Retain each selected seed-0 result for the final
 six-seed comparison; it is not rerun.
 
 The generator accepts `--results-dir`, `--out`, and `--seeds` overrides. CLI paths
@@ -304,39 +331,6 @@ Timing includes calibration, training, and final evaluation but excludes loading
 The renderer checks required curve membership, duplicate settings, split/metric
 consistency, and stored intervals required for bar panels. It never overwrites
 a figure directory; pass a fresh `--out-dir` for another reconstruction.
-
-### Main experiment matrix
-
-`configs/main.json` contains **1,584 runs** across the eight dataset protocols:
-`ogbn-arxiv`, `ogbn-products`, `saint-reddit`, `saint-yelp`, `saint-amazon`,
-`twitch-allbut2`, `facebook100-allbut2`, and `mag-allbut2`. The domain protocols
-hold out `engb/es`, `cornell5/penn94`, and `cn/de` respectively; split seed 0 is
-independent of training seeds 0/1/2.
-
-Methods are non-private MLP/GraphSAGE/GIN and private DP-MLP, ProGAP, DPAR,
-DP-GNN-SAGE/GIN, and SparseGNN-SAGE/GIN. LR is .01/.001, requested batch 1024,
-epochs 20, private epsilon 2/8, SparseGNN-only p2 .1/.25/.5/.75/1, dropout .5,
-and hidden width 64 for MLPs or 128 for graph methods. Degree controls are 10;
-bootstrap is disabled. These controls have method-specific meanings: fanout,
-PPR top-k, preprocessing cap, and graph-degree bounds are not interchangeable.
-
-Private noise is calibrated per configuration at `delta = N_train ** -1.01`. SparseGNN
-retains its mixture formula, which alone does not establish a privacy guarantee.
-ProGAP is explicitly depth 3, with four native drop-last stages at 20 epochs
-each; DPAR retains ppr_num=70 and sampled_train_rate=.09, so its effective batch
-is at most 70 released roots. Actual schedules and privacy values are recorded.
-Historical ProGAP depths are not rewritten or silently reproduced by this config.
-
-```bash
-python scripts/run_experiments.py configs/main.json --gpus auto \
-  --progap-python /path/to/progap/bin/python
-python scripts/summarize_results.py results/main/results.csv \
-  --seed --best-validation --out results/main/summary
-```
-
-Edit JSON blocks/axes for future experiments rather than adding a launcher.
-Omit the selection flag to report every configuration; `--best` still supports
-explicitly labeled test-based selection, with its test-selection bias warning.
 
 ### Result tables
 

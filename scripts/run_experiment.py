@@ -55,6 +55,8 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--epochs", required=True, type=int)
     cli.add_argument("--seed", type=int, default=0)
     cli.add_argument("--dropout", type=float, default=0.5)
+    cli.add_argument("--weight-decay", type=float, default=0.0,
+                     help="optimizer weight decay for every method (default: 0)")
     cli.add_argument("--mlp-hidden", type=int, default=64)
     cli.add_argument("--gnn-hidden", type=int, default=128)
     cli.add_argument("--device", default="cuda", help="explicit torch device; never falls back to CPU")
@@ -152,7 +154,7 @@ def normalize_parameters(values: dict) -> dict:
         raise ValueError("parameters must be a string-keyed JSON object")
     required = {"dataset", "method", "lr", "batch_size", "epochs"}
     defaults = {"seed": 0, "dropout": 0.5, "mlp_hidden": 64, "gnn_hidden": 128,
-                "degree_bound": None, "bootstrap_resamples": 1000,
+                "degree_bound": None, "bootstrap_resamples": 1000, "weight_decay": 0.0,
                 "split_root": str(REPO_ROOT / "data" / "inductive_splits"), "domain_split": None}
     method_fields = {"epsilon", "p2", "gin_pooling", "sparse_radius", "sparse_degree_cap",
                      "dpgnn_radius", "progap_depth", "progap_python"}
@@ -197,6 +199,9 @@ def normalize_parameters(values: dict) -> dict:
     result["dropout"] = _finite_number(result["dropout"], "dropout")
     if not 0 <= result["dropout"] < 1:
         raise ValueError("dropout must be in [0, 1)")
+    result["weight_decay"] = _finite_number(result["weight_decay"], "weight_decay")
+    if result["weight_decay"] < 0:
+        raise ValueError("weight_decay must be nonnegative")
     degree = result["degree_bound"]
     if degree is not None and (type(degree) is not int or degree < 1):
         raise ValueError("degree_bound must be a positive integer")
@@ -344,7 +349,7 @@ def _baseline(args, split, task, batch, delta):
     options = {
         "method": args.method, "hidden_size": args.mlp_hidden if args.method in {"mlp", "dp_mlp"} else args.gnn_hidden,
         "learning_rate": args.lr, "batch_size": batch, "epochs": args.epochs,
-        "weight_decay": 5e-4,
+        "weight_decay": args.weight_decay,
         "dropout": args.dropout, "seed": args.seed, **_task_options(task), **_bootstrap(args),
     }
     if args.method in {"graphsage", "gin"} and args.degree_bound is not None:
@@ -380,7 +385,7 @@ def _dpar(args, split, task, batch, delta):
         target_epsilon=args.epsilon, target_delta=delta, dp_ppr=True, dp_sgd=True,
         hidden_size=args.gnn_hidden, learning_rate=args.lr, batch_size=batch,
         epochs=args.epochs, dropout=args.dropout, seed=args.seed,
-        weight_decay=5e-4,
+        weight_decay=args.weight_decay,
         **({"topk": args.degree_bound} if args.degree_bound is not None else {}),
         **_task_options(task), **_bootstrap(args),
     )
@@ -454,7 +459,7 @@ def _dpgnn(args, split, task, batch, delta):
         num_classes=split.num_classes, architecture="gin" if args.method.endswith("gin") else "graphsage",
         latent_size=args.gnn_hidden, learning_rate=args.lr, dropout=args.dropout,
         batch_size=batch, steps=steps, evaluate_every=interval,
-        weight_decay=5e-4, delta=delta,
+        weight_decay=args.weight_decay, delta=delta,
         noise_multiplier=calibration["noise_multiplier"], max_degree=max_degree,
         radius=args.dpgnn_radius,
         seed=args.seed, **_task_options(task), **_bootstrap(args),
@@ -548,8 +553,7 @@ def _sparse(args, split, task, batch, delta):
         hidden=args.gnn_hidden, num_layers=2, dropout=args.dropout,
         aggr=aggr, device=torch.device(args.device), **extra,
     )
-    weight_decay = 5e-4
-    mechanism.build_optimizer(lr=args.lr, weight_decay=weight_decay, kind="adam")
+    mechanism.build_optimizer(lr=args.lr, weight_decay=args.weight_decay, kind="adam")
     evaluation = _sparse_evaluation_graph(split, args.device)
     result = train_sparse_gnn(
         mechanism, train, evaluation, p1=p1, p2=args.p2, r=args.sparse_radius, T=steps,
@@ -572,7 +576,7 @@ def _sparse(args, split, task, batch, delta):
     parameters = {
         "architecture": aggr, "hidden": args.gnn_hidden, "layers": 2,
         "lr": args.lr, "batch_size": batch, "epochs": args.epochs, "steps": steps,
-        "dropout": args.dropout, "optimizer": "adam", "weight_decay": weight_decay,
+        "dropout": args.dropout, "optimizer": "adam", "weight_decay": args.weight_decay,
         "p1": p1, "p2": args.p2, "r": args.sparse_radius, "clip": 1.0,
         "sigma": calibration.noise_multiplier, "K_in": 10, "K_out": args.sparse_degree_cap,
         "cap_mode": "directed", "cap_seed": args.seed + 20_000, "direction": "in",
@@ -601,7 +605,7 @@ def _progap(args, split, task, batch, delta):
         "depth": args.progap_depth,
         "max_degree": args.degree_bound if args.degree_bound is not None else 5,
         "max_grad_norm": 1.0,
-        "optimizer": "adam", "weight_decay": 0.0, "eval_chunk_size": 16384,
+        "optimizer": "adam", "weight_decay": args.weight_decay, "eval_chunk_size": 16384,
     }
     config = {
         "source_dir": str(source), "command": [args.progap_python, "inductive_adapter.py"],

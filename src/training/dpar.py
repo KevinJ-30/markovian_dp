@@ -53,7 +53,7 @@ class DPARConfig:
     layers: int = 2
     dropout: float = 0.5
     learning_rate: float = 5e-3
-    weight_decay: float = 1e-4
+    weight_decay: float = 0.0
     epochs: int = 100
     inference_steps: int = 2
     seed: int = 0

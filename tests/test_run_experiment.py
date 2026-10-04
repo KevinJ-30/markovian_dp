@@ -88,6 +88,18 @@ def test_omitted_depth_does_not_enter_nonprogap_identity():
         assert worker.normalize_parameters(parameters) == parameters
 
 
+@pytest.mark.parametrize("method", worker.METHODS)
+@pytest.mark.parametrize("weight_decay", [-1, float("nan"), float("inf"), True])
+def test_weight_decay_rejects_invalid_values_for_every_method(method, weight_decay):
+    options = {"method": method, "weight_decay": weight_decay}
+    if method not in worker.NONPRIVATE:
+        options["epsilon"] = 8
+    if method.startswith("sparse_"):
+        options["p2"] = 0.5
+    with pytest.raises(ValueError, match="weight_decay"):
+        worker.normalize_parameters(_parameters(**options))
+
+
 def test_normalization_does_not_import_training_or_probe_paths(tmp_path):
     code = """
 import builtins

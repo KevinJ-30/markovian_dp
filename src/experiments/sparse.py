@@ -200,7 +200,7 @@ def parse_args():
     p.add_argument('--momentum', type=float, default=0.0,
                    help='SGD momentum for the DP path (post-processing, no '
                         'privacy cost; ignored by the non-DP Adam path)')
-    p.add_argument('--weight_decay', type=float, default=5e-4)
+    p.add_argument('--weight_decay', type=float, default=0.0)
     # DP (off by default)
     p.add_argument('--dp', action='store_true', help='enable DP clip+noise path')
     p.add_argument('--clip', type=float, default=1.0, help='clipping norm C (DP)')

@@ -1,0 +1,47 @@
+{
+  "name": "sparse_ablation",
+  "defaults": {
+    "epsilon": 8,
+    "seed": 0,
+    "lr": 0.01,
+    "batch_size": 256,
+    "epochs": 20,
+    "dropout": 0.5,
+    "mlp_hidden": 64,
+    "gnn_hidden": 128,
+    "bootstrap_resamples": 1000
+  },
+  "grid": {
+    "dataset": ["ogbn-arxiv", "saint-yelp", "twitch-allbut2"],
+    "method": ["sparse_sage", "sparse_gin"]
+  },
+  "runs": [
+    {
+      "parameters": {
+        "p2": 0.5,
+        "sparse_degree_cap": 10
+      },
+      "grid": {
+        "sparse_radius": [1, 2, 3]
+      }
+    },
+    {
+      "parameters": {
+        "sparse_radius": 1,
+        "sparse_degree_cap": 10
+      },
+      "grid": {
+        "p2": [0.05, 0.1, 0.25, 1.0]
+      }
+    },
+    {
+      "parameters": {
+        "sparse_radius": 1,
+        "p2": 0.5
+      },
+      "grid": {
+        "sparse_degree_cap": [5, 20, 40]
+      }
+    }
+  ]
+}

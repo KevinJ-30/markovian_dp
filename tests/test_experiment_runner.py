@@ -256,6 +256,23 @@ def test_packing_admits_three_not_four_at_full_owned_utilization(tmp_path):
     assert not controller._gpu_fits(candidate, GPU, snapshot)
 
 
+def test_unprofiled_candidate_uses_benchmark_without_bypassing_safety(tmp_path):
+    controller = _controller(tmp_path)
+    candidate = controller.jobs[-1]
+    candidate["parameters"]["batch_size"] = 128
+    snapshot = _activate(controller, 1)
+    assert controller._gpu_fits(candidate, GPU, snapshot)
+    controller.exclusive.add(runner.profile_key(candidate["parameters"]))
+    assert not controller._gpu_fits(candidate, GPU, snapshot)
+    controller.exclusive.clear()
+    snapshot = _activate(controller, 2)
+    assert not controller._gpu_fits(candidate, GPU, snapshot)
+    controller.active.clear()
+    snapshot = _activate(controller, 1, estimates=False)
+    controller.jobs[0]["resources"] = {}
+    assert not controller._gpu_fits(candidate, GPU, snapshot)
+
+
 @pytest.mark.parametrize("condition", ["foreign", "stale_snapshot", "query_error",
                                         "missing_process_memory", "missing_owned_memory",
                                         "stale_owned_sample", "unknown_ownership", "higher_peak",
@@ -672,6 +689,22 @@ def test_live_profile_allows_overlap_before_first_job_finishes(
     lifetimes = _lifetimes(controller)
     assert _maximum_overlap(lifetimes) == 3
     assert all(lifetimes[index]["start"] < lifetimes[0]["end"] for index in (1, 2))
+
+
+def test_unprofiled_different_shape_starts_before_profiled_job_finishes(
+        tmp_path, monkeypatch, supervised_children):
+    monkeypatch.setattr(runner, "EARLY_PROFILE_SECONDS", .25)
+    supervised_children["cohort"] = [0, 1]
+    config = _config()
+    config["grid"] = {}
+    config["runs"] = [
+        {"parameters": {"method": "mlp", "seed": 0, "batch_size": 32}},
+        {"parameters": {"method": "mlp", "seed": 1, "batch_size": 128}},
+    ]
+    controller = _gpu_controller(tmp_path, monkeypatch, config)
+    assert _run_bounded(controller) == 0
+    lifetimes = _lifetimes(controller)
+    assert lifetimes[1]["start"] < lifetimes[0]["end"]
 
 
 @pytest.mark.parametrize("scenario,final_status", [("shared_oom", "completed"), ("shared_oom_twice", "failed")])

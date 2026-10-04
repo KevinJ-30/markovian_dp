@@ -1,0 +1,65 @@
+{
+  "name": "main_r1_tune",
+  "gpus": "auto",
+  "defaults": {
+    "seed": 0,
+    "epochs": 20,
+    "dropout": 0.5,
+    "mlp_hidden": 128,
+    "gnn_hidden": 128,
+    "degree_bound": 5,
+    "bootstrap_resamples": 0,
+    "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache"
+  },
+  "grid": {
+    "dataset": ["ogbn-arxiv", "ogbn-products", "saint-reddit", "saint-yelp", "saint-amazon", "twitch-allbut2", "fb100-year-6", "mag-allbut2"],
+    "batch_size": [256, 1024],
+    "lr": [0.01, 0.001]
+  },
+  "runs": [
+    {
+      "parameters": {
+        "method": "sparse_sage",
+        "sparse_radius": 1,
+        "weight_decay": 0.0
+      },
+      "grid": {
+        "epsilon": [2, 8],
+        "p2": [0.1, 0.5, 1.0]
+      }
+    },
+    {
+      "parameters": {
+        "method": "sparse_gin",
+        "sparse_radius": 1,
+        "gin_pooling": "sum",
+        "weight_decay": 0.0
+      },
+      "grid": {
+        "epsilon": [2, 8],
+        "p2": [0.1, 0.5, 1.0]
+      }
+    },
+    {
+      "parameters": {
+        "method": "progap",
+        "progap_python": "/usr/scratch/asaha92/envs/progap/bin/python"
+      },
+      "grid": {
+        "epsilon": [2, 8],
+        "progap_depth": [1, 5]
+      }
+    },
+    {
+      "grid": {
+        "method": ["mlp", "graphsage", "gin"]
+      }
+    },
+    {
+      "grid": {
+        "method": ["dp_mlp", "dpar", "dp_gnn_sage", "dp_gnn_gin"],
+        "epsilon": [2, 8]
+      }
+    }
+  ]
+}

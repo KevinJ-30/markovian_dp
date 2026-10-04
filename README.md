@@ -46,6 +46,24 @@ Replace `0` with the GPUs you want to use, such as `0,1`. Results and logs are w
 
 We also note that the configuration files use a custom-written scheduler, which attempts to add as many jobs as possible to each GPU, since the jobs are largely CPU-dependent. 
 
+## Generated files and version control
+
+Keep experiment configs, source code, tests, documentation, and required
+vendored assets in Git. Generated run outputs belong in `results/`, summaries
+in `reports/`, and figures in `figures/` or `numerics/figures/`. These complete
+directories are ignored, including CSV/JSON metadata, logs, and partial files.
+Use these locations for custom output paths too.
+
+Downloaded data and split caches under `data/`, scratch files under `tmp/`,
+checkpoints, and Python/test caches are also ignored. CSV/JSON, image/PDF,
+HDF5, and notebook files outside generated directories remain trackable so
+configs, fixtures, and documentation assets are not silently excluded.
+This includes repeat-run configs generated into `configs/`.
+
+Ignore rules do not untrack files already committed or remove them from Git
+history. Existing tracked artifacts require a separate index cleanup; changing
+`.gitignore` does not delete local results or modify the index.
+
 ## Code and tests
 
 The `src/` directory contains the models, sampling, training, and privacy accounting code. The `scripts/` directory contains experiment runners and result summaries, while `numerics/` contains the numerical privacy experiments. See [the script guide](scripts/README.md) for additional command-line options.

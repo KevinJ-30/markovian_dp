@@ -24,7 +24,7 @@ class BaselineConfig:
     layers: int = 2
     dropout: float = 0.5
     learning_rate: float = 1e-2
-    weight_decay: float = 5e-4
+    weight_decay: float = 0.0
     epochs: int = 100
     batch_size: int = 256
     noise_multiplier: float = 1.0

@@ -1,4 +1,4 @@
-r"""Plot epsilon(T) and composed delta(epsilon); run `python numerics/compare.py`.
+r"""Plot epsilon(T), delta(epsilon), and epsilon(r); run `python numerics/compare.py`.
 
 We clip to C = 1. 
 
@@ -8,12 +8,10 @@ Our pair:
     P = sum_j Pr(J=j) Normal(-j, sigma**2),
     Q = sum_j Pr(J=j) Normal(+j, sigma**2).
 At p2=1, J is Binomial(1 + 2*sum_{ell=1}^r K**ell, p1), our group baseline.
-We compose the pair's pessimistically discretized PLD.
 
 Lower pair:
     J = Bernoulli(p1) + sum_{ell=1}^r Binomial(K_out**ell, p1*p2**ell),
     independently, with the same Gaussian centers +/-j and noise sigma.
-Its curves use the same numerical PLD approximation as the upper pair.
 
 Group privacy:
 
@@ -25,13 +23,8 @@ Daigavane et al., Theorem 1: https://arxiv.org/abs/2111.15521
 This is also the Renyi divergence of the count-revealing joint Gaussian pair
     P_D(j,x) = Pr(H=j)*Normal(x; -j, sigma**2),
     Q_D(j,x) = Pr(H=j)*Normal(x; +j, sigma**2).
-The plotted Daigavane curve uses T*R_alpha followed by Google's RDP-to-DP
-conversion, as in the original repository, NOT a hidden-count mixture PLD.
-https://github.com/google-research/google-research/blob/master/
-    differentially_private_gnns/privacy_accountants.py
-
-
-Requires numpy, scipy, matplotlib, dp-accounting, and the imported modules.
+The plotted Daigavane curve uses T*R_alpha followed by Google's RDP-to-DP conversion, as in the original repository.
+see https://github.com/google-research/google-research/blob/master/differentially_private_gnns/privacy_accountants.py
 """
 
 import argparse
@@ -55,12 +48,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from src.privacy.accounting import mixture_gaussian_pld, sparsegnn_mixture_weights
 
-RADII = (1, 3)
-# Include the upstream grid, plus near-one and larger orders.
-ORDERS = np.unique(np.concatenate((
-    1 + np.geomspace(1e-3, 1, 100), np.arange(1.1, 10, 0.1),
-    np.linspace(2, 64, 497), np.geomspace(64, 1024, 100),
-)))
+ORDERS = np.arange(1.1, 10, 0.1)
 
 
 def lower_mixture_weights(p1, p2, r, K_out):
@@ -77,7 +65,7 @@ def methods(args):
     """Curve/CSV order, shared by all numerical figures."""
     return [("daigavane", ""), ("group", 1.0),
             *[("ours", p2) for p2 in args.p2],
-            *[("lower", p2) for p2 in [1.0, *args.p2]]]
+            *[("lower", p2) for p2 in args.p2]]
 
 
 def daigavane_rdp(population, batch_size, max_terms, sigma, orders=ORDERS):
@@ -95,7 +83,7 @@ def argument_parser():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--p1", type=float, default=0.01)
-    parser.add_argument("--p2", type=float, nargs="+", default=[0.1, 0.25, 0.5, 0.75])
+    parser.add_argument("--p2", type=float, nargs="+", default=[0.25, 0.5, 0.75])
     parser.add_argument("--degree", type=int, default=5)
     parser.add_argument("--sigma", type=float, default=2.0,
                         help="Gaussian noise standard deviation divided by C")
@@ -105,9 +93,9 @@ def argument_parser():
                         help="pessimistic PLD discretization interval")
     parser.add_argument("--delta-min", type=float, default=1e-8)
     parser.add_argument("--delta", type=float, default=1e-5,
-                        help="fixed delta for epsilon versus composition iterations")
+                        help="fixed delta for epsilon versus composition iterations or radius")
     parser.add_argument("--steps", type=int, default=1000,
-                        help="composition horizon for both kinds of panel")
+                        help="maximum composition horizon; fixed T for radius and delta panels")
     parser.add_argument("--iteration-points", type=int, default=100,
                         help="number of composition checkpoints, plus T=0")
     parser.add_argument("--epsilon-min", type=float, default=0.1)
@@ -176,21 +164,24 @@ def composition_profiles(plds, base_rdp, iterations, delta):
     return curves, composed
 
 
-def draw_curves(ax, x, curves, args):
+def draw_curves(ax, x, curves, args, *, curve_methods=None):
     colors = ["#0072B2", "#009E73", "#D55E00", "#CC79A7", "#56B4E9", "#E69F00"]
-    ax.plot(x, curves[0], color="0.2", linestyle=":", linewidth=3, alpha=1,
-            label="Daigavane et al. (RDP)")
-    ax.plot(x, curves[1], color="black", linestyle="--", linewidth=2.8, alpha=1,
-            label=r"Group privacy ($p_2=1$)")
-    for index, p2 in enumerate(args.p2):
-        color = colors[index % len(colors)]
-        ax.plot(x, curves[2 + index], color=color, linewidth=2.8,
-                label=rf"Ours ($p_2={p2:g}$)")
-        ax.plot(x, curves[3 + len(args.p2) + index], color=color,
-                linestyle="--", linewidth=2,
-                label=rf"Lower ($p_2={p2:g}$)")
-    ax.plot(x, curves[2 + len(args.p2)], color="black", linestyle="-.", linewidth=2,
-            label=r"Lower ($p_2=1$)")
+    palette = {p2: colors[index % len(colors)] for index, p2 in enumerate(args.p2)}
+    for (method, p2), values in zip(
+            methods(args) if curve_methods is None else curve_methods, curves):
+        if method == "daigavane":
+            style = dict(color="0.2", linestyle=":", linewidth=3,
+                         label="Daigavane et al. (RDP)")
+        elif method == "group":
+            style = dict(color="black", linestyle="--", linewidth=2.8,
+                         label=r"Group privacy ($p_2=1$)")
+        elif method == "ours":
+            style = dict(color=palette[p2], linewidth=2.8,
+                         label=rf"Ours ($p_2={p2:g}$)")
+        else:
+            style = dict(color=palette[p2], linestyle="--", linewidth=2,
+                         label=rf"Lower ($p_2={p2:g}$)")
+        ax.plot(x, values, **style)
 
 
 def draw_panel(ax, x, curves, radius, args, *, composition=False):
@@ -199,7 +190,8 @@ def draw_panel(ax, x, curves, radius, args, *, composition=False):
         delta_label = matplotlib.ticker.ScalarFormatter(useMathText=True).format_data(args.delta)
         ax.set(xlabel=r"Composition iterations $T$", ylabel=r"$\epsilon$",
                title=rf"$R={radius},\ \delta={delta_label}$",
-               xlim=(0, args.steps), ylim=(0, None))
+               xlim=(0, args.steps))
+        ax.set_yscale("log", nonpositive="mask")
     else:
         ax.set(xlabel=r"$\epsilon$", ylabel=r"$\delta(\epsilon)$",
                title=rf"$R={radius},\ T={args.steps}$",
@@ -218,14 +210,23 @@ def set_plot_style():
 
 
 def main():
-    args = parse_args()
+    parser = argument_parser()
+    parser.add_argument("--radii", type=int, nargs="+", default=[1, 2, 3],
+                        help="radii for epsilon(r); the other panels use r=1")
+    args = parse_args(parser)
+    if any(radius < 1 for radius in args.radii) or len(set(args.radii)) != len(args.radii):
+        parser.error("radii must be distinct positive integers")
+    args.radii = sorted(args.radii)
+    if sum(args.degree**ell for ell in range(max(args.radii) + 1)) > args.population:
+        parser.error("population must cover 1+K+...+K^r for every plotted radius")
     args.out_dir.mkdir(parents=True, exist_ok=True)
     set_plot_style()
     batch_size = round(args.population * args.p1)
     iterations = np.unique(np.concatenate(([0], np.rint(
         np.linspace(1, args.steps, min(args.steps, args.iteration_points))).astype(int))))
     parameters = {**vars(args), "out_dir": str(args.out_dir), "batch_size": batch_size,
-                  "radii": RADII, "iterations": iterations.tolist(), "orders": ORDERS.tolist(),
+                  "radii": args.radii, "profile_radius": 1,
+                  "iterations": iterations.tolist(), "orders": ORDERS.tolist(),
                   "root_sampling": {"daigavane": "fixed-size without replacement",
                                     "ours_and_group": "Bernoulli"},
                   "noise_convention": "sigma = noise_std / clipping_norm",
@@ -240,18 +241,25 @@ def main():
                   "versions": {name: importlib.metadata.version(name)
                                for name in ("numpy", "scipy", "matplotlib", "dp-accounting")}}
     (args.out_dir / "parameters.json").write_text(json.dumps(parameters, indent=2) + "\n")
-    overview, axes = plt.subplots(1, 4, figsize=(22, 5.5))
-    curve_methods = methods(args)
+    overview, axes = plt.subplots(1, 3, figsize=(18, 5.5))
+    upper_methods = methods(args)[:2 + len(args.p2)]
+    profile_methods = upper_methods + [("lower", p2) for p2 in args.p2]
+    radius_curves = np.empty((len(upper_methods), len(args.radii)))
+    epsilon = np.linspace(args.epsilon_min, args.epsilon_max, args.points)
     with (args.out_dir / "curves.csv").open("w", newline="") as curves_file, \
          (args.out_dir / "composition.csv").open("w", newline="") as composition_file, \
+         (args.out_dir / "radius.csv").open("w", newline="") as radius_file, \
          (args.out_dir / "pair_weights.csv").open("w", newline="") as pairs_file:
         writer = csv.writer(curves_file)
         writer.writerow(["r", "t", "method", "p2", "epsilon", "delta", "raw_delta"])
         composition_writer = csv.writer(composition_file)
         composition_writer.writerow(["r", "t", "method", "p2", "delta", "epsilon"])
+        radius_writer = csv.writer(radius_file)
+        radius_writer.writerow(["r", "t", "method", "p2", "delta", "epsilon"])
         pair_writer = csv.writer(pairs_file)
         pair_writer.writerow(["r", "method", "p2", "j", "probability", "P_mean", "Q_mean", "noise_std"])
-        for row, radius in enumerate(RADII):
+        for radius in sorted({1, *args.radii}):
+            curve_methods = profile_methods if radius == 1 else upper_methods
             max_terms = sum(args.degree**ell for ell in range(radius + 1))
             base_rdp = daigavane_rdp(args.population, batch_size, max_terms, args.sigma)
             plds = []
@@ -265,33 +273,57 @@ def main():
                 print(f"Building {method} pair: r={radius}, p2={p2:g}, support={len(weights)}",
                       flush=True)
                 plds.append(mixture_gaussian_pld(weights, args.sigma, args.grid))
-            epsilon_curves, composed = composition_profiles(plds, base_rdp, iterations, args.delta)
-            for (method, p2), values in zip(curve_methods, epsilon_curves):
+            checkpoints = iterations if radius == 1 else [args.steps]
+            epsilon_curves, composed = composition_profiles(
+                plds[:len(upper_methods) - 1], base_rdp, checkpoints, args.delta)
+            if radius in args.radii:
+                radius_curves[:, args.radii.index(radius)] = epsilon_curves[:, -1]
+                radius_writer.writerows(
+                    (radius, args.steps, method, p2, args.delta, float(value))
+                    for (method, p2), value in zip(upper_methods, epsilon_curves[:, -1]))
+            if radius != 1:
+                continue
+            for (method, p2), values in zip(upper_methods, epsilon_curves):
                 composition_writer.writerows(
                     (radius, int(t), method, p2, args.delta, float(value))
                     for t, value in zip(iterations, values))
-
-            epsilon = np.linspace(args.epsilon_min, args.epsilon_max, args.points)
+            # T=0 has epsilon=0: retain it in the CSV, not on the log axis.
+            draw_curves(axes[0], iterations[1:], epsilon_curves[:, 1:], args,
+                        curve_methods=upper_methods)
+            composed.extend(
+                pld if args.steps == 1 else pld.self_compose(args.steps)
+                for pld in plds[len(upper_methods) - 1:])
             raw_curves = [np.array([compute_delta(ORDERS, args.steps * base_rdp, value)[0]
                                    for value in epsilon]),
                           *(pld.get_delta_for_epsilon(epsilon) for pld in composed)]
             curves = [np.clip(delta, 0, 1) for delta in raw_curves]
-            for (method, p2), delta, raw_delta in zip(curve_methods, curves, raw_curves):
+            for (method, p2), delta, raw_delta in zip(profile_methods, curves, raw_curves):
                 writer.writerows((radius, args.steps, method, p2, float(e), float(d), float(raw))
                                  for e, d, raw in zip(epsilon, delta, raw_delta))
-            panels = [
-                (iterations, epsilon_curves, True),
-                (epsilon, curves, False),
-            ]
-            for col, (x, values, is_composition) in enumerate(panels):
-                panel_label = ("(a)", "(b)", "(c)", "(d)")[2 * row + col]
-                ax = axes[2 * row + col]
-                draw_panel(ax, x, values, radius, args, composition=is_composition)
-                ax.set_title(f"{panel_label} {ax.get_title()}")
-    handles, labels = axes[0].get_legend_handles_labels()
-    overview.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.99),
-                    ncol=6, fontsize=17)
-    overview.subplots_adjust(left=0.04, right=0.98, bottom=0.19, top=0.77, wspace=0.32)
+            draw_curves(axes[1], epsilon, curves, args, curve_methods=profile_methods)
+    draw_curves(axes[2], args.radii, radius_curves[1:], args, curve_methods=upper_methods[1:])
+    delta_label = matplotlib.ticker.ScalarFormatter(useMathText=True).format_data(args.delta)
+    axes[0].set(xlabel=r"Composition iterations $T$", ylabel=r"$\epsilon$",
+                title=rf"(a) $r=1,\ \delta={delta_label}$", xlim=(0, args.steps))
+    axes[1].set(xlabel=r"$\epsilon$", ylabel=r"$\delta(\epsilon)$",
+                title=rf"(b) $r=1,\ T={args.steps}$",
+                xlim=(args.epsilon_min, args.epsilon_max), ylim=(args.delta_min, 1))
+    axes[2].set(xlabel=r"Radius $r$", ylabel=r"$\epsilon$",
+                title=rf"(c) $T={args.steps},\ \delta={delta_label}$")
+    for ax in axes:
+        ax.set_yscale("log", nonpositive="mask")
+        ax.set_xscale("linear")
+        ax.grid(which="major", color="0.88", linewidth=0.6)
+        ax.spines[["top", "right"]].set_visible(False)
+    axes[2].set_xticks(args.radii)
+    handles, labels = axes[1].get_legend_handles_labels()
+    legend_order = [0, 1, *(index for pair in zip(
+        range(2, 2 + len(args.p2)), range(2 + len(args.p2), len(labels))) for index in pair)]
+    overview.legend([handles[index] for index in legend_order],
+                    [labels[index] for index in legend_order],
+                    loc="upper center", bbox_to_anchor=(0.5, 0.99),
+                    ncol=1 + len(args.p2), fontsize=17)
+    overview.subplots_adjust(left=0.055, right=0.985, bottom=0.19, top=0.74, wspace=0.32)
     for extension in ("png", "pdf", "svg"):
         overview.savefig(args.out_dir / f"comparison.{extension}", dpi=180,
                          bbox_inches="tight", pad_inches=0.15)

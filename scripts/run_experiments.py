@@ -470,8 +470,12 @@ class ExperimentRunner:
         if not active:
             required = self._solo_gpu_requirement(job, gpu)
             return _idle(snapshot) and (required is None or required <= snapshot['memory_free_mib'] * MIB)
-        if peak is None or exclusive:
+        if exclusive:
             return False
+        if peak is None:
+            # Probe one new shape using a 30% peak estimate; active jobs still
+            # need measured profiles before any further sharing is admitted.
+            peak = .30 * snapshot['memory_total_mib'] * MIB
         owned = set()
         reservation = gpu_reservation(peak)
         for attempt in active:

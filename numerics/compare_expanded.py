@@ -87,7 +87,8 @@ def main():
                 composition_writer.writerows(
                     (radius, int(t), method, p2, args.delta, float(value))
                     for t, value in zip(iterations, values))
-            compare.draw_panel(axes[row, 0], iterations, epsilon_curves,
+            # T=0 has epsilon=0 and cannot be rendered on the requested log axis.
+            compare.draw_panel(axes[row, 0], iterations[1:], epsilon_curves[:, 1:],
                                radius, args, composition=True)
             print(f"Composed expanded row: r={radius} in "
                   f"{time.perf_counter() - started:.1f}s", flush=True)

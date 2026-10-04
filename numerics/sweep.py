@@ -65,13 +65,16 @@ def run_sweep(parameter):
                 ax = axes[row, column]
                 compare.draw_curves(ax, values, curves[column], args)
                 ax.set(xlabel=xlabel, ylabel=rf"$\epsilon\ (\delta={delta_label})$",
-                       title=rf"$R={radius},\ T={steps}$",
-                       ylim=(0, None))
-                ax.set_yscale("linear")
-                ax.set_xscale("log" if parameter == "p1" else "linear")
+                       title=rf"$R={radius},\ T={steps}$")
+                positive = curves[column][curves[column] > 0]
+                if not positive.size:
+                    raise ValueError(f"nonpositive epsilon at r={radius}, T={steps}")
+                ax.set_yscale("log", nonpositive="mask")
+                ax.set_ylim(float(positive.min()) / 1.1, None)
                 if len(values) > 1:
                     ax.set_xlim(values[0], values[-1])
                 if parameter == "p1":
+                    ax.set_xscale("log")
                     ax.xaxis.set_major_locator(ticker.LogLocator(base=10))
                     ax.xaxis.set_major_formatter(ticker.LogFormatterMathtext(base=10))
                     ax.xaxis.set_minor_formatter(ticker.NullFormatter())

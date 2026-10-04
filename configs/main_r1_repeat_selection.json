@@ -1,0 +1,8 @@
+{
+  "source_config": "main_r1_tune.json",
+  "results_dir": "../results/main_r1_tune",
+  "output_config": "main_r1_repeats.json",
+  "name": "main_r1_repeats",
+  "seeds": [1, 2, 3, 4, 5],
+  "select_over": ["lr", "batch_size", "p2"]
+}

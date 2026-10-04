@@ -72,7 +72,7 @@ Generate the main privacy-accounting comparison with:
 python numerics/compare.py
 ```
 
-The figure is saved as `numerics/figures/comparison.png` and `comparison.pdf`, alongside the numerical data.
+The figure is saved as `numerics/figures/comparison.png`, `comparison.pdf`, and `comparison.svg`, alongside the numerical data. Its three horizontal panels show $\epsilon(T)$ at $r=1$, $\delta(\epsilon)$ at $r=1$, and $\epsilon(r)$ for $r\in\{1,2,3\}$. The outer panels use logarithmic $\epsilon$; the middle uses logarithmic $\delta$ and includes lower-pair curves. Defaults compare $p_2\in\{0.25,0.5,0.75\}$ against group privacy at $T=1000$ and fixed $\delta=10^{-5}$ where applicable, with RDP included in the first two panels only. See `numerics/README.md` for parameter overrides and CSV outputs.
 
 Generate all appendix figures with:
 
