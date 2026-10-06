@@ -2,6 +2,13 @@
 
 Run these commands from the repository directory after following the [installation and dataset instructions](README.md). The examples use GPU 0; replace `--gpus 0` with the devices available to you. The numerical experiments run on the CPU.
 
+Config paths do not require a personal checkout prefix: `split_root` is relative
+to the repository root, while explicit `progap_python` paths are relative to the
+config directory. The repeat-config generator writes the same relative-path
+conventions. Archived configs preserve their separate ProGAP environment via a
+relative path; use `--progap-python` to select a different local environment.
+See [runner path conventions](scripts/README.md#unified-experiment-runner).
+
 ## Main experiments
 
 The unified configurations evaluate SparseGNN and the baselines on Arxiv, Products, Reddit, Yelp, Amazon, Twitch, Facebook, and MAG at private epsilon targets 1, 2, 5, and 8. MLP and DP-MLP use weight decay 0.0005; every other method uses zero. SparseGNN uses expansion radius 1, and ProGAP depths 1 and 5 remain separate.

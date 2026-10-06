@@ -27,7 +27,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -48,7 +48,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 5,
         "sparse_radius": 2,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -69,7 +69,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 5,
         "sparse_radius": 3,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -91,7 +91,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -113,7 +113,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 5,
         "sparse_radius": 2,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -135,7 +135,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 5,
         "sparse_radius": 3,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -156,7 +156,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -177,7 +177,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 5,
         "sparse_radius": 2,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -198,7 +198,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 5,
         "sparse_radius": 3,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -220,7 +220,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -242,7 +242,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 5,
         "sparse_radius": 2,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -264,7 +264,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 5,
         "sparse_radius": 3,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -285,7 +285,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -306,7 +306,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 5,
         "sparse_radius": 2,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -327,7 +327,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 5,
         "sparse_radius": 3,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -349,7 +349,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -371,7 +371,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 5,
         "sparse_radius": 2,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -393,7 +393,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 5,
         "sparse_radius": 3,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -414,7 +414,7 @@
         "p2": 0.05,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -435,7 +435,7 @@
         "p2": 0.25,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -456,7 +456,7 @@
         "p2": 0.5,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -477,7 +477,7 @@
         "p2": 1.0,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -499,7 +499,7 @@
         "p2": 0.05,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -521,7 +521,7 @@
         "p2": 0.25,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -543,7 +543,7 @@
         "p2": 0.5,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -565,7 +565,7 @@
         "p2": 1.0,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -586,7 +586,7 @@
         "p2": 0.05,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -607,7 +607,7 @@
         "p2": 0.25,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -628,7 +628,7 @@
         "p2": 0.5,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -649,7 +649,7 @@
         "p2": 1.0,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -671,7 +671,7 @@
         "p2": 0.05,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -693,7 +693,7 @@
         "p2": 0.25,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -715,7 +715,7 @@
         "p2": 0.5,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -737,7 +737,7 @@
         "p2": 1.0,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -758,7 +758,7 @@
         "p2": 0.05,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -779,7 +779,7 @@
         "p2": 0.25,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -800,7 +800,7 @@
         "p2": 0.5,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -821,7 +821,7 @@
         "p2": 1.0,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -843,7 +843,7 @@
         "p2": 0.05,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -865,7 +865,7 @@
         "p2": 0.25,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -887,7 +887,7 @@
         "p2": 0.5,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -909,7 +909,7 @@
         "p2": 1.0,
         "sparse_degree_cap": 5,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -930,7 +930,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 10,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -951,7 +951,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 20,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -972,7 +972,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 40,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -994,7 +994,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 10,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -1016,7 +1016,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 20,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -1038,7 +1038,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 40,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -1059,7 +1059,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 10,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -1080,7 +1080,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 20,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -1101,7 +1101,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 40,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -1123,7 +1123,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 10,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -1145,7 +1145,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 20,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -1167,7 +1167,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 40,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -1188,7 +1188,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 10,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -1209,7 +1209,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 20,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -1230,7 +1230,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 40,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -1252,7 +1252,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 10,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -1274,7 +1274,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 20,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     },
@@ -1296,7 +1296,7 @@
         "p2": 0.1,
         "sparse_degree_cap": 40,
         "sparse_radius": 1,
-        "split_root": "/usr/scratch/asaha92/graph_subsampling/markovian_dp/data/inductive_splits",
+        "split_root": "data/inductive_splits",
         "weight_decay": 0.0
       }
     }

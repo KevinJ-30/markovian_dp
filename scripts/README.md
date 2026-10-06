@@ -121,8 +121,12 @@ Use `--max-jobs-per-gpu N` for an explicit upper bound and
 `--timeout-seconds SECONDS` for a wall deadline. `--device cpu` runs serially
 and rejects GPU options; CUDA never silently falls back to CPU. `--dry-run`
 creates no files, probes no GPUs, and does not import training dependencies.
-`--progap-python` selects the separate native environment if needed; paths in
-the config are config-relative, while `split_root` is repository-relative.
+`--progap-python` selects the separate native environment if needed.
+`split_root` paths in configs are repository-relative (for example,
+`data/inductive_splits`); `progap_python` paths, including relative CLI overrides,
+are relative to the config's directory. Bare executable names such as `python3`
+are looked up on `PATH`; use `./python` for an executable beside the config.
+Omitting `progap_python` uses the launching interpreter.
 
 Workers load and reconstruct cached datasets independently; there is no
 dataset-wide exclusive loading lock. Split and GraphSAINT label caches lock
@@ -145,6 +149,12 @@ DP-MLP calibrates and composes the symmetric pair
 `(1-q) N(0, sigma²) + q N(-1, sigma²)`, with `q = batch_size / N_train`,
 using pessimistic PLD discretization at grid `1e-3`. Results identify this as
 `dp_accounting.symmetric_gaussian_mixture`; historical Opacus results are unchanged.
+
+DPAR's training RDP accountant lives in `src/privacy/dpar_rdp.py`, alongside
+the method-specific privacy wrappers. It preserves the released accountant's
+arithmetic and Apache-2.0 header. DPAR training uses `src/training/dpar.py`;
+the accountant uses NumPy, SciPy, and `six`, not TensorFlow. Its result
+identifier is `dpar.upstream_rdp_accountant`.
 
 Each root contains `experiment.json`, atomic `state.json`, aggregate JSON-lines
 `runner.log`, and `results.csv` with one row per planned job. Each attempt is
@@ -220,6 +230,14 @@ a six-seed summary is needed. Exact validation ties keep the first candidate.
 The generator refuses incomplete or mismatched studies, nonfinite metrics,
 reused tuning seeds, and existing output files. `--results-dir`, `--out`, and
 `--seeds` can override generator settings.
+
+Generated repeat configs store split-cache paths relative to the repository root
+and recorded interpreter paths relative to the output config's directory, even
+when `--out` writes elsewhere. Interpreter symlinks and bare `PATH` names are
+preserved. This retains the selected paths and scientific run identities without
+copying absolute machine paths from results back into configs. External paths
+use `..`; their relative directory layout must be preserved or overridden on a
+different machine. Existing result files are not rewritten.
 
 Superseded epsilon-pair, MLP-only, and baseline-depth configs are kept locally in
 the Git-ignored `old_configs/` directory. The active ablation tuning configs are

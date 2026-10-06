@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -69,6 +70,14 @@ def generate(settings_path: Path, *, results_dir=None, output=None, seeds=None):
     if "gpus" in source:
         config["gpus"] = source["gpus"]
     repeats = runner.expand_runs(config)
+    for block in blocks:
+        parameters = block["parameters"]
+        parameters["split_root"] = os.path.relpath(parameters["split_root"], ROOT)
+        executable = parameters.get("progap_python")
+        if executable is not None and Path(executable).is_absolute():
+            # Do not resolve venv symlinks; executables are config-relative.
+            relative = os.path.relpath(executable, destination.absolute().parent)
+            parameters["progap_python"] = relative if "/" in relative else f"./{relative}"
     # Never overwrite a previously generated or hand-edited configuration.
     with destination.open("x", encoding="utf-8") as stream:
         json.dump(config, stream, indent=2, allow_nan=False)

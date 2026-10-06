@@ -7,9 +7,7 @@ pretending that every mechanism is DP-SGD.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-import importlib.util
 import math
-from pathlib import Path
 from typing import Any, Mapping
 
 
@@ -204,18 +202,14 @@ class DPARAccountant(PrivacyAccountant):
         """
         if not 0.0 < amplification_rate <= 1.0:
             raise ValueError("DPAR amplification_rate must lie in (0, 1]")
-        source = Path(__file__).parents[2] / "third_party" / "DPAR" / "dpgnn" / "privacy_utils" / "rdp_accountant.py"
-        spec = importlib.util.spec_from_file_location("_dpar_upstream_rdp", source)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"unable to load DPAR RDP accountant at {source}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        from . import dpar_rdp
+
         orders = tuple([1.0 + order / 10.0 for order in range(1, 100)] + list(range(12, 64)))
-        rdp = module.compute_rdp(sample_rate, noise_multiplier, steps, orders)
+        rdp = dpar_rdp.compute_rdp(sample_rate, noise_multiplier, steps, orders)
         # main.py uses delta_sgd=0.001 / amplification_rate before multiplying
         # both outputs by that rate. ``delta`` is therefore the final report delta.
         base_delta = delta / amplification_rate
-        epsilon, _, _ = module.get_privacy_spent(orders, rdp, target_delta=base_delta)
+        epsilon, _, _ = dpar_rdp.get_privacy_spent(orders, rdp, target_delta=base_delta)
         return PrivacyResult(
             epsilon=float(epsilon * amplification_rate), delta=delta,
             accountant="dpar.upstream_rdp_accountant", rdp_orders=orders,
@@ -223,7 +217,7 @@ class DPARAccountant(PrivacyAccountant):
             noise_multiplier=noise_multiplier, sampling_probability=sample_rate,
             composition_count=steps,
             parameters={"amplification_rate": amplification_rate,
-                        "source": "third_party/DPAR/dpgnn/privacy_utils/rdp_accountant.py"},
+                        "source": "src/privacy/dpar_rdp.py"},
         )
 
     def calibrate(self, target_epsilon: float, delta: float, **kwargs: Any) -> Mapping[str, Any]:

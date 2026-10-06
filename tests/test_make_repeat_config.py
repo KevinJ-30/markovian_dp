@@ -1,6 +1,9 @@
 """Selection boundaries for the two-stage experiment configuration generator."""
 import csv
 import json
+import os
+from pathlib import Path
+import sys
 
 import pytest
 
@@ -57,6 +60,9 @@ def study(tmp_path):
 def test_validation_winners_keep_depths_and_epsilons_separate(study):
     path, _ = study
     output, selected, count = repeat.generate(path)
+    written = json.loads(output.read_text())
+    assert all(not Path(block["parameters"]["split_root"]).is_absolute()
+               for block in written["runs"])
     jobs = runner.expand_runs(runner.load_config(output))
     assert (selected, count) == (6, 12)
     assert {j["parameters"]["seed"] for j in jobs} == {1, 2}
@@ -93,3 +99,52 @@ def test_additional_seeds_cannot_include_the_tuning_seed(study):
     with pytest.raises(ValueError, match="exclude the tuning seed"):
         repeat.generate(path, seeds=[0, 1])
     assert not (path.parent / "repeats.json").exists()
+
+
+@pytest.mark.parametrize("nested_output", [False, True])
+@pytest.mark.parametrize("interpreter", ["symlink", "path_name"])
+def test_relative_paths_preserve_targets_across_output_directories(
+        study, monkeypatch, nested_output, interpreter):
+    path, jobs = study
+    source_path = path.parent / "tuning.json"
+    source = json.loads(source_path.read_text())
+    split_root = path.parent / "external_splits"
+    split_root.mkdir()
+    source["defaults"]["split_root"] = str(split_root)
+    executable = path.parent / "python"
+    executable.symlink_to(sys.executable)
+    source["runs"][1]["parameters"]["progap_python"] = (
+        "./python" if interpreter == "symlink" else "python3")
+    source_path.write_text(json.dumps(source))
+    expected = runner.expand_runs(runner.load_config(source_path))
+    for saved, planned in zip(jobs, expected):
+        saved.update(id=planned["id"], parameters=planned["parameters"])
+    (path.parent / "state.json").write_text(json.dumps({"jobs": jobs}))
+
+    destination = path.parent / "nested" if nested_output else path.parent
+    destination.mkdir(exist_ok=True)
+    # --out is cwd-relative; split paths must still be repository-relative.
+    monkeypatch.chdir(path.parent)
+    output, _, _ = repeat.generate(
+        path, output=destination.relative_to(path.parent) / "portable.json")
+    written = json.loads(output.read_text())
+    for block in written["runs"]:
+        parameters = block["parameters"]
+        assert not Path(parameters["split_root"]).is_absolute()
+        assert (repeat.ROOT / parameters["split_root"]).resolve() == split_root
+        if parameters["method"] == "progap":
+            value = parameters["progap_python"]
+            if interpreter == "symlink":
+                assert not Path(value).is_absolute() and "/" in value
+                assert os.path.abspath(output.parent / value) == str(executable)
+                assert (output.parent / value).is_symlink()
+            else:
+                assert value == "python3"
+    reloaded = runner.expand_runs(runner.load_config(output))
+    for job in reloaded:
+        parameters = job["parameters"]
+        assert parameters["split_root"] == str(split_root)
+        if parameters["method"] == "progap":
+            value = parameters["progap_python"]
+            assert (os.path.abspath(value) == str(executable)
+                    if interpreter == "symlink" else value == "python3")
