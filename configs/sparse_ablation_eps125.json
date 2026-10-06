@@ -1,5 +1,5 @@
 {
-  "name": "sparse_ablation_eps125",
+  "name": "sparse_ablation_yelp_mag_eps125",
   "defaults": {
     "seed": 0,
     "epochs": 20,
@@ -9,7 +9,7 @@
     "bootstrap_resamples": 1000
   },
   "grid": {
-    "dataset": ["saint-yelp", "twitch-allbut2", "mag-allbut2"],
+    "dataset": ["saint-yelp", "mag-allbut2"],
     "method": ["sparse_sage", "sparse_gin"],
     "epsilon": [1, 2, 5],
     "batch_size": [256, 1024],

@@ -65,7 +65,7 @@ def complete_ofat(root, epsilon=8):
     settings = [(r, .1, 5) for r in (1, 2, 3)]
     settings += [(1, p, 5) for p in (.05, .25, .5, 1.)]
     settings += [(1, .1, cap) for cap in (10, 20, 40)]
-    for protocol in ("saint-yelp", "twitch-allbut2", "mag-allbut2"):
+    for protocol in ("saint-yelp", "mag-allbut2"):
         for method in ("sparse_sage", "sparse_gin"):
             for radius, p2, cap in settings:
                 for seed in (1, 2, 3, 4, 5):
@@ -80,10 +80,10 @@ def complete_ofat(root, epsilon=8):
 def test_seed_means_and_standard_errors_keep_each_ablation_point(tmp_path):
     complete_ofat(tmp_path)
     rows, signatures = analysis.read_results(tmp_path, 8)
-    assert set(signatures) == {"saint-yelp", "twitch-allbut2", "mag-allbut2"}
+    assert set(signatures) == {"saint-yelp", "mag-allbut2"}
     assert all(row["peak_rss_bytes"] is None and row["mean_nodes"] is None for row in rows)
     points = analysis.aggregate_seeds(rows)
-    assert len(points) == 60
+    assert len(points) == 40
     for point in points:
         assert point["n"] == 5 and point["seeds"] == [1, 2, 3, 4, 5]
         if point["method"] == "sparse_sage":
@@ -94,7 +94,7 @@ def test_seed_means_and_standard_errors_keep_each_ablation_point(tmp_path):
         else:
             assert point["test_mean"] == point["test_sd"] == point["test_se"] == 0.
     curves = analysis.relationship_curves(points)
-    assert len(curves) == 72
+    assert len(curves) == 48
     yelp_sage = [row for row in curves if row["protocol"] == "saint-yelp"
                  and row["method"] == "sparse_sage"]
     assert [row["curve_value"] for row in yelp_sage if row["curve_parameter"] == "r"] == [1, 2, 3]
@@ -160,7 +160,7 @@ def test_epsilon_selection_does_not_pool_budgets(tmp_path):
     write_csv(tmp_path / "results.csv", indexed)
     rows, _ = analysis.read_results(tmp_path, 2)
     assert {row["epsilon"] for row in rows} == {2}
-    assert len(rows) == 300
+    assert len(rows) == 200
 
 
 def test_selected_output_cannot_escape_root(tmp_path):

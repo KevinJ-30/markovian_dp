@@ -4,7 +4,7 @@
 Usage: python scripts/sparse_ablation.py --ofat-root REPEAT_ROOT
                                       [--epsilon 8] [--out-dir NEW_DIRECTORY]
 
-Requires all 300 runs for the selected epsilon: Yelp, Twitch, and MAG;
+Requires all 200 runs for the selected epsilon: Yelp and MAG;
 SparseSAGE and SparseGIN; ten OFAT settings; training seeds 1–5.
 Batch size and learning rate must be frozen within each five-seed cohort.
 Seed-0 tuning results are not accepted and no configurations are selected here.
@@ -32,11 +32,9 @@ CONFIG_KEYS = ("protocol", "method", "epsilon", "lr", "batch_size", "epochs", "s
 TASKS = {
     "mag-allbut2": ("mag-countries", "accuracy", False, False, "domain"),
     "saint-yelp": ("saint-yelp", "micro_f1", False, True, "native"),
-    "twitch-allbut2": ("twitch-explicit", "auroc", True, False, "domain"),
 }
 DATASETS = (
     ("saint-yelp", "Yelp", "#009E73"),
-    ("twitch-allbut2", "Twitch", "#D55E00"),
     ("mag-allbut2", "MAG", "#0072B2"),
 )
 METHODS = (("sparse_sage", "SAGE", "-"), ("sparse_gin", "GIN", ":"))
@@ -53,7 +51,7 @@ POLICY = {
     "checkpoint": "Best validation-primary-metric checkpoint; no test-based or repeat-seed configuration selection.",
     "uncertainty": "Mean ±1 standard error across training seeds 1–5: sample SD (ddof=1) / sqrt(5). Not a confidence interval or node-bootstrap interval.",
     "radius": "Radius 1/2 uses two layers; radius 3 uses three. Incoming sampling caps are 20, 10, 5 on successive hops.",
-    "metrics": "Yelp micro-F1, Twitch AUROC, and MAG accuracy share a 0–0.75 display range; scores are never averaged across datasets.",
+    "metrics": "Yelp micro-F1 and MAG accuracy share a 0–0.75 display range; scores are never averaged across datasets.",
 }
 
 

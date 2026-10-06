@@ -225,48 +225,6 @@
       "parameters": {
         "batch_size": 256,
         "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 1.0,
-        "gnn_hidden": 128,
-        "lr": 0.001,
-        "method": "sparse_sage",
-        "mlp_hidden": 128,
-        "p2": 0.1,
-        "sparse_degree_cap": 5,
-        "sparse_radius": 1,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 5.0,
-        "gnn_hidden": 128,
-        "lr": 0.001,
-        "method": "sparse_sage",
-        "mlp_hidden": 128,
-        "p2": 0.1,
-        "sparse_degree_cap": 5,
-        "sparse_radius": 1,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -558,50 +516,6 @@
         "gin_pooling": "sum",
         "gnn_hidden": 128,
         "lr": 0.001,
-        "method": "sparse_gin",
-        "mlp_hidden": 128,
-        "p2": 0.1,
-        "sparse_degree_cap": 5,
-        "sparse_radius": 1,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 1.0,
-        "gin_pooling": "sum",
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "sparse_gin",
-        "mlp_hidden": 128,
-        "p2": 0.1,
-        "sparse_degree_cap": 5,
-        "sparse_radius": 1,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 5.0,
-        "gin_pooling": "sum",
-        "gnn_hidden": 128,
-        "lr": 0.01,
         "method": "sparse_gin",
         "mlp_hidden": 128,
         "p2": 0.1,
@@ -1081,82 +995,6 @@
     },
     {
       "parameters": {
-        "batch_size": 1024,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 1.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "progap",
-        "mlp_hidden": 128,
-        "progap_depth": 1,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 1024,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 1.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "progap",
-        "mlp_hidden": 128,
-        "progap_depth": 5,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 5.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "progap",
-        "mlp_hidden": 128,
-        "progap_depth": 1,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 1024,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 5.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "progap",
-        "mlp_hidden": 128,
-        "progap_depth": 5,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
         "batch_size": 256,
         "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
@@ -1471,40 +1309,6 @@
         "epochs": 20,
         "gnn_hidden": 128,
         "lr": 0.001,
-        "method": "gin",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 1024,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "graphsage",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "gnn_hidden": 128,
-        "lr": 0.01,
         "method": "gin",
         "mlp_hidden": 128,
         "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
@@ -2125,118 +1929,6 @@
         "batch_size": 256,
         "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dpgnn_radius": 1,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 5.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "dp_gnn_gin",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 1.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "dpar",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 5.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "dpar",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 1024,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dpgnn_radius": 1,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 1.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "dp_gnn_sage",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 1024,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dpgnn_radius": 1,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 5.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "dp_gnn_sage",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 1024,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dpgnn_radius": 1,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 1.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "dp_gnn_gin",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 1024,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
         "degree_bound": 5,
         "domain_split": null,
         "dpgnn_radius": 1,
@@ -2669,48 +2361,6 @@
         "batch_size": 1024,
         "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 8.0,
-        "gnn_hidden": 128,
-        "lr": 0.001,
-        "method": "sparse_sage",
-        "mlp_hidden": 128,
-        "p2": 0.1,
-        "sparse_degree_cap": 5,
-        "sparse_radius": 1,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 2.0,
-        "gnn_hidden": 128,
-        "lr": 0.001,
-        "method": "sparse_sage",
-        "mlp_hidden": 128,
-        "p2": 0.1,
-        "sparse_degree_cap": 5,
-        "sparse_radius": 1,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
         "degree_bound": 5,
         "domain_split": null,
         "dropout": 0.5,
@@ -3033,50 +2683,6 @@
     },
     {
       "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 2.0,
-        "gin_pooling": "sum",
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "sparse_gin",
-        "mlp_hidden": 128,
-        "p2": 0.5,
-        "sparse_degree_cap": 5,
-        "sparse_radius": 1,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 8.0,
-        "gin_pooling": "sum",
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "sparse_gin",
-        "mlp_hidden": 128,
-        "p2": 0.1,
-        "sparse_degree_cap": 5,
-        "sparse_radius": 1,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
         "batch_size": 1024,
         "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
@@ -3545,82 +3151,6 @@
     },
     {
       "parameters": {
-        "batch_size": 1024,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 2.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "progap",
-        "mlp_hidden": 128,
-        "progap_depth": 1,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 1024,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 2.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "progap",
-        "mlp_hidden": 128,
-        "progap_depth": 5,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 8.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "progap",
-        "mlp_hidden": 128,
-        "progap_depth": 1,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 1024,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 8.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "progap",
-        "mlp_hidden": 128,
-        "progap_depth": 5,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
         "batch_size": 256,
         "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
@@ -4335,118 +3865,6 @@
       "parameters": {
         "batch_size": 256,
         "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 2.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "dpar",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 8.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "dpar",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 1024,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dpgnn_radius": 1,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 2.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "dp_gnn_sage",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 1024,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dpgnn_radius": 1,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 8.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "dp_gnn_sage",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 1024,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dpgnn_radius": 1,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 2.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "dp_gnn_gin",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 1024,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dpgnn_radius": 1,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 8.0,
-        "gnn_hidden": 128,
-        "lr": 0.01,
-        "method": "dp_gnn_gin",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -4746,23 +4164,6 @@
         "epochs": 20,
         "gnn_hidden": 128,
         "lr": 0.01,
-        "method": "mlp",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0005
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 1024,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "gnn_hidden": 128,
-        "lr": 0.001,
         "method": "mlp",
         "mlp_hidden": 128,
         "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
@@ -5150,78 +4551,6 @@
         "batch_size": 1024,
         "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 8.0,
-        "gnn_hidden": 128,
-        "lr": 0.001,
-        "method": "dp_mlp",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0005
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 1.0,
-        "gnn_hidden": 128,
-        "lr": 0.001,
-        "method": "dp_mlp",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0005
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 2.0,
-        "gnn_hidden": 128,
-        "lr": 0.001,
-        "method": "dp_mlp",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0005
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
-        "degree_bound": 5,
-        "domain_split": null,
-        "dropout": 0.5,
-        "epochs": 20,
-        "epsilon": 5.0,
-        "gnn_hidden": 128,
-        "lr": 0.001,
-        "method": "dp_mlp",
-        "mlp_hidden": 128,
-        "split_root": "results/progap_hidden128_standard8_tuning_20261002T213302Z/split_cache",
-        "weight_decay": 0.0005
-      }
-    },
-    {
-      "parameters": {
-        "batch_size": 256,
-        "bootstrap_resamples": 0,
-        "dataset": "twitch-allbut2",
         "degree_bound": 5,
         "domain_split": null,
         "dropout": 0.5,
