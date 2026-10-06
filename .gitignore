@@ -8,6 +8,7 @@
 # Downloaded datasets, processed graphs, split caches, and scratch files.
 /data/
 /tmp/
+/old_configs/
 
 # Runtime outputs
 /third_party/**/data_records/

@@ -4,8 +4,9 @@ SparseExpand: randomized breadth-first expansion from a root vertex.
     SparseExpand(G, v, p2, r) -> rooted sparsified subgraph (V_v, E_v, F|_{V_v})
 
 From frontier Q_0 = {v}, each of r levels samples arcs with probability p2.
-Incoming expansion retains at most 20 arcs per expanded node: draw the
-Bernoulli count, cap it, then choose that many arcs uniformly without replacement.
+Incoming expansion caps retained arcs per expanded node at 20, 10, then 5
+(5 for later levels): draw the Bernoulli count, cap it, then choose that many
+arcs uniformly without replacement.
 An arc joins E_v before the "already visited" test, so E_v may contain arcs into
 already-discovered vertices.
 
@@ -25,7 +26,7 @@ from typing import List
 
 import torch
 
-MAX_INCOMING_EDGES = 20
+INCOMING_EDGE_CAPS = (20, 10, 5)
 
 
 @dataclass(frozen=True)
@@ -107,18 +108,18 @@ def _bernoulli_keep(n: int, p2: float, generator) -> torch.Tensor:
 
 
 def _capped_incoming_positions(
-    degrees: torch.Tensor, p2: float, generator: torch.Generator | None,
+    degrees: torch.Tensor, p2: float, cap: int, generator: torch.Generator | None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Sample capped Bernoulli subsets using O(frontier size * cap) storage."""
     if p2 <= 0.0:
         counts = torch.zeros_like(degrees)
     elif p2 >= 1.0:
-        counts = degrees.clamp(max=MAX_INCOMING_EDGES)
+        counts = degrees.clamp(max=cap)
     else:
         populations = degrees.to(torch.float64)
         counts = torch.binomial(
             populations, torch.full_like(populations, p2), generator=generator,
-        ).to(torch.long).clamp(max=MAX_INCOMING_EDGES)
+        ).to(torch.long).clamp(max=cap)
     width = int(counts.max())
     slots = torch.arange(width)
     positions = slots.expand(*degrees.shape, width).clone()
@@ -156,7 +157,7 @@ def sparse_expand(
         adj:       neighbour lists from `build_adjacency(..., direction)` — must
                    have been built with the SAME `direction` passed here.
         root:      root vertex v (original node id).
-        p2:        Bernoulli edge probability before the incoming cap of 20.
+        p2:        Bernoulli edge probability before the per-hop incoming cap.
         r:         maximum distance / number of expansion levels.
         generator: optional torch.Generator for reproducible sampling.
         direction: 'in'  -> Algorithm 5: traverse incoming arcs (w, u) and record
@@ -181,12 +182,13 @@ def sparse_expand(
     frontier = [root]
 
     for _ell in range(r):
+        cap = INCOMING_EDGE_CAPS[min(_ell, len(INCOMING_EDGE_CAPS) - 1)]
         next_frontier: List[int] = []
         for u in frontier:
             out = adj.neighbors(u)
-            if expand_in and out.numel() > MAX_INCOMING_EDGES:
+            if expand_in and out.numel() > cap:
                 positions, retained = _capped_incoming_positions(
-                    torch.tensor([out.numel()]), p2, generator)
+                    torch.tensor([out.numel()]), p2, cap, generator)
                 kept_dst = out[positions[retained]].tolist()
             else:
                 keep = _bernoulli_keep(int(out.numel()), p2, generator)
@@ -227,7 +229,8 @@ def batch_sparse_expand(
     """Vectorized SparseExpand for an ordered batch of CPU roots.
 
     Expansion is level-synchronous across roots. Incoming neighborhoods retain
-    at most 20 arcs per expanded node without allocating degree-sized candidates.
+    at most 20/10/5 arcs per expanded node by hop (5 thereafter), without
+    allocating degree-sized candidates.
     Segmented composite keys preserve first-discovery order and map repeated
     discoveries to one local node.
     """
@@ -261,6 +264,7 @@ def batch_sparse_expand(
     edge_counts = torch.zeros(batch_size, dtype=torch.long)
 
     for _ell in range(r):
+        cap = INCOMING_EDGE_CAPS[min(_ell, len(INCOMING_EDGE_CAPS) - 1)]
         frontier_width = frontier_nodes.size(1)
         frontier_slots = torch.arange(frontier_width, dtype=torch.long)
         frontier_mask = frontier_slots.unsqueeze(0) < frontier_counts.unsqueeze(1)
@@ -273,9 +277,9 @@ def batch_sparse_expand(
         if max_degree == 0:
             break
 
-        if direction == 'in' and max_degree > MAX_INCOMING_EDGES:
+        if direction == 'in' and max_degree > cap:
             neighbor_positions, retained = _capped_incoming_positions(
-                degrees, p2, generator)
+                degrees, p2, cap, generator)
             width = neighbor_positions.size(-1)
             safe_offsets = (
                 starts.unsqueeze(-1) + neighbor_positions

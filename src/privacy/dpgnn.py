@@ -48,7 +48,7 @@ def multiterm_dpsgd_epsilon(*, steps: int, noise_multiplier: float,
     terms = np.arange(max_terms + 1)
     terms_logprobs = scipy.stats.hypergeom(
         num_samples, max_terms, batch_size).logpmf(terms)
-    orders = np.arange(1, 10, 0.1)[1:]
+    orders = np.arange(1, 200, 0.1)[1:]
     accountant = RdpAccountant(orders)
     accountant.compose(GaussianDpEvent(noise_multiplier))
     unamplified = np.asarray(accountant._rdp)  # DP-Accounting has no public RDP accessor.

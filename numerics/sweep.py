@@ -65,7 +65,7 @@ def run_sweep(parameter):
                 ax = axes[row, column]
                 compare.draw_curves(ax, values, curves[column], args)
                 ax.set(xlabel=xlabel, ylabel=rf"$\epsilon\ (\delta={delta_label})$",
-                       title=rf"$R={radius},\ T={steps}$")
+                       title=rf"$r={radius},\ T={steps}$")
                 positive = curves[column][curves[column] > 0]
                 if not positive.size:
                     raise ValueError(f"nonpositive epsilon at r={radius}, T={steps}")

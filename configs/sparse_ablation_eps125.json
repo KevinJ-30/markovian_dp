@@ -1,7 +1,6 @@
 {
-  "name": "sparse_ablation",
+  "name": "sparse_ablation_eps125",
   "defaults": {
-    "epsilon": 8,
     "seed": 0,
     "epochs": 20,
     "dropout": 0.5,
@@ -12,6 +11,7 @@
   "grid": {
     "dataset": ["saint-yelp", "twitch-allbut2", "mag-allbut2"],
     "method": ["sparse_sage", "sparse_gin"],
+    "epsilon": [1, 2, 5],
     "batch_size": [256, 1024],
     "lr": [0.01, 0.001]
   },

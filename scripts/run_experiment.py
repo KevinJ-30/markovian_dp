@@ -511,7 +511,7 @@ def _sparse(args, split, task, batch, delta):
     from src.models.bootstrap import BootstrapConfig
     from src.privacy.accounting import calibrate_sparsegnn_noise
     from src.processing.graphs import max_degrees, preprocess_edges
-    from src.processing.sparse_expand import MAX_INCOMING_EDGES, build_adjacency
+    from src.processing.sparse_expand import INCOMING_EDGE_CAPS, build_adjacency
     from src.training.sparse_gnn import train_sparse_gnn
 
     if task["binary"]:
@@ -548,9 +548,10 @@ def _sparse(args, split, task, batch, delta):
     extra = {} if any(task[name] for name in ("binary", "multilabel", "regression")) else {
         "metric_ignore_label": task["metric_ignore_label"]}
     torch.manual_seed(args.seed)
+    layers = 3 if args.sparse_radius == 3 else 2
     mechanism = Mechanism(
         train, int(train.x.size(1)), split.num_classes,
-        hidden=args.gnn_hidden, num_layers=2, dropout=args.dropout,
+        hidden=args.gnn_hidden, num_layers=layers, dropout=args.dropout,
         aggr=aggr, device=torch.device(args.device), **extra,
     )
     mechanism.build_optimizer(lr=args.lr, weight_decay=args.weight_decay, kind="adam")
@@ -574,14 +575,16 @@ def _sparse(args, split, task, batch, delta):
                        "qualification": "Uses the repository's mixture formula, not an independently established privacy guarantee."},
     }
     parameters = {
-        "architecture": aggr, "hidden": args.gnn_hidden, "layers": 2,
+        "architecture": aggr, "hidden": args.gnn_hidden, "layers": layers,
         "lr": args.lr, "batch_size": batch, "epochs": args.epochs, "steps": steps,
         "dropout": args.dropout, "optimizer": "adam", "weight_decay": args.weight_decay,
         "p1": p1, "p2": args.p2, "r": args.sparse_radius, "clip": 1.0,
         "sigma": calibration.noise_multiplier, "K_in": 10, "K_out": args.sparse_degree_cap,
         "cap_mode": "directed", "cap_seed": args.seed + 20_000, "direction": "in",
         "cap_semantics": "outgoing arcs capped; incoming degree unrestricted",
-        "incoming_sampling_cap": MAX_INCOMING_EDGES,
+        "incoming_sampling_caps": [
+            INCOMING_EDGE_CAPS[min(hop, len(INCOMING_EDGE_CAPS) - 1)]
+            for hop in range(args.sparse_radius)],
         "K_in_achieved": achieved_degrees[0], "K_out_achieved": achieved_degrees[1],
         "accounting_grid": 1e-3,
         "calibration_rtol": 1e-3, "calibration_atol": 1e-6,

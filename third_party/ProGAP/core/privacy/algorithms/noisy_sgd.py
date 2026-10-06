@@ -1,4 +1,3 @@
-from opacus.privacy_engine import forbid_accumulation_hook
 from opacus.grad_sample import GradSampleModule
 from opacus.optimizers import DPOptimizer
 from autodp.transformer_zoo import Composition, AmplificationBySampling
@@ -42,7 +41,7 @@ class NoisySGD(NoisyMechanism):
                 for hook in module.autograd_grad_sample_hooks:
                     hook.remove()
                 del module.autograd_grad_sample_hooks
-            GradSampleModule(module).register_full_backward_hook(forbid_accumulation_hook)
+            GradSampleModule(module).forbid_grad_accumulation()
 
     def prepare_dataloader(self, dataloader: NodeDataLoader) -> NodeDataLoader:
         if self.params['noise_scale'] > 0.0 and self.params['epochs'] > 0:

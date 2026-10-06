@@ -1,0 +1,8 @@
+{
+  "source_config": "sparse_ablation_remaining_seed0.json",
+  "results_dir": "../results/sparse_ablation_remaining_seed0",
+  "output_config": "sparse_ablation_remaining_repeats.json",
+  "name": "sparse_ablation_remaining_repeats",
+  "seeds": [1, 2, 3, 4, 5],
+  "select_over": ["lr", "batch_size"]
+}

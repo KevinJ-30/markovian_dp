@@ -35,14 +35,14 @@ You can store the GraphSAINT folders elsewhere by setting `GRAPHSAINT_DATA_ROOT`
 
 The [reproduction guide](reproduce.md) gives the commands for training, repeated runs, result tables, ablations, and numerical figures. Experiment settings are stored in `configs/`.
 
-To preview the main experiment grid and then run it on GPU 0:
+To preview the frozen validation-selected configurations and run their five-seed repeats on GPU 0:
 
 ```bash
-python scripts/run_experiments.py configs/main_r1_tune.json --gpus 0 --dry-run
-python scripts/run_experiments.py configs/main_r1_tune.json --gpus 0
+python scripts/run_experiments.py configs/main_r1_eps1258_repeats.json --gpus 0 --dry-run
+python scripts/run_experiments.py configs/main_r1_eps1258_repeats.json --gpus 0
 ```
 
-Replace `0` with the GPUs you want to use, such as `0,1`. Results and logs are written to `results/main_r1_tune/`. To continue an interrupted run, use the same command with `--resume`.
+Replace `0` with the GPUs you want to use, such as `0,1`. Results and logs are written to `results/main_r1_eps1258_repeats/`. To continue an interrupted run, use the same command with `--resume`. The reproduction guide also covers fresh tuning. Superseded configurations are retained locally in the Git-ignored `old_configs/` directory.
 
 We also note that the configuration files use a custom-written scheduler, which attempts to add as many jobs as possible to each GPU, since the jobs are largely CPU-dependent. 
 

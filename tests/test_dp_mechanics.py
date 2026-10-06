@@ -210,26 +210,30 @@ def test_edge_retention_matches_p2_below_incoming_cap():
     assert retained / (trials * degree) == pytest.approx(p2, rel=0.05)
 
 
-@pytest.mark.parametrize("radius,reads_two_hop", [(1, False), (2, True)])
-def test_model_depth_does_not_widen_privacy_radius(radius, reads_two_hop):
+@pytest.mark.parametrize("radius,layers,distant,reads_distant", [
+    (1, 2, 2, False), (2, 2, 2, True),
+    (3, 2, 3, False), (3, 3, 3, True),
+])
+def test_model_depth_does_not_widen_privacy_radius(radius, layers, distant, reads_distant):
     from src.models.gnn_mechanism import GNNMechanism
 
-    edges = torch.tensor([[2, 1], [1, 0]])
+    edges = torch.tensor([[3, 2, 1], [2, 1, 0]])
     data = Data(
-        x=torch.randn(3, 4), y=torch.tensor([0, 1, 0]), edge_index=edges,
-        train_mask=torch.ones(3, dtype=torch.bool))
+        x=torch.randn(4, 4, generator=torch.Generator().manual_seed(42)),
+        y=torch.tensor([0, 1, 0, 1]), edge_index=edges,
+        train_mask=torch.ones(4, dtype=torch.bool))
     data.val_mask = data.test_mask = data.train_mask
     torch.manual_seed(0)
     mechanism = GNNMechanism(
-        data, 4, 2, hidden=8, num_layers=2, dropout=0.0)
+        data, 4, 2, hidden=8, num_layers=layers, dropout=0.0)
     subgraph = sparse_expand(
-        build_adjacency(edges, 3, direction="in"), 0, p2=1.0,
+        build_adjacency(edges, 4, direction="in"), 0, p2=1.0,
         r=radius, direction="in")
     before = float(mechanism.subgraph_loss(subgraph).detach())
-    data.x[2] += 100.0
+    data.x[distant] += 100.0
     after = float(mechanism.subgraph_loss(subgraph).detach())
-    assert (before != after) == reads_two_hop
-    assert (2 in subgraph.nodes.tolist()) == reads_two_hop
+    assert (before != after) == reads_distant
+    assert (distant in subgraph.nodes.tolist()) == (radius >= distant)
 
 
 class _TwoOutput(nn.Module):

@@ -1,17 +1,18 @@
 {
-  "name": "sparse_ablation",
+  "name": "sparse_ablation_amazon_seed0",
   "defaults": {
-    "epsilon": 8,
     "seed": 0,
     "epochs": 20,
     "dropout": 0.5,
     "mlp_hidden": 64,
     "gnn_hidden": 128,
+    "weight_decay": 0.0,
     "bootstrap_resamples": 1000
   },
   "grid": {
-    "dataset": ["saint-yelp", "twitch-allbut2", "mag-allbut2"],
+    "dataset": ["saint-amazon"],
     "method": ["sparse_sage", "sparse_gin"],
+    "epsilon": [1, 2, 5, 8],
     "batch_size": [256, 1024],
     "lr": [0.01, 0.001]
   },

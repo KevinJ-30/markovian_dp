@@ -1,6 +1,7 @@
-"""Paper-curve loading from ordinary selected-result indexes."""
+"""Five-seed ablation aggregation and selected-result integrity."""
 import csv
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -24,86 +25,96 @@ def save_output(directory, result, config):
     write_csv(directory / "result.csv", [result])
 
 
-def ordinary_run(root, ordinal=0, *, protocol="ogbn-arxiv", method="sparse_sage",
-                 radius=1, p2=.5, cap=10, ci=True):
+def ordinary_run(root, ordinal=0, *, protocol="saint-yelp", method="sparse_sage",
+                 radius=1, p2=.1, cap=5, seed=1, epsilon=8):
     dataset, metric, binary, multilabel, strategy = analysis.TASKS[protocol]
-    sparse = method.startswith("sparse_")
-    parameters = {"evaluate_every": 2, "hidden": 128}
-    if sparse:
-        parameters.update(r=radius, p2=p2, K_out=cap, K_in=10, layers=2)
-    else:
-        parameters.update(max_degree=5)
-        parameters["depth" if method == "progap" else "radius"] = radius
+    score = (seed - 1) / 10 if method == "sparse_sage" else 0.
+    parameters = {
+        "evaluate_every": 2, "hidden": 128, "r": radius, "p2": p2,
+        "K_out": cap, "K_in": 10, "layers": 3 if radius == 3 else 2,
+        "incoming_sampling_caps": [20, 10, 5][:radius], "weight_decay": 0.,
+        "cap_seed": 20000 + seed, "K_in_achieved": 100 + seed,
+    }
     result = {
         "protocol": protocol, "dataset": dataset, "method": method, "metric": metric,
-        "status": "completed", "target_epsilon": 8., "epsilon": 7.99,
-        "delta": .01, "seed": 0, "lr": .01, "requested_batch_size": 256,
+        "status": "completed", "target_epsilon": epsilon, "epsilon": epsilon - .01,
+        "delta": .01, "seed": seed, "lr": .001 if radius == 1 else .01,
+        "requested_batch_size": 1024 if radius == 1 else 256,
         "batch_size": 100, "effective_batch_size": 100, "epochs": 20,
-        "parameters": parameters, "hidden": 128, "dropout": .5,
+        "parameters": parameters, "hidden": 128, "dropout": .5, "weight_decay": 0.,
         "split": f"{strategy}:seed0", "split_strategy": strategy, "split_seed": 0,
         "domain_split": None, "domain_split_id": None, "device": "cpu",
-        "test_metric": 0., "validation_metric": 0.,
+        "test_metric": score, "validation_metric": 1 - score,
         "selection": {"split": "validation", "metric": metric, "step": 2,
-                      "validation_score": 0.},
+                      "validation_score": 1 - score},
     }
-    if ci:
-        result["test_confidence_intervals"] = {
-            "confidence_level": .95, "method": "percentile", "resampling_unit": "node",
-            "n_resamples": 1000, "seed": 0, "n_observations": 10,
-            "metrics": {metric: {"lower": 0., "upper": .1, "valid_resamples": 1000}},
-        }
-    config = {**result, "train_nodes": 100, "partitions": {"test": {"nodes": 10}},
+    config = {**result, "train_nodes": 100,
+              "partitions": {"test": {"nodes": 10, "evaluated_nodes": 10, "edges": seed * cap}},
               "task": {"primary_metric": metric, "binary": binary, "multilabel": multilabel,
                        "regression": False}}
     directory = root / "runs" / f"{ordinal:04d}" / "attempts" / "1" / "output"
     save_output(directory, result, config)
     indexed = {"status": "completed", "run_id": f"{ordinal:04d}", "attempt": 1,
                "output_dir": str(directory), "protocol": protocol, "method": method,
-               "test_metric": 0., "validation_metric": 0.}
+               "target_epsilon": epsilon, "test_metric": score, "validation_metric": 1 - score}
     return indexed, result, config, directory
 
 
-def complete_ofat(root):
+def complete_ofat(root, epsilon=8):
     rows = []
-    settings = [(r, .5, 10) for r in (1, 2, 3)]
-    settings += [(1, p, 10) for p in (.05, .1, .25, 1.)]
-    settings += [(1, .5, cap) for cap in (5, 20, 40)]
-    for protocol in ("ogbn-arxiv", "saint-yelp", "twitch-allbut2"):
+    settings = [(r, .1, 5) for r in (1, 2, 3)]
+    settings += [(1, p, 5) for p in (.05, .25, .5, 1.)]
+    settings += [(1, .1, cap) for cap in (10, 20, 40)]
+    for protocol in ("saint-yelp", "twitch-allbut2", "mag-allbut2"):
         for method in ("sparse_sage", "sparse_gin"):
             for radius, p2, cap in settings:
-                indexed, _, _, _ = ordinary_run(root, len(rows), protocol=protocol, method=method,
-                                                radius=radius, p2=p2, cap=cap)
-                rows.append(indexed)
+                for seed in (1, 2, 3, 4, 5):
+                    indexed, _, _, _ = ordinary_run(
+                        root, len(rows), protocol=protocol, method=method,
+                        radius=radius, p2=p2, cap=cap, seed=seed, epsilon=epsilon)
+                    rows.append(indexed)
     write_csv(root / "results.csv", rows)
     return rows
 
 
-def test_complete_plain_index_preserves_zero_metrics_and_missing_resources(tmp_path):
+def test_seed_means_and_standard_errors_keep_each_ablation_point(tmp_path):
     complete_ofat(tmp_path)
-    rows, signatures = analysis.read_results(tmp_path, "ofat")
-    assert set(signatures) == {"ogbn-arxiv", "saint-yelp", "twitch-allbut2"}
-    assert all(row["test_metric"] == 0. and row["validation_metric"] == 0. for row in rows)
+    rows, signatures = analysis.read_results(tmp_path, 8)
+    assert set(signatures) == {"saint-yelp", "twitch-allbut2", "mag-allbut2"}
     assert all(row["peak_rss_bytes"] is None and row["mean_nodes"] is None for row in rows)
-    curves = analysis.relationship_curves(rows)
-    arxiv_sage = [row for row in curves if row["protocol"] == "ogbn-arxiv"
+    points = analysis.aggregate_seeds(rows)
+    assert len(points) == 60
+    for point in points:
+        assert point["n"] == 5 and point["seeds"] == [1, 2, 3, 4, 5]
+        if point["method"] == "sparse_sage":
+            assert point["test_mean"] == pytest.approx(.2)
+            assert point["validation_mean"] == pytest.approx(.8)
+            assert point["test_sd"] == pytest.approx(math.sqrt(.025))
+            assert point["test_se"] == pytest.approx(math.sqrt(.005))
+        else:
+            assert point["test_mean"] == point["test_sd"] == point["test_se"] == 0.
+    curves = analysis.relationship_curves(points)
+    assert len(curves) == 72
+    yelp_sage = [row for row in curves if row["protocol"] == "saint-yelp"
                  and row["method"] == "sparse_sage"]
-    assert [row["curve_value"] for row in arxiv_sage if row["curve_parameter"] == "p2"] == [.05, .1, .25, .5, 1.]
-    assert [row["curve_value"] for row in arxiv_sage if row["curve_parameter"] == "K_out"] == [5, 10, 20, 40]
+    assert [row["curve_value"] for row in yelp_sage if row["curve_parameter"] == "r"] == [1, 2, 3]
+    assert [row["curve_value"] for row in yelp_sage if row["curve_parameter"] == "p2"] == [.05, .1, .25, .5, 1.]
+    assert [row["curve_value"] for row in yelp_sage if row["curve_parameter"] == "K_out"] == [5, 10, 20, 40]
 
 
-def test_historical_summary_resolves_moved_absolute_outputs_without_state(tmp_path):
+def test_moved_repeat_root_resolves_recorded_outputs(tmp_path):
     indexed = complete_ofat(tmp_path)
+    original = Path("/previous/location/experiment")
     for row in indexed:
-        relative = Path(row.pop("output_dir")).relative_to(tmp_path)
-        row["result_csv"] = str(Path("/previous/location/experiment") / relative / "result.csv")
-    (tmp_path / "results.csv").unlink()
-    write_csv(tmp_path / "summary.csv", indexed)
-    rows, _ = analysis.read_results(tmp_path, "ofat")
+        row["output_dir"] = str(original / Path(row["output_dir"]).relative_to(tmp_path))
+    (tmp_path / "state.json").write_text(json.dumps({"root": str(original)}))
+    write_csv(tmp_path / "results.csv", indexed)
+    rows, _ = analysis.read_results(tmp_path, 8)
     assert all(Path(row["actual_output_path"]).is_relative_to(tmp_path) for row in rows)
     assert rows[0]["test_metric"] == 0.
 
 
-@pytest.mark.parametrize("mutation", ["missing", "duplicate", "failed", "split", "metric"])
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "failed", "split", "metric", "seed0", "layers", "caps"])
 def test_incomplete_ambiguous_or_conflicting_inputs_are_rejected(tmp_path, mutation):
     indexed = complete_ofat(tmp_path)
     if mutation == "missing":
@@ -116,28 +127,44 @@ def test_incomplete_ambiguous_or_conflicting_inputs_are_rejected(tmp_path, mutat
         directory = Path(indexed[0]["output_dir"])
         result = json.loads((directory / "result.json").read_text())
         config = json.loads((directory / "config.json").read_text())
-        field = "domain_split_id" if mutation == "split" else "metric"
-        result[field] = config[field] = "conflicting"
+        if mutation in ("layers", "caps"):
+            field, wrong = ("layers", 3) if mutation == "layers" else ("incoming_sampling_caps", [10])
+            result["parameters"][field] = config["parameters"][field] = wrong
+        else:
+            field = {"split": "domain_split_id", "metric": "metric", "seed0": "seed"}[mutation]
+            result[field] = config[field] = 0 if mutation == "seed0" else "conflicting"
         save_output(directory, result, config)
     write_csv(tmp_path / "results.csv", indexed)
     with pytest.raises(ValueError):
-        analysis.read_results(tmp_path, "ofat")
+        analysis.read_results(tmp_path, 8)
 
 
-def test_only_bar_panels_require_bootstrap_intervals(tmp_path):
-    indexed, _, _, _ = ordinary_run(tmp_path, radius=2, ci=False)
-    row, _ = analysis.read_run(tmp_path, tmp_path / "results.csv", indexed, "ofat")
-    assert row["bootstrap_ci_lower"] is None
-    indexed, _, _, _ = ordinary_run(tmp_path, 1, method="progap", radius=3, ci=False)
-    row, _ = analysis.read_run(tmp_path, tmp_path / "results.csv", indexed, "depth-baselines")
-    assert row["r"] == 3 and row["bootstrap_ci_upper"] is None
-    indexed, _, _, _ = ordinary_run(tmp_path, 2, radius=1, ci=False)
-    with pytest.raises(ValueError, match="bootstrap CI"):
-        analysis.read_run(tmp_path, tmp_path / "results.csv", indexed, "ofat")
+@pytest.mark.parametrize("field", ["lr", "batch_size", "clip"])
+def test_mixed_hyperparameters_cannot_be_averaged_as_seed_variation(tmp_path, field):
+    cohort = []
+    for seed in range(1, 6):
+        indexed, _, _, _ = ordinary_run(tmp_path, seed, seed=seed)
+        row, _ = analysis.read_run(tmp_path, tmp_path / "results.csv", indexed)
+        cohort.append(row)
+    if field == "clip":
+        cohort[0]["parameters"]["clip"] = .5
+    else:
+        cohort[0][field] *= 2
+    with pytest.raises(ValueError, match="mixed repeat configurations"):
+        analysis.aggregate_seeds(cohort)
+
+
+def test_epsilon_selection_does_not_pool_budgets(tmp_path):
+    indexed = complete_ofat(tmp_path, epsilon=2)
+    indexed.append({"target_epsilon": 8, "status": "pending"})
+    write_csv(tmp_path / "results.csv", indexed)
+    rows, _ = analysis.read_results(tmp_path, 2)
+    assert {row["epsilon"] for row in rows} == {2}
+    assert len(rows) == 300
 
 
 def test_selected_output_cannot_escape_root(tmp_path):
     root = tmp_path / "input"
     indexed, _, _, _ = ordinary_run(tmp_path / "external-run")
     with pytest.raises(ValueError):
-        analysis.read_run(root, root / "results.csv", indexed, "ofat", str(root))
+        analysis.read_run(root, root / "results.csv", indexed, str(root))

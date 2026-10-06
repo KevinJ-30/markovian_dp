@@ -189,12 +189,12 @@ def draw_panel(ax, x, curves, radius, args, *, composition=False):
     if composition:
         delta_label = matplotlib.ticker.ScalarFormatter(useMathText=True).format_data(args.delta)
         ax.set(xlabel=r"Composition iterations $T$", ylabel=r"$\epsilon$",
-               title=rf"$R={radius},\ \delta={delta_label}$",
+               title=rf"$r={radius},\ \delta={delta_label}$",
                xlim=(0, args.steps))
         ax.set_yscale("log", nonpositive="mask")
     else:
         ax.set(xlabel=r"$\epsilon$", ylabel=r"$\delta(\epsilon)$",
-               title=rf"$R={radius},\ T={args.steps}$",
+               title=rf"$r={radius},\ T={args.steps}$",
                xlim=(args.epsilon_min, args.epsilon_max), ylim=(args.delta_min, 1))
         ax.set_yscale("log")
     ax.set_xscale("linear")
@@ -211,6 +211,7 @@ def set_plot_style():
 
 def main():
     parser = argument_parser()
+    parser.set_defaults(sigma=5.0, out_dir=Path(__file__).resolve().parent / "figures" / "main_comparison")
     parser.add_argument("--radii", type=int, nargs="+", default=[1, 2, 3],
                         help="radii for epsilon(r); the other panels use r=1")
     args = parse_args(parser)
@@ -242,9 +243,8 @@ def main():
                                for name in ("numpy", "scipy", "matplotlib", "dp-accounting")}}
     (args.out_dir / "parameters.json").write_text(json.dumps(parameters, indent=2) + "\n")
     overview, axes = plt.subplots(1, 3, figsize=(18, 5.5))
-    upper_methods = methods(args)[:2 + len(args.p2)]
-    profile_methods = upper_methods + [("lower", p2) for p2 in args.p2]
-    radius_curves = np.empty((len(upper_methods), len(args.radii)))
+    curve_methods = methods(args)
+    radius_curves = np.empty((len(curve_methods), len(args.radii)))
     epsilon = np.linspace(args.epsilon_min, args.epsilon_max, args.points)
     with (args.out_dir / "curves.csv").open("w", newline="") as curves_file, \
          (args.out_dir / "composition.csv").open("w", newline="") as composition_file, \
@@ -259,7 +259,6 @@ def main():
         pair_writer = csv.writer(pairs_file)
         pair_writer.writerow(["r", "method", "p2", "j", "probability", "P_mean", "Q_mean", "noise_std"])
         for radius in sorted({1, *args.radii}):
-            curve_methods = profile_methods if radius == 1 else upper_methods
             max_terms = sum(args.degree**ell for ell in range(radius + 1))
             base_rdp = daigavane_rdp(args.population, batch_size, max_terms, args.sigma)
             plds = []
@@ -275,33 +274,30 @@ def main():
                 plds.append(mixture_gaussian_pld(weights, args.sigma, args.grid))
             checkpoints = iterations if radius == 1 else [args.steps]
             epsilon_curves, composed = composition_profiles(
-                plds[:len(upper_methods) - 1], base_rdp, checkpoints, args.delta)
+                plds, base_rdp, checkpoints, args.delta)
             if radius in args.radii:
                 radius_curves[:, args.radii.index(radius)] = epsilon_curves[:, -1]
                 radius_writer.writerows(
                     (radius, args.steps, method, p2, args.delta, float(value))
-                    for (method, p2), value in zip(upper_methods, epsilon_curves[:, -1]))
+                    for (method, p2), value in zip(curve_methods, epsilon_curves[:, -1]))
             if radius != 1:
                 continue
-            for (method, p2), values in zip(upper_methods, epsilon_curves):
+            for (method, p2), values in zip(curve_methods, epsilon_curves):
                 composition_writer.writerows(
                     (radius, int(t), method, p2, args.delta, float(value))
                     for t, value in zip(iterations, values))
             # T=0 has epsilon=0: retain it in the CSV, not on the log axis.
             draw_curves(axes[0], iterations[1:], epsilon_curves[:, 1:], args,
-                        curve_methods=upper_methods)
-            composed.extend(
-                pld if args.steps == 1 else pld.self_compose(args.steps)
-                for pld in plds[len(upper_methods) - 1:])
+                        curve_methods=curve_methods)
             raw_curves = [np.array([compute_delta(ORDERS, args.steps * base_rdp, value)[0]
                                    for value in epsilon]),
                           *(pld.get_delta_for_epsilon(epsilon) for pld in composed)]
             curves = [np.clip(delta, 0, 1) for delta in raw_curves]
-            for (method, p2), delta, raw_delta in zip(profile_methods, curves, raw_curves):
+            for (method, p2), delta, raw_delta in zip(curve_methods, curves, raw_curves):
                 writer.writerows((radius, args.steps, method, p2, float(e), float(d), float(raw))
                                  for e, d, raw in zip(epsilon, delta, raw_delta))
-            draw_curves(axes[1], epsilon, curves, args, curve_methods=profile_methods)
-    draw_curves(axes[2], args.radii, radius_curves[1:], args, curve_methods=upper_methods[1:])
+            draw_curves(axes[1], epsilon, curves, args, curve_methods=curve_methods)
+    draw_curves(axes[2], args.radii, radius_curves[1:], args, curve_methods=curve_methods[1:])
     delta_label = matplotlib.ticker.ScalarFormatter(useMathText=True).format_data(args.delta)
     axes[0].set(xlabel=r"Composition iterations $T$", ylabel=r"$\epsilon$",
                 title=rf"(a) $r=1,\ \delta={delta_label}$", xlim=(0, args.steps))

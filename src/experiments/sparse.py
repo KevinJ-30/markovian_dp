@@ -28,7 +28,7 @@ from src.models.binary_mechanism import BinaryGNNMechanism  # noqa: E402
 from src.models.regression_mechanism import RegressionGNNMechanism  # noqa: E402
 from src.models.bootstrap import BootstrapConfig  # noqa: E402
 from src.models.layers import VALID_AGGR  # noqa: E402
-from src.processing.sparse_expand import build_adjacency, sparse_expand  # noqa: E402
+from src.processing.sparse_expand import INCOMING_EDGE_CAPS, build_adjacency, sparse_expand
 from src.privacy.accounting import calibrate_sparsegnn_noise  # noqa: E402
 from src.training.sparse_gnn import train_sparse_gnn          # noqa: E402
 
@@ -179,7 +179,7 @@ def parse_args():
                         'pass several to sweep, e.g. --p1 0.25 0.5 1.0')
     p.add_argument('--p2', type=float, nargs='+', default=[0.5],
                    help='edge-sparsification probability p2 before the '
-                        '20-edge incoming sampling cap; pass several to sweep')
+                        '20/10/5 per-hop incoming caps (5 thereafter); pass several to sweep')
     p.add_argument('--r', type=int, nargs='+', default=[2],
                    help='maximum expansion distance r (SparseExpand levels); '
                         'pass several to sweep, e.g. --r 1 2 3')
@@ -187,7 +187,8 @@ def parse_args():
                    help='number of training steps T')
     # Model / optimization
     p.add_argument('--hidden', type=int, default=64)
-    p.add_argument('--num_layers', type=int, default=2, help='message-passing layers L')
+    p.add_argument('--num_layers', type=int, default=None,
+                   help='message-passing layers L (default: 3 at r=3, otherwise 2)')
     p.add_argument('--dropout', type=float, default=0.5)
     # 'auto' = adam, DP or not (see the opt_kind comment in main()).
     p.add_argument('--optimizer', choices=['auto', 'adam', 'sgd'],
@@ -309,7 +310,8 @@ def main():
     print(f"SparseGNN  dataset={args.dataset}  device={device}  "
           f"direction={args.direction}  aggr={args.aggr}")
     print(f"  p1={args.p1}  p2={args.p2}  r={args.r}  {noise_description}  "
-          f"T={args.T}  L={args.num_layers}  dp={args.dp}  seeds={args.seeds}")
+          f"T={args.T}  L={args.num_layers if args.num_layers is not None else 'auto'}  "
+          f"dp={args.dp}  seeds={args.seeds}")
     print("  training=inductive  evaluation=test graph")
     print(f"  sweep: {len(grid)} configuration(s) x {args.seeds} seed(s)")
     print('='*66)
@@ -410,9 +412,10 @@ def main():
     # nodes have no in-edges during training but do at evaluation, measured at
     # 0.6% mean / 1.9% max on capped arxiv -- so note it and move on.
     for _r in args.r:
-        if _r > 0 and args.num_layers > _r:
-            print(f"  note: L={args.num_layers} > r={_r}; the model reads "
-                  f"{args.num_layers} hops but expansion materializes {_r}, so "
+        layers = args.num_layers if args.num_layers is not None else (3 if _r == 3 else 2)
+        if _r > 0 and layers > _r:
+            print(f"  note: L={layers} > r={_r}; the model reads "
+                  f"{layers} hops but expansion materializes {_r}, so "
                   f"boundary nodes are aggregated differently at train and "
                   f"eval time. Not a privacy issue -- L is free in epsilon.")
     if 0 in args.r:
@@ -532,7 +535,7 @@ def main():
                     # primary, above): plain accuracy, meaningful only next to
                     # AUROC on an imbalanced split -- see binary_mechanism.py.
                     'train_bin_acc', 'val_bin_acc', 'test_bin_acc',
-                    'test_confidence_intervals', 'selection'])
+                    'test_confidence_intervals', 'selection', 'incoming_sampling_caps'])
 
         for cell in grid:
             calibration = None
@@ -569,6 +572,10 @@ def main():
             noise_fields = (
                 [sigma * args.clip, (sigma * args.clip) ** 2]
                 if args.dp else ["", ""])
+            layers = args.num_layers if args.num_layers is not None else (3 if r == 3 else 2)
+            incoming_caps = json.dumps([
+                INCOMING_EDGE_CAPS[min(hop, len(INCOMING_EDGE_CAPS) - 1)]
+                for hop in range(r)] if args.direction == 'in' else [])
             tests, vals = [], []
             for seed in range(args.seeds):
                 _set_seed(seed)
@@ -580,7 +587,7 @@ def main():
                         dataset, 'metric_ignore_label', None)
                 mech = Mechanism(
                     train_data, num_features, num_classes,
-                    hidden=args.hidden, num_layers=args.num_layers,
+                    hidden=args.hidden, num_layers=layers,
                     dropout=args.dropout, device=device, **extra,
                 )
                 # Adam everywhere, DP or not.  Three reasons:
@@ -630,7 +637,7 @@ def main():
                                 gph['K_in'] if gph['K_in'] is not None else '',
                                 gph['K_out'] if gph['K_out'] is not None else '',
                                 gph['cap_mode'], opt_kind, args.lr, args.momentum,
-                                args.T, args.num_layers, args.dp,
+                                args.T, layers, args.dp,
                                 *calibration_fields, *noise_fields, seed, step,
                                 args.hidden, args.dropout, args.weight_decay,
                                 args.seeds, gph['cap_seed'],
@@ -646,7 +653,7 @@ def main():
                                             allow_nan=False)
                                  if 'test_confidence_intervals' in m else ''),
                                 (json.dumps(m['selection'], allow_nan=False)
-                                 if 'selection' in m else '')])
+                                 if 'selection' in m else ''), incoming_caps])
 
                 for h in history:
                     # The T row is the selected model, charged for all T updates.

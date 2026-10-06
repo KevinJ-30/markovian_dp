@@ -119,25 +119,32 @@ def test_batch_sparse_expand_is_deterministic_under_fixed_seed(direction):
 
 
 @pytest.mark.parametrize('batched', [False, True])
-def test_incoming_cap_applies_at_every_expansion_hop(batched):
-    width = 40
-    first = torch.arange(1, width + 1)
-    second = torch.arange(width + 1, width + 1 + width * width)
-    edges = torch.stack((
-        torch.cat((first, second)),
-        torch.cat((torch.zeros(width, dtype=torch.long), first.repeat_interleave(width))),
-    ))
-    adj = build_adjacency(edges, 1 + width + width * width, direction='in')
+@pytest.mark.parametrize('radius', [1, 2, 3, 4])
+def test_incoming_cap_applies_at_every_expansion_hop(batched, radius):
+    frontier = torch.tensor([0])
+    size = 1
+    levels = []
+    for degree in (21, 11, 6, 6)[:radius]:
+        children = torch.arange(size, size + frontier.numel() * degree)
+        levels.append(torch.stack((children, frontier.repeat_interleave(degree))))
+        size += children.numel()
+        frontier = children
+    edges = torch.cat(levels, dim=1)
+    adj = build_adjacency(edges, size, direction='in')
     generator = torch.Generator().manual_seed(7)
     if batched:
-        sg = batch_sparse_expand(adj, torch.tensor([0]), 1.0, 2, generator=generator)[0]
+        sg = batch_sparse_expand(adj, torch.tensor([0]), 1.0, radius, generator=generator)[0]
     else:
-        sg = sparse_expand(adj, 0, 1.0, 2, generator=generator)
+        sg = sparse_expand(adj, 0, 1.0, radius, generator=generator)
     incoming = torch.bincount(sg.edge_index[1], minlength=sg.num_nodes)
-    assert incoming[0] == 20
-    assert torch.all(incoming[1:21] == 20)
-    assert torch.all(incoming[21:] == 0)
-    assert sg.num_nodes == 1 + 20 + 20 * 20
+    offset, width = 0, 1
+    for cap in (20, 10, 5, 5)[:radius]:
+        assert torch.all(incoming[offset:offset + width] == cap)
+        offset += width
+        width *= cap
+    assert torch.all(incoming[offset:] == 0)
+    assert sg.num_nodes == offset + width
+    assert sg.num_edges == sg.num_nodes - 1
     assert sg.nodes.unique().numel() == sg.num_nodes
     real_edges = set(map(tuple, edges.t().tolist()))
     assert all(tuple(edge) in real_edges for edge in sg.nodes[sg.edge_index].t().tolist())

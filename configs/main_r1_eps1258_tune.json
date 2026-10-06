@@ -1,10 +1,11 @@
 {
-  "name": "main_r1_tune",
+  "name": "main_r1_eps1258_tune",
   "gpus": "auto",
   "defaults": {
     "seed": 0,
     "epochs": 20,
     "dropout": 0.5,
+    "weight_decay": 0.0,
     "mlp_hidden": 128,
     "gnn_hidden": 128,
     "degree_bound": 5,
@@ -20,11 +21,10 @@
     {
       "parameters": {
         "method": "sparse_sage",
-        "sparse_radius": 1,
-        "weight_decay": 0.0
+        "sparse_radius": 1
       },
       "grid": {
-        "epsilon": [2, 8],
+        "epsilon": [1, 2, 5, 8],
         "p2": [0.1, 0.5, 1.0]
       }
     },
@@ -32,33 +32,46 @@
       "parameters": {
         "method": "sparse_gin",
         "sparse_radius": 1,
-        "gin_pooling": "sum",
-        "weight_decay": 0.0
+        "gin_pooling": "sum"
       },
       "grid": {
-        "epsilon": [2, 8],
+        "epsilon": [1, 2, 5, 8],
         "p2": [0.1, 0.5, 1.0]
       }
     },
     {
       "parameters": {
-        "method": "progap",
-        "progap_python": "/usr/scratch/asaha92/envs/progap/bin/python"
+        "method": "progap"
       },
       "grid": {
-        "epsilon": [2, 8],
+        "epsilon": [1, 2, 5, 8],
         "progap_depth": [1, 5]
       }
     },
     {
-      "grid": {
-        "method": ["mlp", "graphsage", "gin"]
+      "parameters": {
+        "method": "mlp",
+        "weight_decay": 0.0005
       }
     },
     {
       "grid": {
-        "method": ["dp_mlp", "dpar", "dp_gnn_sage", "dp_gnn_gin"],
-        "epsilon": [2, 8]
+        "method": ["graphsage", "gin"]
+      }
+    },
+    {
+      "parameters": {
+        "method": "dp_mlp",
+        "weight_decay": 0.0005
+      },
+      "grid": {
+        "epsilon": [1, 2, 5, 8]
+      }
+    },
+    {
+      "grid": {
+        "method": ["dpar", "dp_gnn_sage", "dp_gnn_gin"],
+        "epsilon": [1, 2, 5, 8]
       }
     }
   ]

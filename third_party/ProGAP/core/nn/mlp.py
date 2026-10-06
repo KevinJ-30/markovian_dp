@@ -27,7 +27,7 @@ class MLP(Module):
                  ):
         super().__init__()
         self.num_layers = num_layers
-        self.dropout_fn = Dropout(dropout, inplace=True)
+        self.dropout_fn = Dropout(dropout, inplace=False)
         self.activation_fn = activation_fn
         self.plain_last = plain_last
 

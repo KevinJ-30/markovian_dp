@@ -15,7 +15,7 @@ presets and training implementations remain in its single-run worker.
 | `summarize_sweep.py` | Select a validation-best step and report seed-averaged test results; one configuration per child directory. |
 | `summarize_matched_eps.py` | Summarize matched-budget studies using their expected directory naming conventions. |
 | `summarize_results.py` | Combine arbitrary result CSVs into CSV/Markdown tables using stored bootstrap CIs or seed mean ± sample SD; optional best-test selection and named regimes. |
-| `sparse_ablation.py` | Render current ablation figures from ordinary result indexes or supported historical summaries. |
+| `sparse_ablation.py` | Plot five-seed ablation means ± standard errors as three line panels, with dataset colors and SAGE/GIN line styles. |
 | `plot_frontier.py` | Plot privacy–utility curves from an explicit CSV glob. |
 
 The Python utilities expose `--help`. For manual GraphSAINT download and
@@ -30,26 +30,24 @@ All methods default to **`weight_decay=0.0`**, including ProGAP. Set JSON
 `weight_decay` or single-run `--weight-decay` to a finite nonnegative value
 to override it; explicit values are preserved. The local baseline/DPAR training
 configs and standalone SparseGNN CLI also default to zero.
-`configs/main_r1_eps15_tune.json` explicitly sets zero in its shared defaults.
+The tuning and repeat JSON configs explicitly set **`weight_decay=0.0005`**
+for `mlp` and `dp_mlp`; other methods retain their existing settings.
 Historical results retain their recorded weight decay. Use a fresh output root
-for these defaults: do not resume an older nonzero-decay study or select repeats
-using a modified source config against historical results.
+when changing weight decay; do not select repeats using a modified source config
+against historical results.
 
-The `main_r1_tune.json` (epsilon 2, 8) and `main_r1_eps15_tune.json`
-(epsilon 1, 5) campaigns explicitly sweep ProGAP depths **1 and 5 only**.
-Each expands to 864 tuning jobs and 152 validation-selection groups, yielding
-760 follow-up jobs across seeds 1–5. Both repeat-selection settings inherit
-the depth set from their source tuning config. Repeat configs are generated
-only after matching tuning results exist; historical depth-3 results are retained.
+`main_r1_eps1258_tune.json` covers epsilon **1, 2, 5, 8**, with ProGAP depths
+**1 and 5 only**. Its 1,632 tuning jobs form 280 validation-selection groups.
+`main_r1_eps1258_repeats.json` already freezes the primary tables' selected
+parameters for 1,400 runs across seeds 1–5. Fresh tuning can generate a separate
+`main_r1_eps1258_retuned_repeats.json`; historical depth-3 results are retained.
 
 ### Unified experiment runner
 
 ```bash
-python scripts/run_experiments.py configs/main_r1_tune.json --gpus 4,5 --dry-run
-python scripts/run_experiments.py configs/main_r1_tune.json --gpus 4,5 \
-  --out-dir results/main_r1_zero_decay_tune --progap-python /path/to/progap/bin/python
-python scripts/run_experiments.py configs/main_r1_tune.json --gpus 4,5 \
-  --out-dir results/main_r1_zero_decay_tune --resume
+python scripts/run_experiments.py configs/main_r1_eps1258_repeats.json --gpus 4,5 --dry-run
+python scripts/run_experiments.py configs/main_r1_eps1258_repeats.json --gpus 4,5
+python scripts/run_experiments.py configs/main_r1_eps1258_repeats.json --gpus 4,5 --resume
 ```
 
 The output defaults to `results/<name>/` relative to the repository, not the
@@ -137,6 +135,17 @@ All private jobs use the hardcoded target `delta = N_train ** -1.01`, where
 retain their original budget; use a fresh output root rather than resuming an
 older study and mixing delta conventions.
 
+DP-GNN's multi-term accountant evaluates Rényi orders 1.1–199.9 in increments
+of 0.1 (`np.arange(1, 200, 0.1)[1:]`). This expands the upstream 1.1–9.9 grid
+to support tighter epsilon targets; the accounting formula is unchanged.
+Existing results retain their previously calibrated noise and privacy bounds.
+
+DP-MLP calibrates and composes the symmetric pair
+`(1-q) N(0, sigma²) + q N(+1, sigma²)` versus
+`(1-q) N(0, sigma²) + q N(-1, sigma²)`, with `q = batch_size / N_train`,
+using pessimistic PLD discretization at grid `1e-3`. Results identify this as
+`dp_accounting.symmetric_gaussian_mixture`; historical Opacus results are unchanged.
+
 Each root contains `experiment.json`, atomic `state.json`, aggregate JSON-lines
 `runner.log`, and `results.csv` with one row per planned job. Each attempt is
 retained under `runs/<run-id>/attempts/<number>/`: `process.log`, operational
@@ -145,54 +154,77 @@ artifacts. Summarize the root CSV rather than globbing all attempts, so retries
 do not become extra seeds. No sealed manifests, source snapshots, or hashes are
 required. See the [script retirement inventory](RETIRED_SCRIPTS.md) for replacements and removal prerequisites.
 
-### Two-stage radius-1 comparison
+### Unified primary-table comparison
 
-`configs/main_r1_tune.json` defines **864 seed-0 tuning jobs** across the eight
-standard datasets, including Amazon and `fb100-year-6`. Both MLP and GNN hidden
-widths are 128. Batch sizes are `{256,1024}`, learning rates `{0.01,0.001}`,
-and private epsilon targets `{2,8}`. SparseSAGE and SparseGIN (sum) use radius 1
-and p2 `{0.1,0.5,1}`. ProGAP depths `{1,5}` remain separate comparisons.
-All runs use dropout 0.5, degree setting 5, bootstrap resamples 0, and 20 epochs;
-ProGAP applies those epochs **per stage**. The config uses automatic GPU selection,
-the existing split cache, and the workstation's dedicated ProGAP interpreter
-(`/usr/scratch/asaha92/envs/progap/bin/python`, Opacus 1.1.3). Keep that interpreter
-setting: the main environment's Opacus lacks `forbid_accumulation_hook`, which
-upstream ProGAP imports. Adjust paths/device choices when moving the study.
-No per-GPU concurrency limit is imposed.
-Queue blocks prioritize SparseSAGE (192 jobs), SparseGIN (192), and ProGAP (128)
-before nonprivate models (96) and the other private baselines (256). The repeat
-generator preserves this group order. Memory-aware admission can still skip
-ahead to a fitting job; these are priorities, not completion barriers.
+`configs/main_r1_eps1258_repeats.json` freezes 280 validation-selected
+configurations across all eight datasets and private epsilon targets `{1,2,5,8}`.
+Each runs with seeds 1–5, giving 1,400 jobs. MLP and DP-MLP use
+`weight_decay=0.0005`; every other method uses zero. Nonprivate configurations
+are not duplicated across epsilon values.
 
-`configs/main_r1_repeat_selection.json` is **generator settings, not a runner
-config**. It names the tuning config/results, generated output, seeds `{1,2,3,4,5}`,
-and `select_over: ["lr","batch_size","p2"]`. All other scientific parameters
-define separate selection groups, preserving dataset, method, epsilon, hidden
-width, pooling, radius, and ProGAP depth. Settings paths are relative to that JSON.
+The parameters come directly from completed repeat states:
 
-After every tuning job completes in the fresh root above, generate and inspect
-the repeat configuration. The epsilon-1/5 pair uses
-`main_r1_eps15_tune.json` and `main_r1_eps15_repeat_selection.json` analogously.
+- Non-MLP private methods at epsilon 1/5: `results/main_r1_eps15_zero_decay_repeats/`.
+- Non-MLP private methods at epsilon 2/8: `results/main_r1_zero_decay_repeats/`.
+- MLP and DP-MLP at all budgets: `results/mlp_wd5e4_eps1258_repeats/`.
+- Nonprivate GraphSAGE/GIN: the latest epsilon-1/5 table's configurations.
+
+All 280 choices match their source tuning study's seed-0 validation winners.
+The older epsilon-2/8 nonprivate GIN selections differ in batch size for Yelp,
+Amazon, and MAG; the unified config uses the latest table's choices of 256,
+1024, and 256 respectively. Historical alternatives remain archived.
 
 ```bash
-python scripts/make_repeat_config.py configs/main_r1_repeat_selection.json \
-  --results-dir results/main_r1_zero_decay_tune
-python scripts/run_experiments.py configs/main_r1_repeats.json --dry-run
+python scripts/run_experiments.py configs/main_r1_eps1258_repeats.json --gpus auto
+python scripts/summarize_results.py results/main_r1_eps1258_repeats/results.csv \
+  --seed --out results/main_r1_eps1258_repeats/performance
 ```
 
-The generator reads the runner state and per-job results, checks that the complete
-study matches the source config, and maximizes **validation_metric only**.
-Exact ties keep the first candidate in source-config expansion order. It copies
-each winner's worker parameters, including the ProGAP interpreter, replacing only
-the training seed. This yields **152 winners × 5 additional seeds = 760 jobs**,
-for **1,624 total executions per epsilon pair**. Retain each selected seed-0 result for the final
-six-seed comparison; it is not rerun.
+The summary reports mean ± sample SD over seeds 1–5 in CSV and Markdown.
+Do not add `--best` or `--best-validation`: selection was already frozen on
+seed 0. The existing historical result roots are not rewritten.
 
-The generator accepts `--results-dir`, `--out`, and `--seeds` overrides. CLI paths
-are relative to the current directory. It refuses incomplete/mismatched studies,
-nonfinite metrics, reused tuning seeds, and existing output files. No speculative
-`main_r1_repeats.json` is committed before validation results exist. Neither
-generation nor runner `--dry-run` launches training or probes GPUs.
+### Fresh unified tuning
+
+`configs/main_r1_eps1258_tune.json` defines 1,632 seed-0 tuning jobs on the same
+eight datasets. Batch sizes are `{256,1024}`, learning rates `{0.01,0.001}`, and
+private epsilon targets `{1,2,5,8}`. SparseSAGE and SparseGIN (sum) use radius 1
+and p2 `{0.1,0.5,1}`. ProGAP depths `{1,5}` remain separate comparisons.
+All methods use hidden width 128, dropout 0.5, degree setting 5, bootstrap
+resamples 0, and 20 epochs; ProGAP uses those epochs per stage. Weight decay is
+0.0005 for MLP/DP-MLP and zero elsewhere.
+
+The main tuning and repeat configs use the launching Python interpreter for
+ProGAP by default. ProGAP uses Opacus 1.6.0's `forbid_grad_accumulation()` API
+and out-of-place dropout; no separate interpreter is required. The configs
+retain automatic GPU selection and the existing split cache.
+No per-GPU concurrency limit is imposed.
+
+`configs/main_r1_eps1258_repeat_selection.json` is generator settings, not a
+runner config. It selects over `lr`, `batch_size`, and `p2` using validation
+only, preserving dataset, method, epsilon, and ProGAP depth. It writes the
+separate `configs/main_r1_eps1258_retuned_repeats.json` after tuning completes,
+leaving the frozen primary-table config unchanged.
+
+```bash
+python scripts/run_experiments.py configs/main_r1_eps1258_tune.json --gpus auto
+python scripts/make_repeat_config.py configs/main_r1_eps1258_repeat_selection.json
+python scripts/run_experiments.py configs/main_r1_eps1258_retuned_repeats.json --gpus auto
+python scripts/summarize_results.py results/main_r1_eps1258_retuned_repeats/results.csv \
+  --seed --out results/main_r1_eps1258_retuned_repeats/performance
+```
+
+This produces 280 winners × 5 additional seeds = 1,400 repeat jobs, for 3,032
+executions including tuning. Retain the selected seed-0 results separately if
+a six-seed summary is needed. Exact validation ties keep the first candidate.
+The generator refuses incomplete or mismatched studies, nonfinite metrics,
+reused tuning seeds, and existing output files. `--results-dir`, `--out`, and
+`--seeds` can override generator settings.
+
+Superseded epsilon-pair, MLP-only, and baseline-depth configs are kept locally in
+the Git-ignored `old_configs/` directory. The active ablation tuning configs are
+`configs/sparse_ablation.json` (epsilon 8) and `configs/sparse_ablation_eps125.json`
+(epsilon 1, 2, and 5).
 
 ### Facebook dataset presets
 
@@ -226,111 +258,137 @@ the year-task population using the current accountants.
 
 ### SparseExpand paper ablations
 
-All **60 one-factor configurations** in `configs/sparse_ablation.json` share one
-output root. The study uses `ogbn-arxiv`, `saint-yelp`, and `twitch-allbut2`,
-both SAGE and GIN backends, epsilon 8, and training seed 0.
-The anchor is radius 1, edge-retention probability 0.5, and outgoing-degree
-cap 10. Vary radius `{1,2,3}`, probability `{0.05,0.1,0.25,0.5,1}`, or outgoing
+All **240 tuning runs** in `configs/sparse_ablation.json` share one output root.
+The study uses `saint-yelp`, `twitch-allbut2`, and `mag-allbut2`, both SparseSAGE
+and SparseGIN, epsilon 8, and training seed 0. DP-GNN and ProGAP are excluded.
+The anchor is radius 1, edge-retention probability 0.1, and outgoing-degree
+cap 5, matching the main experiments. Vary radius `{1,2,3}`, probability `{0.05,0.1,0.25,0.5,1}`, or outgoing
 cap `{5,10,20,40}` while holding the other two at the anchor. The shared anchor
-runs once; there are no probability-by-cap interactions.
+runs once for each dataset, method, batch size, and learning rate; there are no
+probability-by-cap interactions. The 10 unique one-factor settings cross batch
+sizes `{256,1024}` and learning rates `{0.01,0.001}`, matching the main grids.
+This gives 10 × 3 datasets × 2 methods × 2 batch sizes × 2 learning rates = 240.
 
-Batch 256, LR 0.01, 20 epochs, hidden 128, two GNN layers, dropout 0.5, and
-seed-0 splits stay fixed. Expansion depth does not change architecture depth.
-The outgoing preprocessing cap is distinct from the fixed 20-edge incoming
-sampling cap; `p2=1` is not an uncapped full-graph baseline. Noise is recalibrated
+The secondary config `configs/sparse_ablation_eps125.json` uses the same datasets,
+methods, ablation points, and batch-size/LR grid at epsilon `{1,2,5}`: **720 tuning
+runs**, or **960** across both configs. Run it with
+`python scripts/run_experiments.py configs/sparse_ablation_eps125.json --gpus auto`;
+its default output root is `results/sparse_ablation_eps125`. Both configs use
+seed 0. `configs/sparse_ablation_eps125_repeat_selection.json` selects batch
+size/LR independently within each epsilon/dataset/method/ablation point and
+generates `configs/sparse_ablation_eps125_repeats.json` after tuning completes.
+The 180 winners × seeds 1–5 give **900 final runs**, with weight decay 0.0,
+under `results/sparse_ablation_eps125_repeats`. The chained tuning, selection,
+and repeat commands in [`reproduce.md`](../reproduce.md#ablation-studies)
+start each stage only if its predecessor succeeds.
+
+Twenty epochs, hidden width 128, dropout 0.5, and seed-0 splits stay fixed.
+SparseGNN uses two message-passing layers at radius 1/2 and three at radius 3.
+Incoming expansion caps each expanded node at 20 neighbors on hop 1, 10 on hop 2,
+and 5 on hop 3 and beyond, after Bernoulli edge thinning. At radius 3 this bounds
+each rooted subgraph by 1 + 20 + 200 + 1,000 = 1,221 nodes. The outgoing
+preprocessing cap is separate; `p2=1` is not an uncapped full-graph baseline.
+Both samplers use this schedule globally; the main radius-1 settings are unchanged.
+Results record the per-hop list as `parameters.incoming_sampling_caps` and the
+actual architecture depth as `parameters.layers`. The standalone SparseGNN CLI
+uses the same depth defaults, permits explicit `--num_layers` overrides, and
+records the schedule in its `incoming_sampling_caps` CSV column.
+Radius now changes both the sampled receptive field and, at radius 3, network
+depth; this is not a fixed-architecture radius comparison.
+Noise is recalibrated
 per configuration at the dataset-specific delta using the repository's mixture
 formula with non-root shells `2*K_out**ell`. This setting alone does not establish
 a privacy guarantee.
 
-Run both studies through the same scheduler, then render without training:
+Run the unified study and summarize all candidates:
 
 ```bash
-python scripts/run_experiments.py configs/sparse_ablation.json --gpus auto
-python scripts/run_experiments.py configs/depth_ablation.json --gpus auto \
-  --progap-python /path/to/progap/bin/python
-python scripts/sparse_ablation.py --ofat-root results/sparse_ablation \
-  --depth-root results/depth_ablation --out-dir results/depth_ablation/figures
+python scripts/run_experiments.py configs/sparse_ablation.json --gpus auto \
+  --out-dir results/sparse_ablation_yelp_twitch_mag_k5_tune
+python scripts/summarize_results.py results/sparse_ablation_yelp_twitch_mag_k5_tune/results.csv \
+  --bootstrap --out results/sparse_ablation_yelp_twitch_mag_k5_tune/summary
 ```
 
-`--dry-run` previews either config; `--resume` and `--resume --retry-failed`
-use the same generic execution path. Preserve historical roots unchanged.
+`--dry-run` previews the config; `--resume` and `--resume --retry-failed` use the
+same generic execution path. Use a fresh root for the expanded grid and changed
+sampling/depth rules; do not resume or pool historical radius-2/3 runs with new
+ones. Preserve historical roots unchanged. Select learning rate and batch size by validation
+within each dataset/method/radius/probability/cap group, not across ablation points.
 
-This runs DP-GNN-SAGE and DP-GNN-GIN at radius `{1,2,3}` and ProGAP at depth
-`{1,2,3}` on the same three datasets. Epsilon 8, seed 0, batch 256, LR 0.01,
-hidden 128, dropout 0.5, and 20 epochs remain fixed. ProGAP can use the separate
-interpreter selected by `--progap-python`; its 20 epochs apply **per stage**, and
-depth `d` trains `d+1` stages. DP-GNN uses 20 training-population epochs at each
-radius. Both baselines retain degree bound 5 and recalibrate noise for the
-complete requested schedule. Explicit depth values 1/2/3 are unchanged by the
-new default.
+The generated `configs/sparse_ablation_repeats.json` freezes the completed
+epsilon-8 study's 60 validation-best batch-size/LR choices using
+`make_repeat_config.py configs/sparse_ablation_repeat_selection.json`.
+It runs seeds 1–5 (300 jobs), with weight decay 0.0, under
+`results/sparse_ablation_yelp_twitch_mag_k5_repeats`.
+Launch it with `python scripts/run_experiments.py configs/sparse_ablation_repeats.json --gpus 0,1,2,3,4,5,6,7`;
+add `--resume` for an existing root. Do not regenerate over the frozen config.
+After completion, use `summarize_results.py --seed` on the repeat root only,
+without another best-configuration selection. Full commands are in
+[`reproduce.md`](../reproduce.md#ablation-studies).
 
-Re-render a completed comparison without training:
+#### Five-seed ablation figures
 
-```bash
-python scripts/sparse_ablation.py \
-  --ofat-root results/sparse_ablation_ofat_supervised_20260925 \
-  --depth-root results/sparse_ablation_depth_supervised_20260925 \
-  --out-dir results/sparse_ablation_depth_supervised_20260925/figures_rebuilt
-```
-
-`--depth-root` requires all 27 baseline runs and matching dataset/task/split
-identities across both studies. Its default output is `DEPTH_ROOT/figures`.
-
-The renderer consumes that **same run folder**, without retraining:
+Plot completed final repeats without retraining or selecting configurations again:
 
 ```bash
 python scripts/sparse_ablation.py \
-  --ofat-root results/sparse_ablation_ofat_supervised_20260925 \
-  --out-dir results/sparse_ablation_ofat_supervised_20260925/figures_compact
+  --ofat-root results/sparse_ablation_yelp_twitch_mag_k5_repeats --epsilon 8
 ```
 
-The renderer reads the root `results.csv`, or historical `summary.csv` with
-`result_csv` pointers, without manifests or hashes. It writes `ablation_sage`
-and `ablation_gin` PNG/PDF pairs, `per_run.csv`, `curves.csv`, and ordinary
-`analysis.json` metadata. The training root and its per-attempt outputs remain
-unchanged.
+For the epsilon-1/2/5 repeat study, use the same command with
+`--ofat-root results/sparse_ablation_eps125_repeats` and the desired
+`--epsilon 1`, `--epsilon 2`, or `--epsilon 5`. Each selected epsilon must have
+all 300 runs complete: 10 ablation points × 3 datasets × 2 models × 5 seeds.
+Other epsilon cohorts are filtered out, never pooled.
 
-Each backend gets three horizontal panels: **(a) depth lines**, **(b) probability
-bars**, and **(c) outgoing-cap bars**, with labels inside the upper-left corners.
-Dataset colors are shared across all panels. In panel (a), SGNN is solid,
-ProGAP dashed, and DP-GNN dotted; the latter matches the SAGE/GIN backend, while
-the same ProGAP runs appear in both figures. Without `--depth-root`, only SGNN
-depth curves appear. Depth lines are fully opaque and 3 points wide, with no
-uncertainty whiskers. Panels (b)/(c) remain SGNN-only grouped bars with intervals.
-The shared legend sits to the left and contains only dataset colors and method
-line styles; backend and privacy headings are omitted. Backend identity remains
-in the filenames and privacy settings in the CSV exports. The compact canvas
-is 18.7 × 3.6 inches (before tight cropping), with a shared 0–1 metric scale.
-The y-axis reads "Test metric": accuracy for ogbn-arxiv, micro-F1 for Yelp, and
-AUROC for Twitch. These different metrics are not averaged. Bar panels show the
-exact stored 95% node-bootstrap endpoints (1,000 resamples, bootstrap seed 0)
-from each validation-selected checkpoint. Depth-panel intervals are omitted
-visually but retained in the CSV exports. These intervals quantify test-node
-uncertainty, not training-seed variability or dependence between graph nodes.
+The three horizontal panels are line graphs of **radius**, **edge-retention
+probability**, and **outgoing-degree cap**. Probability and cap settings are
+evenly spaced categorical positions, labeled with their actual values;
+radius uses its numeric values.
+Colors identify Yelp (micro-F1), Twitch (AUROC), and MAG (accuracy).
+**SAGE is solid; GIN is dotted** in every panel. The shared y-axis displays each
+dataset's test metric on its original 0–1 scale; different metrics are never
+averaged across datasets.
 
-Depth has method-specific meaning: SGNN changes expansion radius while retaining
-its two-layer network; DP-GNN changes actual message-passing depth; ProGAP changes
-progressive aggregation depth and stage count. These are not equal architectures
-or equal training schedules. DP-GNN's influence bound is
-`min(N_train, 1 + K + ... + K^r)` (6/31/156 for K=5 before population clipping),
-conditional on a fixed sampled topology. It does not establish a raw-topology
-node-deletion guarantee or account for data-dependent preprocessing.
+Styling follows `numerics/compare.py` (serif fonts, 22-point axis labels,
+17-point ticks, light grids) and the historical compact ablation layout:
+18.7 × 3.6 inches, a left-side legend, bold panel labels inside the axes,
+and 3.5-point lines with 7-point white-filled circular markers. The shared y-axis
+spans 0–0.75. There is no figure title, panel subtitle, or footer.
+Metric definitions and uncertainty semantics remain in the data exports and
+documentation rather than expanding the figure.
 
-`per_run.csv` retains all 60 SGNN runs (87 with depth baselines); `curves.csv`
-contains 72 SGNN points (99 with baselines), because the SGNN anchor is referenced
-in all three parameter panels without extra training. ProGAP curve records are
-stored once and reused visually in both backend figures.
-Both preserve peak process RSS, peak CUDA allocation, calibration/training time,
-sampled-node/edge statistics, raw result paths, and exact intervals. Diagnostics
-are retained as data, not separate plots or additional DP releases. CUDA memory
-is runner-process allocator peak, RSS is runner-process lifetime high-water mark,
-and CPU CUDA values are unavailable rather than zero. ProGAP trains in a child
-process, so these runner metrics do not measure its child-process memory usage.
-Timing includes calibration, training, and final evaluation but excludes loading.
+Each point is the mean over training seeds **1–5**, with error bars of
+**±1 standard error = sample SD (ddof=1) / sqrt(5)**. These are neither
+95% confidence intervals nor the per-run test-node bootstrap intervals.
+Seed-0 tuning runs are rejected. Batch size/LR may vary between ablation
+points, but must remain fixed across the five seeds at each point.
+No test-based selection or selection across repeat seeds occurs.
 
-The renderer checks required curve membership, duplicate settings, split/metric
-consistency, and stored intervals required for bar panels. It never overwrites
-a figure directory; pass a fresh `--out-dir` for another reconstruction.
+The shared anchor is `r=1`, `p2=0.1`, `K_out=5`. Radius 1/2 uses two layers;
+radius 3 uses three. Incoming sampling caps are 20, 10, and 5 on successive
+hops. The radius panel therefore changes both expansion and architecture depth.
+`p2=1` removes Bernoulli thinning, not preprocessing or incoming sampling caps.
+
+Outputs default to `OFAT_ROOT/figures_eps<EPSILON>/`:
+
+- `ablation_eps<EPSILON>.png` and `.pdf`: one combined three-panel figure.
+- `per_run.csv`: 300 validated individual results and their source paths.
+- `points.csv`: 60 distinct means, sample SDs, standard errors, seed cohorts,
+  and frozen batch-size/LR choices.
+- `curves.csv`: 72 plotted points; the shared anchor appears in all three panels.
+- `analysis.json`: arguments, uncertainty policy, split evidence, and versions.
+
+The renderer reads `results.csv` and verifies the selected per-run
+`config.json`, `result.json`, and `result.csv`. It rejects missing or duplicate
+point/seed pairs, mixed repeat hyperparameters, incompatible splits/metrics,
+and obsolete layer/sampling settings. It never overwrites a figure directory;
+pass a fresh `--out-dir` to render again. Moved roots use their recorded
+`state.json` root to resolve output paths.
+
+Historical seed-0 figure directories remain untouched. Their fixed-setting
+renderer and optional DP-GNN/ProGAP depth input are no longer supported by
+this script.
 
 ### Result tables
 

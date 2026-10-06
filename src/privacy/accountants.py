@@ -77,15 +77,15 @@ class SparseGNNAccountant(PrivacyAccountant):
 
 
 class DPMLPAccountant(PrivacyAccountant):
-    """Adapter around the standard Poisson-subsampled Gaussian accountant."""
-
     def account(self, *, noise_multiplier: float, sample_rate: float, steps: int,
-                delta: float, mechanism: str = "prv") -> PrivacyResult:
-        from src.privacy.accounting import naive_opacus_epsilon
+                delta: float) -> PrivacyResult:
+        from src.privacy.accounting import mixture_gaussian_pld
 
-        epsilon = naive_opacus_epsilon(noise_multiplier, sample_rate, steps, delta, mechanism)
+        epsilon = mixture_gaussian_pld(
+            [1.0 - sample_rate, sample_rate], noise_multiplier,
+        ).self_compose(steps).get_epsilon_for_delta(delta)
         return PrivacyResult(
-            epsilon=float(epsilon), delta=delta, accountant=f"opacus.{mechanism}",
+            epsilon=float(epsilon), delta=delta, accountant="dp_accounting.symmetric_gaussian_mixture",
             noise_multiplier=noise_multiplier, sampling_probability=sample_rate,
             composition_count=steps,
         )

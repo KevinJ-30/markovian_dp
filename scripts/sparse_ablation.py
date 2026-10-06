@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
-"""Validate and plot completed SparseExpand ablations without launching training.
+"""Plot completed five-seed SparseExpand ablations without launching training.
 
-Usage: python scripts/sparse_ablation.py --ofat-root ROOT [--depth-root ROOT]
-                                      [--out-dir NEW_DIRECTORY]
+Usage: python scripts/sparse_ablation.py --ofat-root REPEAT_ROOT
+                                      [--epsilon 8] [--out-dir NEW_DIRECTORY]
 
-All 60 epsilon-8, seed-0 OFAT runs must be present and valid. An optional
-depth-baseline root adds all 27 DP-GNN/ProGAP runs. Test error bars use each
-validation-selected checkpoint's stored 95% node-percentile bootstrap interval:
-test-node uncertainty, not training randomness. Depth comparisons use lines;
-the other two parameter panels retain grouped SGNN bars. Resource and sampled-
-size observations remain in the CSV exports, not the figures.
+Requires all 300 runs for the selected epsilon: Yelp, Twitch, and MAG;
+SparseSAGE and SparseGIN; ten OFAT settings; training seeds 1–5.
+Batch size and learning rate must be frozen within each five-seed cohort.
+Seed-0 tuning results are not accepted and no configurations are selected here.
 
-Inputs are the root results.csv and its selected output directories, or a
-historical summary.csv with result_csv pointers. Moved roots remain readable;
-no manifests or source commitments are required. Outputs include per_run.csv,
-curves.csv, the existing PNG/PDF panels, and ordinary analysis.json metadata.
+Three line panels show expansion radius, edge retention, and outgoing cap.
+Colors denote datasets; solid lines denote SAGE and dotted lines denote GIN.
+Error bars are ±1 standard error of the training-seed mean (sample SD / sqrt(5)),
+not test-node bootstrap intervals or 95% confidence intervals.
 """
 from __future__ import annotations
 
@@ -23,6 +21,8 @@ import csv
 import importlib.metadata
 import json
 import math
+import statistics
+from collections import defaultdict
 from pathlib import Path, PurePosixPath
 import platform
 import sys
@@ -30,23 +30,30 @@ import sys
 
 CONFIG_KEYS = ("protocol", "method", "epsilon", "lr", "batch_size", "epochs", "seed", "p2", "r", "K_out")
 TASKS = {
-    "ogbn-arxiv": ("ogbn-arxiv", "accuracy", False, False, "native"),
+    "mag-allbut2": ("mag-countries", "accuracy", False, False, "domain"),
     "saint-yelp": ("saint-yelp", "micro_f1", False, True, "native"),
     "twitch-allbut2": ("twitch-explicit", "auroc", True, False, "domain"),
 }
-COLORS = ("#0072B2", "#009E73", "#D55E00", "#CC79A7", "#56B4E9", "#E69F00")
+DATASETS = (
+    ("saint-yelp", "Yelp", "#009E73"),
+    ("twitch-allbut2", "Twitch", "#D55E00"),
+    ("mag-allbut2", "MAG", "#0072B2"),
+)
+METHODS = (("sparse_sage", "SAGE", "-"), ("sparse_gin", "GIN", ":"))
+SEEDS = (1, 2, 3, 4, 5)
+POINT_KEYS = ("protocol", "method", "epsilon", "r", "p2", "K_out")
+SWEEPS = (
+    ("r", {"p2": 0.1, "K_out": 5}, (1, 2, 3)),
+    ("p2", {"r": 1, "K_out": 5}, (0.05, 0.1, 0.25, 0.5, 1.0)),
+    ("K_out", {"r": 1, "p2": 0.1}, (5, 10, 20, 40)),
+)
 POLICY = {
     "accounting": "Uses the repository's mixture formula, not an independently established privacy guarantee.",
-    "p2_equals_one": "p2=1 removes Bernoulli edge thinning only: outgoing-degree preprocessing, root sampling, finite radius, and the incoming expansion cap of 20 remain. It is not full-graph training.",
-    "degree_caps": "K_out is the outgoing preprocessing cap. K_in=10 remains an accounting input, not an incoming preprocessing cap; incoming preprocessing degree is unrestricted.",
-    "checkpoint": "Best validation-primary-metric checkpoint; no test-based selection or configuration ranking.",
-    "per_run_interval": "Stored 95% node-percentile bootstrap interval; resample counts and seed are retained in the CSV exports.",
-    "uncertainty": "Test-node bootstrap uncertainty conditional on the validation-selected checkpoint; not uncertainty from training randomness. There are no independent training-seed replicates or across-run averages.",
-    "depth_comparison": "The x coordinate is SGNN expansion radius (fixed two-layer network), DP-GNN message-passing radius, or ProGAP progressive aggregation depth. These are not identical architectures or training schedules.",
-    "dpgnn_accounting": "DP-GNN radius-dependent influence is conditional on the fixed sampled topology and node features/labels adjacency; it does not establish a raw-topology node-deletion guarantee.",
-    "diagnostics": "Resource and sampled-size observations are research diagnostics, not additional DP releases covered by epsilon.",
-    "missing_values": "Empty CSV fields are unavailable, never zero-imputed. Missing CPU CUDA measurements are explicitly marked and not plotted.",
-    "resource_scope": "Calibration/training duration excludes data loading. CUDA allocated-memory peak covers backend calibration/training; RSS is runner-process lifetime high-water mark including loading. These are process/allocation measures, not total machine memory.",
+    "p2_equals_one": "p2=1 removes Bernoulli edge thinning only; preprocessing and incoming sampling caps remain.",
+    "checkpoint": "Best validation-primary-metric checkpoint; no test-based or repeat-seed configuration selection.",
+    "uncertainty": "Mean ±1 standard error across training seeds 1–5: sample SD (ddof=1) / sqrt(5). Not a confidence interval or node-bootstrap interval.",
+    "radius": "Radius 1/2 uses two layers; radius 3 uses three. Incoming sampling caps are 20, 10, 5 on successive hops.",
+    "metrics": "Yelp micro-F1, Twitch AUROC, and MAG accuracy share a 0–0.75 display range; scores are never averaged across datasets.",
 }
 
 
@@ -89,8 +96,6 @@ def read_json(path, expected_type=dict):
     value = json.loads(path.read_text(), parse_constant=reject_constant, object_pairs_hook=unique_keys)
     require(isinstance(value, expected_type), f"{path}: expected JSON {expected_type.__name__}")
     return value
-
-
 
 
 def owned_path(root, relative):
@@ -149,45 +154,26 @@ def number(value, label):
     return finite(parsed, label)
 
 
-def required_members(study):
-    """Membership of the retained paper panels, not a training-job generator."""
-    sparse = study == "ofat"
-    require(sparse or study == "depth-baselines", f"unknown analysis study {study!r}")
-    methods = ("sparse_sage", "sparse_gin") if sparse else ("dp_gnn_sage", "dp_gnn_gin", "progap")
-    settings = ((1, .5, 10), (2, .5, 10), (3, .5, 10),
-                (1, .05, 10), (1, .1, 10), (1, .25, 10), (1, 1., 10),
-                (1, .5, 5), (1, .5, 20), (1, .5, 40)) if sparse else (
-                    (1, None, None), (2, None, None), (3, None, None))
-    return {(protocol, method, 8., .01, 256, 20, 0, p2, radius, cap)
-            for protocol in TASKS for method in methods for radius, p2, cap in settings}
-
-
-def selected_path(root, stored, original_root=None):
-    if original_root is None:
-        path = Path(stored)
-        original_root = root
-        if path.is_absolute() and not path.is_relative_to(root):
-            # Ordinary historical indexes locate attempts/runs below their saved
-            # root. Relocation needs only that layout, never a source manifest.
-            anchors = [index for index, part in enumerate(path.parts) if part in {"attempts", "runs"}]
-            require(bool(anchors), f"cannot locate moved input root for {stored!r}")
-            original_root = Path(*path.parts[:anchors[0]])
-    return recorded_path(root, stored, str(original_root))
+def required_members(epsilon):
+    settings = {(fixed.get("r", x if parameter == "r" else None),
+                 fixed.get("p2", x if parameter == "p2" else None),
+                 fixed.get("K_out", x if parameter == "K_out" else None))
+                for parameter, fixed, values in SWEEPS for x in values}
+    return {(protocol, method, epsilon, radius, p2, cap, seed)
+            for protocol in TASKS for method, _, _ in METHODS
+            for radius, p2, cap in settings for seed in SEEDS}
 
 
 def settings_from_result(result):
     parameters = result["parameters"]
     method = result["method"]
-    sparse = method.startswith("sparse_")
-    radius = value(parameters, "r") if sparse else value(
-        parameters, "depth" if method == "progap" else "radius")
+    radius = parameters["r"]
     fields = {
         "protocol": result["protocol"], "method": method,
         "epsilon": result["target_epsilon"], "lr": result["lr"],
         "batch_size": result["requested_batch_size"], "epochs": result["epochs"],
         "seed": result["seed"], "r": radius,
-        "p2": parameters.get("p2") if sparse else None,
-        "K_out": parameters.get("K_out") if sparse else None,
+        "p2": parameters["p2"], "K_out": parameters["K_out"],
     }
     for key in CONFIG_KEYS[2:]:
         if fields[key] is not None:
@@ -199,17 +185,12 @@ def settings_from_result(result):
     return fields
 
 
-def read_run(root, index_path, indexed, study, original_root=None):
+def read_run(root, index_path, indexed, original_root=None):
     same(indexed.get("status"), "completed", f"{index_path}: indexed run status")
-    pointer = value(indexed, "result_csv")
-    if pointer is not None:
-        result_csv = selected_path(root, pointer, original_root)
-        directory = result_csv.parent
-    else:
-        pointer = value(indexed, "output_dir")
-        require(pointer is not None, f"{index_path}: missing output_dir/result_csv pointer")
-        directory = selected_path(root, pointer, original_root)
-        result_csv = directory / "result.csv"
+    pointer = value(indexed, "output_dir")
+    require(pointer is not None, f"{index_path}: missing output_dir pointer")
+    directory = recorded_path(root, pointer, original_root or root)
+    result_csv = directory / "result.csv"
     paths = {"config_json": directory / "config.json", "result_json": directory / "result.json",
              "result_csv": result_csv}
     for path in paths.values():
@@ -226,6 +207,7 @@ def read_run(root, index_path, indexed, study, original_root=None):
     settings = settings_from_result(result)
     protocol, method = settings["protocol"], settings["method"]
     require(protocol in TASKS, f"{directory}: unexpected protocol {protocol!r}")
+    require(method in {name for name, _, _ in METHODS}, f"unexpected method {method!r}")
     dataset, metric, binary, multilabel, strategy = TASKS[protocol]
     same(result["dataset"], dataset, "dataset")
     same(result["metric"], metric, "primary metric")
@@ -239,14 +221,14 @@ def read_run(root, index_path, indexed, study, original_root=None):
         same(task[key], expected, f"task {key}")
     for key in ("protocol", "dataset", "method", "metric", "seed", "lr", "requested_batch_size",
                 "epochs", "parameters", "target_epsilon", "split", "split_seed", "split_strategy",
-                "domain_split", "domain_split_id"):
+                "domain_split", "domain_split_id", "weight_decay"):
         same(config.get(key), result.get(key), f"config/result {key}")
     for source, label in ((indexed, str(index_path)), (scientific_rows[0], str(result_csv))):
         for key in ("protocol", "dataset", "method", "metric", "status", "split", "domain_split_id"):
             if value(source, key) is not None:
                 same(source[key], str(result.get(key, "")), f"{label}: {key}")
         for key in ("seed", "lr", "epochs", "requested_batch_size", "hidden", "dropout",
-                    "target_epsilon", "test_metric", "validation_metric"):
+                    "target_epsilon", "test_metric", "validation_metric", "weight_decay"):
             if value(source, key) is not None:
                 same(number(source[key], f"{label}: {key}"), result[key], f"{label}: {key}")
         for key in ("r", "p2", "K_out"):
@@ -265,27 +247,13 @@ def read_run(root, index_path, indexed, study, original_root=None):
     same(selection.get("validation_score"), result["validation_metric"], "selected validation score")
     integer(selection["step"], "selected step")
     parameters = result["parameters"]
-    sparse = method.startswith("sparse_")
-    if sparse:
-        same(parameters["K_in"], 10, "incoming accounting cap")
-        same(parameters["layers"], 2, "SGNN layers")
-    else:
-        same(parameters["max_degree"], 5, "baseline degree bound")
+    same(parameters["K_in"], 10, "incoming accounting cap")
+    same(parameters["layers"], 3 if settings["r"] == 3 else 2, "SGNN layers")
+    same(parameters["incoming_sampling_caps"], [20, 10, 5][:settings["r"]], "incoming sampling caps")
+    same(result["weight_decay"], 0, "weight decay")
+    same(parameters["weight_decay"], 0, "optimizer weight decay")
+    same(settings["epochs"], 20, "epochs")
     ci = result.get("test_confidence_intervals") or {}
-    primary = ci.get("metrics", {}).get(metric) or {}
-    needs_ci = sparse and settings["r"] == 1
-    lower, upper = primary.get("lower"), primary.get("upper")
-    available_ci = lower is not None and upper is not None and primary.get("valid_resamples", 0) > 0
-    require(available_ci or not needs_ci, f"{directory}: missing bootstrap CI required for {metric} bar panel")
-    if available_ci:
-        finite(lower, "bootstrap lower", minimum=0, maximum=1)
-        finite(upper, "bootstrap upper", minimum=0, maximum=1)
-        require(lower <= upper, "bootstrap interval is reversed")
-        for key, expected in {"confidence_level": .95, "method": "percentile",
-                              "resampling_unit": "node"}.items():
-            same(ci.get(key), expected, f"bootstrap {key}")
-    else:
-        lower = upper = None
     resources = result.get("resources") or {}
     native = result.get("native_result") or {}
     sampling = native.get("sampling_statistics") or {}
@@ -303,18 +271,13 @@ def read_run(root, index_path, indexed, study, original_root=None):
     if selected_epoch is None and parameters.get("evaluate_every"):
         selected_epoch = selection["step"] // parameters["evaluate_every"]
     row = {
-        **settings, "study": study, "metric": metric,
+        **settings, "metric": metric,
         "actual_epsilon": result.get("epsilon"), "delta": result.get("delta"),
         "effective_batch_size": result.get("effective_batch_size"),
         "hidden": result["hidden"], "layers": parameters.get("layers"), "dropout": result["dropout"],
         "K_in": parameters.get("K_in"), "device": result.get("device"),
         "selected_step": selection["step"], "selected_epoch": selected_epoch,
         "validation_metric": result["validation_metric"], "test_metric": result["test_metric"],
-        "bootstrap_ci_lower": lower, "bootstrap_ci_upper": upper,
-        "bootstrap_confidence_level": ci.get("confidence_level"), "bootstrap_method": ci.get("method"),
-        "bootstrap_n_resamples": ci.get("n_resamples"), "bootstrap_valid_resamples": primary.get("valid_resamples"),
-        "bootstrap_seed": ci.get("seed"), "bootstrap_resampling_unit": ci.get("resampling_unit"),
-        "bootstrap_n_observations": ci.get("n_observations"),
         "calibration_and_training_seconds": duration, "peak_cuda_allocated_bytes": cuda,
         "peak_rss_bytes": rss,
         "cuda_memory_status": "available" if cuda is not None else (
@@ -335,26 +298,25 @@ def read_run(root, index_path, indexed, study, original_root=None):
         "task": task, "train_nodes": config["train_nodes"], "split_strategy": strategy,
         "split": config["split"], "split_seed": config["split_seed"],
         "domain_split": config["domain_split"], "domain_split_id": config["domain_split_id"],
-        "partitions": config["partitions"],
+        "partition_sizes": {name: {key: partition[key] for key in ("nodes", "evaluated_nodes")}
+                            for name, partition in config["partitions"].items()},
     }
     return row, signature
 
 
-def read_results(root, study):
+def read_results(root, epsilon):
     root = root.resolve()
     index_path = root / "results.csv"
-    if not index_path.is_file():
-        index_path = root / "summary.csv"
-    require(index_path.is_file(), f"{root}: no results.csv or historical summary.csv")
-    original_root = None
+    require(index_path.is_file(), f"{root}: missing results.csv")
     state_path = root / "state.json"
-    if state_path.is_file():
-        original_root = read_json(state_path).get("root")
+    original_root = read_json(state_path).get("root") if state_path.is_file() else root
     rows, signatures, seen, outputs = [], {}, set(), set()
     for indexed in read_csv(index_path):
-        row, signature = read_run(root, index_path, indexed, study, original_root)
-        key = config_key(row)
-        require(key not in seen, f"{index_path}: ambiguous duplicate scientific settings {key}")
+        if number(indexed.get("target_epsilon"), "indexed target epsilon") != epsilon:
+            continue
+        row, signature = read_run(root, index_path, indexed, original_root)
+        key = config_key(row, (*POINT_KEYS, "seed"))
+        require(key not in seen, f"{index_path}: duplicate ablation point/seed {key}")
         require(row["actual_output_path"] not in outputs,
                 f"{index_path}: repeated selected output {row['actual_output_path']}")
         seen.add(key)
@@ -364,23 +326,49 @@ def read_results(root, study):
         else:
             signatures[row["protocol"]] = signature
         rows.append(row)
-    expected = required_members(study)
+    expected = required_members(epsilon)
     missing, extra = expected - seen, seen - expected
     require(not missing and not extra,
-            f"{index_path}: incomplete {study} curves; missing={len(missing)}, unexpected={len(extra)}")
+            f"{index_path}: incomplete repeat curves; missing={len(missing)}, unexpected={len(extra)}")
     return rows, signatures
 
 
-def relationship_curves(rows):
+def aggregate_seeds(rows):
+    groups = defaultdict(list)
+    for row in rows:
+        groups[config_key(row, POINT_KEYS)].append(row)
+    points = []
+    for key, cohort in sorted(groups.items()):
+        cohort.sort(key=lambda row: row["seed"])
+        same(tuple(row["seed"] for row in cohort), SEEDS, f"training seed cohort {key}")
+        reference = cohort[0]
+        for row in cohort[1:]:
+            for field in ("metric", "lr", "batch_size", "epochs", "hidden", "layers", "dropout"):
+                same(row[field], reference[field], f"mixed repeat configurations: {key}/{field}")
+            for field in row["parameters"].keys() | reference["parameters"].keys():
+                if field not in {"cap_seed", "K_in_achieved", "K_out_achieved", "bootstrap_seed"}:
+                    same(row["parameters"].get(field), reference["parameters"].get(field),
+                         f"mixed repeat configurations: {key}/{field}")
+        scores = [row["test_metric"] for row in cohort]
+        sd = statistics.stdev(scores)
+        points.append({
+            **dict(zip(POINT_KEYS, key)), "metric": reference["metric"],
+            "lr": reference["lr"], "batch_size": reference["batch_size"],
+            "epochs": reference["epochs"], "layers": reference["layers"],
+            "n": len(cohort), "seeds": list(SEEDS),
+            "test_mean": statistics.mean(scores), "test_sd": sd,
+            "test_se": sd / math.sqrt(len(cohort)),
+            "validation_mean": statistics.mean(row["validation_metric"] for row in cohort),
+            "run_ids": [row["run_id"] for row in cohort],
+        })
+    return points
+
+
+def relationship_curves(points):
     curves = []
-    for protocol, method, epsilon in dict.fromkeys((row["protocol"], row["method"], row["epsilon"]) for row in rows):
-        subset = [row for row in rows if (row["protocol"], row["method"], row["epsilon"]) == (protocol, method, epsilon)]
-        sweeps = (
-            ("r", {"p2": 0.5, "K_out": 10}, (1, 2, 3)),
-            ("p2", {"r": 1, "K_out": 10}, (0.05, 0.1, 0.25, 0.5, 1.0)),
-            ("K_out", {"r": 1, "p2": 0.5}, (5, 10, 20, 40)),
-        ) if method.startswith("sparse_") else (("r", {}, (1, 2, 3)),)
-        for parameter, fixed, expected_values in sweeps:
+    for protocol, method, epsilon in dict.fromkeys((row["protocol"], row["method"], row["epsilon"]) for row in points):
+        subset = [row for row in points if (row["protocol"], row["method"], row["epsilon"]) == (protocol, method, epsilon)]
+        for parameter, fixed, expected_values in SWEEPS:
             selected = sorted((row for row in subset if all(row[key] == value for key, value in fixed.items())),
                               key=lambda row: row[parameter])
             same(tuple(row[parameter] for row in selected), expected_values,
@@ -404,98 +392,74 @@ def draw_figures(curves, out_dir):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.patches import Patch
     from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
 
     plt.rcParams.update({"font.family": "serif", "font.size": 18,
                          "axes.labelsize": 22, "axes.titlesize": 21,
                          "xtick.labelsize": 17, "ytick.labelsize": 17,
                          "mathtext.fontset": "stix", "pdf.fonttype": 42})
-    datasets = (
-        ("saint-yelp", "Yelp", COLORS[1]),
-        ("ogbn-arxiv", "ArXiv", COLORS[0]),
-        ("twitch-allbut2", "Twitch", COLORS[2]),
-    )
+    epsilon, = {row["epsilon"] for row in curves}
     parameters = (
-        ("r", "Expansion / propagation depth"),
+        ("r", "Expansion radius $r$"),
         ("p2", "Edge-retention probability $p_2$"),
         ("K_out", r"Outgoing-degree cap $K_{\mathrm{out}}$"),
     )
-    outputs = []
-    for method, backend in (("sparse_sage", "SAGE"), ("sparse_gin", "GIN")):
-        epsilons = {row["epsilon"] for row in curves if row["method"] == method}
-        require(len(epsilons) == 1, f"expected one privacy parameter for {backend}")
-        figure, axes = plt.subplots(1, 3, figsize=(18.7, 3.6), sharey=True)
-        families = [(method, "SGNN", "-")]
-        for baseline, label, style in (
-            ("progap", "ProGAP", "--"),
-            ("dp_gnn_gin" if backend == "GIN" else "dp_gnn_sage", "DP-GNN", ":"),
-        ):
-            if any(row["method"] == baseline for row in curves):
-                families.append((baseline, label, style))
-        width = 0.24
-        for ax, (parameter, xlabel), panel_label in zip(axes, parameters, ("(a)", "(b)", "(c)")):
-            for dataset_index, (protocol, _, color) in enumerate(datasets):
-                panel_methods = families if parameter == "r" else [(method, "SGNN", "-")]
-                for curve_method, _, style in panel_methods:
+    figure, axes = plt.subplots(1, 3, figsize=(18.7, 3.6), sharey=True)
+    try:
+        for ax, (parameter, xlabel), panel in zip(axes, parameters, ("(a)", "(b)", "(c)")):
+            for protocol, _, color in DATASETS:
+                for method, _, style in METHODS:
                     selected = sorted(
-                        (row for row in curves if row["method"] == curve_method
+                        (row for row in curves if row["method"] == method
                          and row["protocol"] == protocol and row["curve_parameter"] == parameter),
                         key=lambda row: row["curve_value"])
-                    require(bool(selected), f"missing curve: {curve_method}/{protocol}/{parameter}")
-                    centers = list(range(len(selected)))
-                    if parameter == "r":
-                        xs = [row["curve_value"] for row in selected]
-                        ax.plot(xs, [row["test_metric"] for row in selected],
-                                color=color, linestyle=style, linewidth=3, alpha=1,
-                                marker="o", markersize=4, zorder=3)
-                    else:
-                        xs = [center + (dataset_index - 1) * width for center in centers]
-                        ax.bar(xs, [row["test_metric"] for row in selected], width=width,
-                               color=color, edgecolor="white", linewidth=0.6, zorder=3)
-                        for x, row in zip(xs, selected):
-                            # Absolute endpoints need not bracket the empirical score.
-                            lower, upper = row["bootstrap_ci_lower"], row["bootstrap_ci_upper"]
-                            ax.vlines(x, lower, upper, color="0.15", linewidth=1.3, zorder=4)
-                            ax.hlines((lower, upper), x - width * 0.25, x + width * 0.25,
-                                      color="0.15", linewidth=1.3, zorder=4)
-            if parameter == "r":
-                ax.set_xticks((1, 2, 3))
-                ax.set_xlim(0.85, 3.15)
-            else:
-                ax.set_xticks(centers, [f"{row['curve_value']:g}" for row in selected])
-                ax.set_xlim(-0.6, len(selected) - 0.4)
-            ax.set(xlabel=xlabel, ylim=(0, 1))
-            ax.text(0.025, 0.95, panel_label, transform=ax.transAxes,
+                    require(bool(selected), f"missing curve: {method}/{protocol}/{parameter}")
+                    values = [row["curve_value"] for row in selected]
+                    xs = values if parameter == "r" else list(range(len(values)))
+                    ax.errorbar(xs, [row["test_mean"] for row in selected],
+                                yerr=[row["test_se"] for row in selected],
+                                color=color, linestyle=style, linewidth=3.5, alpha=1,
+                                marker="o", markersize=7, markerfacecolor="white",
+                                markeredgecolor=color, markeredgewidth=1.5, capsize=3,
+                                elinewidth=1.1, capthick=1.1, zorder=3)
+            ax.set_xticks(xs, [f"{x:g}" for x in values])
+            ax.margins(x=0.05)
+            ax.set(xlabel=xlabel, ylim=(0, 0.75))
+            ax.set_yticks((0, 0.25, 0.5, 0.75))
+            ax.text(0.025, 0.99, panel, transform=ax.transAxes,
                     ha="left", va="top", fontsize=18, fontweight="bold")
             ax.set_axisbelow(True)
             ax.grid(which="major", color="0.88", linewidth=0.6)
             ax.spines[["top", "right"]].set_visible(False)
         axes[0].set_ylabel("Test metric")
         figure.legend(
-            handles=[*[Patch(facecolor=color, label=label) for _, label, color in datasets],
-                     *[Line2D([], [], color="0.2", linestyle=style, linewidth=3, alpha=1, label=label)
-                       for _, label, style in families]],
+            handles=[*[Patch(facecolor=color, label=label) for _, label, color in DATASETS],
+                     *[Line2D([], [], color="0.2", linestyle=style, linewidth=3.5, alpha=1,
+                              marker="o", markersize=7, markerfacecolor="white",
+                              markeredgewidth=1.5, label=label)
+                       for _, label, style in METHODS]],
             loc="center left", bbox_to_anchor=(0.005, 0.55), borderaxespad=0,
             ncol=1, fontsize=14, frameon=False, handlelength=2.4)
-        figure.subplots_adjust(left=0.175, right=0.99, bottom=0.24, top=0.84, wspace=0.12)
+        figure.subplots_adjust(left=0.175, right=0.99, bottom=0.28, top=0.94, wspace=0.12)
+        outputs = []
         for extension in ("png", "pdf"):
-            path = out_dir / f"ablation_{backend.lower()}.{extension}"
+            path = out_dir / f"ablation_eps{epsilon:g}.{extension}"
             metadata = ({"CreationDate": None, "ModDate": None} if extension == "pdf"
                         else {"Software": "SparseExpand ablation analysis"})
             figure.savefig(path, dpi=180, bbox_inches="tight", pad_inches=0.15, metadata=metadata)
             outputs.append(path)
+        return outputs
+    finally:
         plt.close(figure)
-    return outputs
 
 
 def parser():
     cli = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    cli.add_argument("--ofat-root", required=True, type=Path)
-    cli.add_argument("--depth-root", type=Path,
-                     help="complete 27-run DP-GNN/ProGAP depth-baseline study")
+    cli.add_argument("--ofat-root", required=True, type=Path, help="completed five-seed repeat root")
+    cli.add_argument("--epsilon", type=float, default=8, help="target epsilon to plot (default: 8)")
     cli.add_argument("--out-dir", type=Path,
-                     help="fresh figure/data directory (default: DEPTH_ROOT/figures, else OFAT_ROOT/figures)")
+                     help="fresh figure/data directory (default: OFAT_ROOT/figures_eps<EPSILON>)")
     return cli
 
 
@@ -504,51 +468,40 @@ def main(argv=None):
     args = cli.parse_args(argv)
     argument_values = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
     root = args.ofat_root.expanduser().absolute()
-    depth_root = args.depth_root.expanduser().absolute() if args.depth_root else None
-    out_dir = args.out_dir.expanduser().absolute() if args.out_dir else (depth_root or root) / "figures"
+    out_dir = args.out_dir.expanduser().absolute() if args.out_dir else root / f"figures_eps{args.epsilon:g}"
     argument_values["out_dir"] = str(out_dir)
     try:
+        finite(args.epsilon, "epsilon", minimum=0)
         require(not out_dir.exists() and not out_dir.is_symlink(), f"output directory already exists: {out_dir}; refusing overwrite")
-        inputs = [(root, "ofat")] + ([(depth_root, "depth-baselines")] if depth_root else [])
-        rows, split_signatures = [], {}
-        for input_root, study in inputs:
-            require(input_root.is_dir(), f"input root is not a directory: {input_root}")
-            require(not input_root.resolve().is_relative_to(out_dir.resolve()),
-                    f"output directory cannot replace the input root or its ancestors: {input_root}")
-            input_rows, signatures = read_results(input_root, study)
-            for protocol, signature in signatures.items():
-                if protocol in split_signatures:
-                    same(signature, split_signatures[protocol],
-                         "incompatible dataset/task/split identities across inputs")
-                else:
-                    split_signatures[protocol] = signature
-            rows.extend(input_rows)
-        same(len(rows), 87 if depth_root else 60, "complete validated run count")
-        same(len({config_key(row) for row in rows}), len(rows), "unique configuration count")
-        curves = relationship_curves(rows)
-        # Resolve plotting dependencies before reserving the fresh output directory.
+        require(root.is_dir(), f"input root is not a directory: {root}")
+        require(not root.resolve().is_relative_to(out_dir.resolve()),
+                f"output directory cannot replace the input root or its ancestors: {root}")
+        rows, split_signatures = read_results(root, args.epsilon)
+        points = aggregate_seeds(rows)
+        curves = relationship_curves(points)
         versions = {name: importlib.metadata.version(name) for name in ("matplotlib", "numpy")}
         import matplotlib
         out_dir.mkdir(parents=True, exist_ok=False)
         write_csv(out_dir / "per_run.csv", rows)
+        write_csv(out_dir / "points.csv", points)
         write_csv(out_dir / "curves.csv", curves)
         figures = draw_figures(curves, out_dir)
         analysis = {
-            "schema_version": 1, "analysis": "SparseExpand OFAT and depth comparisons" if depth_root else "SparseExpand OFAT",
+            "schema_version": 2, "analysis": "SparseExpand five-seed OFAT",
             "completeness": "strict_complete",
             "arguments": argument_values, "argv": list(sys.argv if argv is None else [str(Path(__file__)), *argv]),
-            "input_run_count": len(rows), "curve_row_count": len(curves),
-            "curve_membership": "The SGNN anchor is referenced in three OFAT curves. Each baseline run appears once in the depth data; ProGAP is shared between backend figures. No averaging.",
-            "input_root": str(root), "depth_root": str(depth_root) if depth_root else None,
+            "input_run_count": len(rows), "point_count": len(points), "curve_row_count": len(curves),
+            "curve_membership": "The anchor is referenced in three panels; each point averages exactly seeds 1–5. No configuration reselection.",
+            "input_root": str(root),
             "versions": {"python": platform.python_version(), **versions},
             "policy": POLICY, "split_evidence": split_signatures,
-            "outputs": [path.name for path in [out_dir / "per_run.csv", out_dir / "curves.csv", *figures]],
+            "outputs": [path.name for path in [out_dir / "per_run.csv", out_dir / "points.csv", out_dir / "curves.csv", *figures]],
         }
         with (out_dir / "analysis.json").open("x") as stream:
             json.dump(analysis, stream, indent=2, sort_keys=True, allow_nan=False)
             stream.write("\n")
         print(f"Validated {len(rows)} runs; {len(curves)} curve points; {len(figures)} PNG/PDF files: {out_dir}")
-        print("Metric bars: stored 95% node-bootstrap intervals, not training-randomness uncertainty.")
+        print(POLICY["uncertainty"])
         print(POLICY["accounting"])
         return 0
     except (OSError, ValueError, KeyError, TypeError, OverflowError, importlib.metadata.PackageNotFoundError) as error:
