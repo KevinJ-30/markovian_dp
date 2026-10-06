@@ -204,8 +204,7 @@ def test_edge_retention_matches_p2_below_incoming_cap():
     adjacency = build_adjacency(edges, degree + 1, direction="in")
     generator = torch.Generator().manual_seed(0)
     retained = sum(
-        sparse_expand(adjacency, 0, p2, 1, generator=generator,
-                      direction="in").num_edges
+        sparse_expand(adjacency, 0, p2, 1, generator=generator).num_edges
         for _ in range(trials))
     assert retained / (trials * degree) == pytest.approx(p2, rel=0.05)
 
@@ -228,7 +227,7 @@ def test_model_depth_does_not_widen_privacy_radius(radius, layers, distant, read
         data, 4, 2, hidden=8, num_layers=layers, dropout=0.0)
     subgraph = sparse_expand(
         build_adjacency(edges, 4, direction="in"), 0, p2=1.0,
-        r=radius, direction="in")
+        r=radius)
     before = float(mechanism.subgraph_loss(subgraph).detach())
     data.x[distant] += 100.0
     after = float(mechanism.subgraph_loss(subgraph).detach())

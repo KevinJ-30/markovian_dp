@@ -10,14 +10,9 @@ arcs uniformly without replacement.
 An arc joins E_v before the "already visited" test, so E_v may contain arcs into
 already-discovered vertices.
 
-`direction='in'` (default) uses capped Algorithm 5: traverse incoming arcs (w, u) but
-keep their original orientation, so messages flow toward the root — what a
-message-passing GNN needs.  `direction='out'` is the legacy Algorithm 2/4,
-retained for the orientation ablation.  The direction also selects the
-accounting shell size: n_d = K_out^d for 'in' (Eq. 44), K_in^d for 'out'.
-
-On symmetric graphs the two orientations traverse the same candidate neighbors,
-but only incoming expansion applies the sampling cap.
+Capped Algorithm 5 traverses incoming arcs (w, u) and keeps their original
+orientation, so messages flow toward the root. Its accounting shell size is
+n_d = K_out^d (Eq. 44).
 """
 
 import math
@@ -31,7 +26,7 @@ INCOMING_EDGE_CAPS = (20, 10, 5)
 
 @dataclass(frozen=True)
 class SparseAdjacency:
-    """Compact CPU CSR neighbour storage for SparseExpand."""
+    """Compact CPU CSR neighbour storage shared by SparseExpand and DP-GNN."""
 
     rowptr: torch.Tensor
     col: torch.Tensor
@@ -74,7 +69,7 @@ class RootedSubgraph:
 
 def build_adjacency(edge_index: torch.Tensor, num_nodes: int,
                     direction: str = 'in') -> SparseAdjacency:
-    """Build compact CPU CSR neighbours for SparseExpand."""
+    """Build incoming CSR neighbours for SparseExpand, or outgoing for DP-GNN."""
     if direction not in ('in', 'out'):
         raise ValueError(f"direction must be 'in' or 'out', got {direction!r}")
     edge_index = edge_index.cpu()
@@ -88,11 +83,6 @@ def build_adjacency(edge_index: torch.Tensor, num_nodes: int,
     rowptr[0] = 0
     rowptr[1:] = counts.cumsum(0)
     return SparseAdjacency(rowptr=rowptr, col=col, direction=direction)
-
-
-def build_out_adjacency(edge_index: torch.Tensor, num_nodes: int) -> SparseAdjacency:
-    """Out-adjacency for SparseExpand and GAD."""
-    return build_adjacency(edge_index, num_nodes, direction='out')
 
 
 def _bernoulli_keep(n: int, p2: float, generator) -> torch.Tensor:
@@ -149,32 +139,21 @@ def sparse_expand(
     p2: float,
     r: int,
     generator: torch.Generator = None,
-    direction: str = 'in',
 ) -> RootedSubgraph:
-    """SparseExpand: randomized rooted expansion (Algorithm 5 / Algorithm 2).
+    """SparseExpand: randomized incoming rooted expansion (Algorithm 5).
 
     Args:
-        adj:       neighbour lists from `build_adjacency(..., direction)` — must
-                   have been built with the SAME `direction` passed here.
+        adj:       incoming neighbour lists from `build_adjacency`.
         root:      root vertex v (original node id).
         p2:        Bernoulli edge probability before the per-hop incoming cap.
         r:         maximum distance / number of expansion levels.
         generator: optional torch.Generator for reproducible sampling.
-        direction: 'in'  -> Algorithm 5: traverse incoming arcs (w, u) and record
-                            them with their original orientation, so messages
-                            flow toward the root;
-                   'out' -> legacy Algorithm 2/4: traverse outgoing arcs (u, w).
 
     Returns:
         RootedSubgraph with local-indexed edges (see RootedSubgraph docstring).
     """
-    if direction not in ('in', 'out'):
-        raise ValueError(f"direction must be 'in' or 'out', got {direction!r}")
-    if adj.direction != direction:
-        raise ValueError(
-            f"adjacency direction {adj.direction!r} does not match "
-            f"expansion direction {direction!r}")
-    expand_in = direction == 'in'
+    if adj.direction != 'in':
+        raise ValueError("SparseExpand requires incoming adjacency")
     # V_v <- {v};  E_v <- empty;  Q_0 <- {v}
     visited = {root: 0}          # original id -> local index
     nodes_order = [root]
@@ -185,27 +164,24 @@ def sparse_expand(
         cap = INCOMING_EDGE_CAPS[min(_ell, len(INCOMING_EDGE_CAPS) - 1)]
         next_frontier: List[int] = []
         for u in frontier:
-            out = adj.neighbors(u)
-            if expand_in and out.numel() > cap:
+            neighbors = adj.neighbors(u)
+            if neighbors.numel() > cap:
                 positions, retained = _capped_incoming_positions(
-                    torch.tensor([out.numel()]), p2, cap, generator)
-                kept_dst = out[positions[retained]].tolist()
+                    torch.tensor([neighbors.numel()]), p2, cap, generator)
+                kept_neighbors = neighbors[positions[retained]].tolist()
             else:
-                keep = _bernoulli_keep(int(out.numel()), p2, generator)
-                kept_dst = out[keep].tolist()
+                keep = _bernoulli_keep(int(neighbors.numel()), p2, generator)
+                kept_neighbors = neighbors[keep].tolist()
             u_local = visited[u]
-            for w in kept_dst:
+            for w in kept_neighbors:
                 # Add the edge regardless of whether w is new (Alg 5 line 8
                 # precedes the membership test on line 9).
                 if w not in visited:
                     visited[w] = len(nodes_order)
                     nodes_order.append(w)
                     next_frontier.append(w)
-                # 'in': the traversed arc is (w, u), and Algorithm 5 retains
-                # that original orientation, so w is the source and u the
-                # target — messages flow toward the root.
-                edges_local.append([visited[w], u_local] if expand_in
-                                   else [u_local, visited[w]])
+                # Retain the original arc (w, u), so messages flow toward the root.
+                edges_local.append([visited[w], u_local])
         frontier = next_frontier
         if not frontier:
             break
@@ -224,7 +200,6 @@ def batch_sparse_expand(
     p2: float,
     r: int,
     generator: torch.Generator = None,
-    direction: str = 'in',
 ) -> List[RootedSubgraph]:
     """Vectorized SparseExpand for an ordered batch of CPU roots.
 
@@ -234,12 +209,8 @@ def batch_sparse_expand(
     Segmented composite keys preserve first-discovery order and map repeated
     discoveries to one local node.
     """
-    if direction not in ('in', 'out'):
-        raise ValueError(f"direction must be 'in' or 'out', got {direction!r}")
-    if adj.direction != direction:
-        raise ValueError(
-            f"adjacency direction {adj.direction!r} does not match "
-            f"expansion direction {direction!r}")
+    if adj.direction != 'in':
+        raise ValueError("SparseExpand requires incoming adjacency")
     if roots.ndim != 1:
         raise ValueError("roots must be a one-dimensional tensor")
     if roots.device.type != 'cpu':
@@ -277,7 +248,7 @@ def batch_sparse_expand(
         if max_degree == 0:
             break
 
-        if direction == 'in' and max_degree > cap:
+        if max_degree > cap:
             neighbor_positions, retained = _capped_incoming_positions(
                 degrees, p2, cap, generator)
             width = neighbor_positions.size(-1)
@@ -375,16 +346,10 @@ def batch_sparse_expand(
             (batch_size, 2, next_edge_width), dtype=torch.long)
         next_edge_index[:, :, :edge_index.size(2)] = edge_index
         edge_positions = edge_counts[retained_batch] + retained_ranks
-        if direction == 'in':
-            retained_sources = retained_neighbor_local
-            retained_targets = retained_parents
-        else:
-            retained_sources = retained_parents
-            retained_targets = retained_neighbor_local
         next_edge_index[
-            retained_batch, 0, edge_positions] = retained_sources
+            retained_batch, 0, edge_positions] = retained_neighbor_local
         next_edge_index[
-            retained_batch, 1, edge_positions] = retained_targets
+            retained_batch, 1, edge_positions] = retained_parents
         edge_index = next_edge_index
         edge_counts = next_edge_counts
 

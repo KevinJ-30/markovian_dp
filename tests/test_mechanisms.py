@@ -7,12 +7,12 @@ import pytest
 import torch
 from torch_geometric.data import Data
 
-from src.models.binary_mechanism import BinaryGNNMechanism, _auroc
+from src.models.binary_mechanism import BinaryGNNMechanism
 from src.models.bootstrap import BootstrapConfig, BootstrapMetrics
 from src.models.gnn_mechanism import GNNMechanism
 from src.models.multilabel_mechanism import MultiLabelGNNMechanism, _micro_f1
 from src.models.regression_mechanism import RegressionGNNMechanism
-from src.models.objectives import _task_metric, trivial_baseline
+from src.models.objectives import _binary_auroc, _task_metric, trivial_baseline
 from src.processing.sparse_expand import build_adjacency, sparse_expand
 
 
@@ -40,17 +40,17 @@ def _toy_data(num_labels=None, binary=False):
 
 def test_auroc_perfect_and_inverted():
     y = np.array([0, 0, 1, 1])
-    assert math.isclose(_auroc(y, np.array([0.1, 0.2, 0.8, 0.9])), 1.0)
-    assert math.isclose(_auroc(y, np.array([0.9, 0.8, 0.2, 0.1])), 0.0)
+    assert math.isclose(_binary_auroc(y, np.array([0.1, 0.2, 0.8, 0.9])), 1.0)
+    assert math.isclose(_binary_auroc(y, np.array([0.9, 0.8, 0.2, 0.1])), 0.0)
 
 
 def test_auroc_all_ties_is_one_half():
     y = np.array([0, 0, 1, 1])
-    assert math.isclose(_auroc(y, np.full(4, 0.5)), 0.5)
+    assert math.isclose(_binary_auroc(y, np.full(4, 0.5)), 0.5)
 
 
 def test_auroc_single_class_is_nan():
-    assert math.isnan(_auroc(np.array([1, 1, 1]), np.array([0.1, 0.5, 0.9])))
+    assert math.isnan(_binary_auroc(np.array([1, 1, 1]), np.array([0.1, 0.5, 0.9])))
 
 
 def test_auroc_matches_sklearn():
@@ -58,7 +58,7 @@ def test_auroc_matches_sklearn():
     rng = np.random.default_rng(0)
     y = rng.integers(0, 2, 200)
     scores = rng.normal(size=200) + y            # correlated with the label
-    assert math.isclose(_auroc(y, scores),
+    assert math.isclose(_binary_auroc(y, scores),
                         sklearn.roc_auc_score(y, scores), rel_tol=1e-9)
 
 
@@ -206,13 +206,13 @@ def test_mechanism_subgraph_loss_and_metrics(kind):
     assert mech.metric_name == expected_metric
 
     adj = build_adjacency(data.edge_index, 6, direction='in')
-    sg = sparse_expand(adj, 0, p2=1.0, r=2, direction='in')
+    sg = sparse_expand(adj, 0, p2=1.0, r=2)
     loss = mech.subgraph_loss(sg)
     assert torch.isfinite(loss) and loss.requires_grad
 
     # An unlabelled-split root contributes a differentiable zero.
     assert float(mech.subgraph_loss(
-        sparse_expand(adj, 4, p2=1.0, r=2, direction='in'))) == 0.0
+        sparse_expand(adj, 4, p2=1.0, r=2))) == 0.0
 
     metrics = mech.evaluate(data)
     # Contract: the three split keys are required; a mechanism may report extra
@@ -232,7 +232,7 @@ def test_mechanism_trains_through_the_engine():
     mech = MultiLabelGNNMechanism(data, 4, 3, hidden=8, num_layers=2)
     mech.build_optimizer(lr=0.05, kind='adam')
     metrics = train_sparse_gnn(
-        mech, data, data, direction='in', p1=1.0, p2=1.0, r=2, T=20,
+        mech, data, data, p1=1.0, p2=1.0, r=2, T=20,
         seed=0)
     assert {"train", "val", "test"} <= set(metrics)
 
@@ -262,7 +262,7 @@ def test_every_mechanism_trains_one_private_padded_step(kind):
 
     mechanism.build_optimizer(lr=0.01, kind="sgd")
     metrics = train_sparse_gnn(
-        mechanism, data, data, direction="in", p1=1.0, p2=1.0, r=1,
+        mechanism, data, data, p1=1.0, p2=1.0, r=1,
         T=1, dp=True, clip=1.0, sigma=1.0, seed=4)
     assert {"train", "val", "test"} <= set(metrics)
 

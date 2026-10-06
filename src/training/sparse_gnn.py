@@ -3,7 +3,7 @@ Algorithm 1: SparseGNN — the model-agnostic training engine.
 
     for t = 1..T:
         V_root <- { v : B_v = 1 },  B_v ~ Bernoulli(p1)          (root sampling)
-        S_t    <- { SparseExpand(G, v, p2, r) : v in V_root }    (Algorithm 2)
+        S_t    <- { SparseExpand(G, v, p2, r) : v in V_root }    (Algorithm 5)
         theta  <- Alg(theta, S_t)                                (Alg adds noise)
 
 `Alg` is realized here in two modes:
@@ -150,7 +150,6 @@ def train_sparse_gnn(
     r: int,
     T: int,
     adj: Optional[SparseAdjacency] = None,
-    direction: str = 'in',
     dp: bool = False,
     clip: Optional[float] = None,
     sigma: Optional[float] = None,
@@ -170,11 +169,8 @@ def train_sparse_gnn(
                          roots and its edges are the only edges expanded.
         test_data:       separate PyG graph used for every evaluation.
         p1, p2, r, T:    paper parameters (root prob, edge prob, distance, steps).
-        adj:             optional precomputed adjacency from
-                         `build_adjacency(..., direction)`; built if None.
-        direction:       'in' (Algorithm 5, expansion along incoming edges — the
-                         orientation a message-passing GNN needs) or 'out' (the
-                         legacy Algorithm 2/4 orientation, for the ablation).
+        adj:             optional precomputed incoming adjacency from
+                         `build_adjacency`; built if None.
         dp:              enable the DP clip+noise path (default False).
         clip, sigma:     clipping norm C and Opacus noise multiplier (required
                          when dp=True; absolute noise std is sigma*C).
@@ -189,8 +185,7 @@ def train_sparse_gnn(
                          {'step': t, <metrics>} dicts).  Evaluation draws no
                          sampling randomness, so a tracked run follows exactly
                          the same trajectory as an untracked one.  Each
-                         checkpoint pairs with the epsilon of composing the
-                         first t steps (see compute_epsilon --track support).
+                         checkpoint records its number of composed updates.
         progress_every:  optional logging interval when verbose; None uses the
                          effective validation interval and zero disables logging.
                          Logging does not add selection candidates.
@@ -214,8 +209,7 @@ def train_sparse_gnn(
 
     num_nodes = int(train_data.num_nodes)
     if adj is None:
-        adj = build_adjacency(
-            train_data.edge_index, num_nodes, direction=direction)
+        adj = build_adjacency(train_data.edge_index, num_nodes)
 
     if dp:
         if clip is None or sigma is None:
@@ -247,7 +241,7 @@ def train_sparse_gnn(
         roots = sample_roots(num_nodes, p1, generator=sample_gen,
                              candidate_nodes=candidate_nodes)
         subgraphs = batch_sparse_expand(
-            adj, roots, p2, r, generator=sample_gen, direction=direction)
+            adj, roots, p2, r, generator=sample_gen)
         # Shape metadata only: no extra sampling, copies, or tensor reductions.
         sampled_count += len(subgraphs)
         for subgraph in subgraphs:
@@ -337,7 +331,6 @@ def train_sparse_gnn_with_budget(
     r: int,
     T: int,
     clip: float,
-    direction: str = "in",
     accounting_grid: float = 1e-3,
     calibration_rtol: float = 1e-3,
     calibration_atol: float = 1e-6,
@@ -361,7 +354,7 @@ def train_sparse_gnn_with_budget(
     )
     metrics = train_sparse_gnn(
         mechanism, train_data, test_data, p1=p1, p2=p2, r=r, T=T, adj=adj,
-        direction=direction, dp=True, clip=clip,
+        dp=True, clip=clip,
         sigma=calibration.noise_multiplier, seed=seed,
         eval_every=eval_every, track_every=track_every, verbose=verbose,
         progress_every=progress_every,

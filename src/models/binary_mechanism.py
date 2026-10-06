@@ -41,10 +41,6 @@ class _BinaryGNN(nn.Module):
         return x.view(-1)
 
 
-# Backward-compatible private import used by the existing mechanism tests.
-_auroc = _binary_auroc
-
-
 class BinaryGNNMechanism(BaseMechanism):
     """Per-root GCN binary classifier.
 

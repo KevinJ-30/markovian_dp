@@ -127,7 +127,7 @@ def test_twitch_rejects_unknown_edge_ids_and_conflicting_duplicate_nodes(tmp_pat
         domain._parse_twitch_domain(other, "de")
 
 
-@pytest.mark.parametrize("dataset_name", ["facebook100", "facebook100-gender"])
+@pytest.mark.parametrize("dataset_name", ["facebook100-gender", "facebook100-year"])
 def test_normalization_defaults_equal_explicit_and_are_registry_ordered(dataset_name):
     normalized, split_id = domain.normalize_domain_split(dataset_name)
     explicit, explicit_id = domain.normalize_domain_split(
@@ -209,47 +209,6 @@ def test_shared_domain_masks_are_stratified_deterministic_and_exhaustive():
     assert first.edge_index.tolist() == [[0, 1, 2, 21], [1, 0, 21, 2]]
 
 
-def _write_fb100_fixture(root):
-    root.mkdir(exist_ok=True)
-    for index, filename in enumerate(domain.FB100_FILES.values()):
-        local_info = np.array(
-            [
-                [index + 1, 0, 1, 0, 1, 2005, index + 10],
-                [index + 1, 2, 2, 3, 0, 2006, 0],
-            ],
-            dtype=np.int64,
-        )
-        adjacency = sp.csr_matrix(np.array([[0, 1], [1, 0]], dtype=np.int8))
-        savemat(root / filename, {"A": adjacency, "local_info": local_info})
-
-
-def test_facebook100_uses_all_school_vocabulary_and_missing_gender_rule(tmp_path):
-    _write_fb100_fixture(tmp_path)
-    requested = _split(["penn94"], ["amherst41"], ["cornell5"])
-
-    data, metadata = domain.load_domain_dataset(
-        "facebook100", requested, root=tmp_path
-    )
-
-    # Match GraphOOD/sklearn label_binarize: binary feature columns occupy one
-    # positive-class column, while multiclass columns include raw category 0.
-    assert data.x.shape == (6, 41)
-    assert data.y.tolist() == [0, 1, 0, 1, 0, 1]
-    assert set(map(tuple, data.edge_index.t().tolist())) == {
-        (0, 1), (1, 0), (2, 3), (3, 2), (4, 5), (5, 4),
-    }
-    assert data.x[0].sum() == 3
-    assert data.x[1].sum() == 5
-    # The same non-school categories occupy the same columns across schools,
-    # while school-specific status categories remain distinct.
-    assert torch.equal(data.x[0, 18:22], data.x[2, 18:22])
-    assert data.x[0, 0] == 1 and data.x[2, 1] == 1
-    assert data.domain_names == ["penn94", "amherst41", "cornell5"]
-    assert metadata["task_type"] == "MULTICLASS"
-    assert metadata["primary_metric"] == "accuracy"
-    assert metadata["metric_ignore_label"] is None
-
-
 def _write_fb100_gender_fixture(root):
     root.mkdir(exist_ok=True)
     for index, filename in enumerate(domain.FB100_FILES.values()):
@@ -272,7 +231,6 @@ def _write_fb100_gender_fixture(root):
 def test_facebook100_recorded_gender_filters_nodes_and_remaps_induced_edges(tmp_path):
     _write_fb100_gender_fixture(tmp_path)
     requested = _split(["penn94"], ["amherst41"], ["cornell5"])
-    legacy, _ = domain.load_domain_dataset("facebook100", requested, root=tmp_path)
     dataset, data = datasets.load_dataset(
         "facebook100-gender", domain_split=requested, root=tmp_path
     )
@@ -289,8 +247,11 @@ def test_facebook100_recorded_gender_filters_nodes_and_remaps_induced_edges(tmp_
     # Categories present only on excluded nodes (777/778), and schools not
     # selected by this split, still define the common raw-school vocabulary.
     assert data.x.shape == (6, 43)
-    assert torch.equal(data.x, legacy.x[[1, 3, 5, 7, 9, 11]])
-    assert dataset.num_features == legacy.x.size(1)
+    expected = torch.zeros(6, 43)
+    expected[:, [18, 21, 23, 24]] = 1
+    expected[torch.arange(6), torch.arange(3).repeat_interleave(2)] = 1
+    torch.testing.assert_close(data.x, expected)
+    assert dataset.num_features == 43
     assert dataset.num_classes == 2
     assert dataset.task_type == "MULTICLASS"
     assert dataset.primary_metric == "accuracy"
@@ -325,31 +286,6 @@ def test_facebook100_recorded_gender_rejects_unexpected_raw_categories(tmp_path,
             _split(["penn94"], ["amherst41"], ["cornell5"]),
             root=tmp_path,
         )
-
-
-def test_facebook100_gender_and_missingness_use_disjoint_split_caches(tmp_path):
-    raw = tmp_path / "raw"
-    _write_fb100_gender_fixture(raw)
-    requested = _split(["penn94"], ["amherst41"], ["cornell5"])
-    splits = {}
-    for name in ("facebook100", "facebook100-gender"):
-        data, _ = domain.load_domain_dataset(name, requested, root=raw)
-        splits[name] = load_or_create_inductive_split(
-            data, name, root=tmp_path / "splits", split_strategy="domain"
-        )
-        reloaded = load_or_create_inductive_split(
-            data, name, root=tmp_path / "splits", split_strategy="domain"
-        )
-        assert torch.equal(reloaded.train.data.y, splits[name].train.data.y)
-    legacy = splits["facebook100"]
-    gender = splits["facebook100-gender"]
-    assert legacy.path != gender.path
-    assert legacy.path.is_file() and gender.path.is_file()
-    assert legacy.domain_split_id != gender.domain_split_id
-    assert legacy.domain_split == gender.domain_split
-    assert legacy.train.data.y.tolist() == [0, 1, 0, 1]
-    assert gender.train.data.y.tolist() == [1, 0]
-    assert gender.train.data.label_metadata["raw_to_class"] == {"1": 0, "2": 1}
 
 
 def _write_fb100_year_fixture(root, *, include_last_class=True):

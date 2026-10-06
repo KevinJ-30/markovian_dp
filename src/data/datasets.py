@@ -57,7 +57,6 @@ SUPPORTED_DATASETS = {
     'facebook': 'Facebook',
     # Provenance-specific domain-disjoint node-classification benchmarks.
     'twitch-explicit': 'Twitch-Explicit',
-    'facebook100': 'Facebook100',
     'facebook100-gender': 'Facebook100-Gender',
     'facebook100-year': 'Facebook100-Year',
     'mag-countries': 'MAG-Countries',
@@ -207,8 +206,7 @@ def _load_graphsaint(name, root=None):
         it to every split.
 
     `data.edge_index` is the full graph and `data.train_edge_index` the
-    train-induced one. `src.experiments.sparse` uses the latter for training and passes
-    the former separately for evaluation.
+    train-induced one. Native train/val/test masks define the inductive partitions.
     """
     import json
     import numpy as np
@@ -519,8 +517,7 @@ def load_dataset(name, device='cpu', domain_split=None, *, root=None):
         return dataset, data
 
     if key == 'flickr':
-        # Single graph with train/val/test masks; src.experiments.sparse automatically
-        # builds the train-induced graph.
+        # Single graph with native train/val/test masks for inductive partitioning.
         from torch_geometric.datasets import Flickr
         root = os.environ.get('FLICKR_DATA_ROOT', 'data/Flickr')
         dataset = _cached_pyg_dataset(

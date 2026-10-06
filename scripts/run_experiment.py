@@ -38,11 +38,11 @@ NATIVE_PROTOCOLS = {
 TRAIN_SCHOOLS = ("johns-hopkins55", "caltech36", "amherst41", "reed98",
                  "brandeis99", "princeton12")
 DOMAIN_DATASETS = {
-    "twitch-explicit", "facebook100", "facebook100-gender", "facebook100-year", "mag-countries",
+    "twitch-explicit", "facebook100-gender", "facebook100-year", "mag-countries",
 }
 DOMAIN_PRESETS = {
-    "twitch-allbut2", "facebook100-allbut2", "mag-allbut2",
-    "fb100-gender-1", "fb100-gender-3", "fb100-gender-6", "fb100-gender-16", "fb100-year-6",
+    "twitch-allbut2", "mag-allbut2",
+    "fb100-gender-3", "fb100-gender-6", "fb100-gender-16", "fb100-year-6",
 }
 
 
@@ -283,7 +283,6 @@ def _protocol(name: str) -> tuple[str, dict[str, Any] | None]:
                          "seed": 0, "val_ratio": 0.2}
     dataset, domains, validation, test = {
         "twitch-allbut2": ("twitch-explicit", TWITCH_DOMAINS, "engb", "es"),
-        "facebook100-allbut2": ("facebook100", FB100_DOMAINS, "cornell5", "penn94"),
         "mag-allbut2": ("mag-countries", MAG_DOMAINS, "cn", "de"),
     }[name]
     return dataset, {
@@ -294,7 +293,7 @@ def _protocol(name: str) -> tuple[str, dict[str, Any] | None]:
 
 def _load_split(protocol: str, split_root: Path, domain_split: dict | None = None):
     from src.data.datasets import load_dataset
-    from src.experiments.run import _resolve_task_metadata
+    from src.data.task_metadata import _resolve_task_metadata
     from src.processing.graphs import preprocess_inductive_split
     from src.processing.splits import load_or_create_inductive_split
 
@@ -558,7 +557,7 @@ def _sparse(args, split, task, batch, delta):
     evaluation = _sparse_evaluation_graph(split, args.device)
     result = train_sparse_gnn(
         mechanism, train, evaluation, p1=p1, p2=args.p2, r=args.sparse_radius, T=steps,
-        adj=adjacency, direction="in", dp=True, clip=1.0,
+        adj=adjacency, dp=True, clip=1.0,
         sigma=calibration.noise_multiplier, seed=args.seed, eval_every=interval,
         track_every=0, bootstrap=BootstrapConfig(
             confidence_level=0.95, n_resamples=args.bootstrap_resamples, seed=0),

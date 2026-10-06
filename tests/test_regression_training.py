@@ -1,11 +1,9 @@
-import json
 from types import SimpleNamespace
 
 import pytest
 import torch
 from torch_geometric.data import Data
 
-from src.experiments.dpgnn_adapter import _load_partitions
 from src.training.baselines import BaselineConfig, BaselineTrainer
 import src.training.dpar as dpar_module
 
@@ -56,12 +54,3 @@ def test_negative_r2_selects_and_restores_best_checkpoint(monkeypatch, method):
     assert result["test_accuracy"] == pytest.approx(-9.0)
     assert model.bias.item() == 2.0
 
-
-def test_dpgnn_rejects_retired_mae_manifest(tmp_path):
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({
-        "format": 2, "num_classes": 1, "primary_metric": "mae", "binary": False,
-        "partitions": {name: f"{name}.pt" for name in ("train", "val", "test")},
-    }))
-    with pytest.raises(ValueError, match="unsupported primary_metric"):
-        _load_partitions(manifest)

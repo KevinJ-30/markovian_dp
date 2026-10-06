@@ -4,8 +4,6 @@ from __future__ import annotations
 import csv
 import json
 import math
-import os
-from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -192,7 +190,6 @@ def test_custom_domain_split_builds_separate_graphs_and_preserves_metadata(tmp_p
 @pytest.mark.parametrize("protocol,canonical,train", [
     ("twitch-allbut2", "twitch-explicit", {"de", "fr", "ptbr", "ru", "tw"}),
     ("mag-allbut2", "mag-countries", {"us", "fr", "ru", "jp"}),
-    ("fb100-gender-1", "facebook100-gender", {"johns-hopkins55"}),
     ("fb100-gender-3", "facebook100-gender", {"johns-hopkins55", "caltech36", "amherst41"}),
     ("fb100-year-6", "facebook100-year",
      {"johns-hopkins55", "caltech36", "amherst41", "reed98", "brandeis99", "princeton12"}),
@@ -204,16 +201,21 @@ def test_named_protocols_preserve_domain_membership(protocol, canonical, train):
     assert not (train & (set(roles["val"]) | set(roles["test"])))
 
 
-@pytest.mark.parametrize("protocol,canonical", [
-    ("facebook100-allbut2", "facebook100"), ("fb100-gender-16", "facebook100-gender"),
-])
-def test_allbuttwo_facebook_protocols_preserve_held_out_schools(protocol, canonical):
+def test_allbuttwo_facebook_protocol_preserves_held_out_schools():
     from src.data.domain_datasets import FB100_DOMAINS
 
-    dataset, roles = worker._protocol(protocol)
-    assert dataset == canonical
+    dataset, roles = worker._protocol("fb100-gender-16")
+    assert dataset == "facebook100-gender"
     assert roles["val"] == ["cornell5"] and roles["test"] == ["penn94"]
     assert set(roles["train"]) == set(FB100_DOMAINS) - {"cornell5", "penn94"}
+
+
+@pytest.mark.parametrize("dataset", ["facebook100", "facebook100-allbut2", "fb100-gender-1"])
+def test_retired_facebook_task_or_preset_is_rejected(dataset, tmp_path):
+    split_root = tmp_path / "splits"
+    with pytest.raises(ValueError):
+        worker._load_split(dataset, split_root)
+    assert not split_root.exists()
 
 
 def test_worker_occupied_output_is_untouched(tmp_path):
@@ -291,13 +293,6 @@ def test_bounded_full_neighbor_inference_preserves_logits(architecture, monkeypa
         torch.testing.assert_close(actual[8], isolated[8], rtol=0, atol=0)
 
 
-def _progap_python():
-    executable = Path(os.environ.get("PROGAP_PYTHON", str(Path(sys.executable).absolute().parents[2] / "progap/bin/python")))
-    if not executable.is_file():
-        pytest.skip("requires ProGAP environment; set PROGAP_PYTHON to its executable")
-    return str(executable)
-
-
 def test_progap_preparation_preserves_topology_with_auxiliary_indices():
     code = """
 import torch
@@ -317,7 +312,7 @@ torch.testing.assert_close(actual.x, data.x)
 assert torch.equal(actual.eval_mask, data.eval_mask)
 assert torch.equal(data.edge_index, edges)
 """
-    subprocess.run([_progap_python(), "-c", code], check=True, timeout=60,
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=60,
                    cwd=worker.REPO_ROOT / "third_party/ProGAP")
 
 
@@ -348,9 +343,8 @@ def native_progap_fixture(root):
 
 @pytest.mark.parametrize("depth_argument,expected_depth", [(1, 1), (2, 2), (None, 3)])
 def test_progap_depth_controls_native_stages_and_privacy_composition(tmp_path, depth_argument, expected_depth):
-    executable = _progap_python()
     split, task = native_progap_fixture(tmp_path)
-    settings = {"method": "progap", "epsilon": 8, "gnn_hidden": 8, "progap_python": executable}
+    settings = {"method": "progap", "epsilon": 8, "gnn_hidden": 8}
     if depth_argument is not None:
         settings["progap_depth"] = depth_argument
     args = worker.parser().parse_args(_arguments(tmp_path / "output", **settings))

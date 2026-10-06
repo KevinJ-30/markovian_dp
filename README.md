@@ -50,8 +50,14 @@ We also note that the configuration files use a custom-written scheduler, which 
 
 The `src/` directory contains the models, sampling, training, and privacy accounting code. The `scripts/` directory contains experiment runners and result summaries, while `numerics/` contains the numerical privacy experiments. See the [reproduction guide](reproduce.md#runner-usage) for runner conventions and use each script's `--help` for command-line options.
 
+Training uses `scripts/run_experiments.py` for configured studies and `scripts/run_experiment.py` for individual runs. The worker resolves dataset task metadata through `src/data/task_metadata.py`, performs privacy calibration/accounting during private runs, and invokes the shared training implementations directly; ProGAP runs through its retained partition adapter.
+
+SparseExpand and SparseGNN training support only incoming expansion (Algorithm 5), preserving arc orientation toward each root and capping sampled incoming arcs at 20, 10, then 5 per expanded node by hop. Their APIs have no `direction` option. The shared CSR adjacency builder still supports outgoing storage for DP-GNN; outgoing adjacency cannot be passed to SparseExpand.
+
 To run the tests:
 
 ```bash
 python -m pytest tests/
 ```
+
+ProGAP tests use the same Python interpreter as pytest; no separate ProGAP test environment is needed. Binary AUROC scoring is shared through `src.models.objectives._binary_auroc`.

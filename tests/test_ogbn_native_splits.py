@@ -1,6 +1,7 @@
 import json
 import sys
 import types
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -11,7 +12,8 @@ from src.models.baselines import DPARMLP
 from src.training.baselines import BaselineConfig, BaselineTrainer
 import src.training.dpar as dpar
 from src.processing.splits import load_or_create_inductive_split
-import src.experiments.run as experiment_runner
+from scripts import run_experiment as worker
+from src.data import datasets
 from src.experiments.upstream import export_partitions
 
 
@@ -160,28 +162,19 @@ def test_runner_reports_native_split_strategy(monkeypatch, tmp_path):
             [1, 3, 5, 2, 4, 0, 0, 1, 2, 3, 4, 5],
         ]
     )
-    monkeypatch.setattr(experiment_runner, "load_dataset", lambda dataset, device: (object(), data))
+    dataset = SimpleNamespace(split_strategy="native")
+    monkeypatch.setattr(datasets, "load_dataset", lambda name, **kwargs: (dataset, data))
 
-    result = experiment_runner.run(
-        {
-            "dataset": "native-runner-unit",
-            "method": "mlp",
-            "device": "cpu",
-            "seed": 0,
-            "split_strategy": "native",
-            "split_root": str(tmp_path),
-            "parameters": {"epochs": 1, "hidden_size": 4, "layers": 1, "dropout": 0.0, "batch_size": 8},
-        }
-    )
+    _, split, _, strategy = worker._load_split("native-runner-unit", tmp_path)
 
-    assert result["split_strategy"] == "native"
-    assert {name: result["partitions"][name]["nodes"] for name in ("train", "val", "test")} == {
+    assert strategy == "native"
+    assert {name: getattr(split, name).stats["nodes"] for name in ("train", "val", "test")} == {
         "train": 2,
         "val": 2,
         "test": 2,
     }
     assert {
-        name: result["partitions"][name]["edges"]
+        name: getattr(split, name).stats["edges"]
         for name in ("train", "val", "test")
     } == {"train": 2, "val": 2, "test": 2}
 

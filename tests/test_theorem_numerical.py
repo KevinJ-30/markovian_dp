@@ -109,7 +109,7 @@ def test_real_expansion_reproduces_the_theorem_sampling_law(p1, p2, K_out):
     for _ in range(trials):
         roots = sample_roots(n_nodes, p1, generator=gen)
         subgraphs = batch_sparse_expand(
-            adj, roots, p2, 1, generator=gen, direction='in')
+            adj, roots, p2, 1, generator=gen)
         j = sum(0 in subgraph.nodes.tolist() for subgraph in subgraphs)
         counts[j] += 1
     empirical = counts / trials

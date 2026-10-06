@@ -75,6 +75,13 @@ For `fb100-year-6`, the training schools are Johns Hopkins, Caltech, Amherst,
 Reed, Brandeis, and Princeton; validation uses Cornell and testing uses Penn.
 Only years 2004–2009 are retained, and year is excluded from the input features.
 
+The supported domain-disjoint Facebook tasks are `facebook100-gender` and
+`facebook100-year`. Gender prediction retains recorded categories 1 and 2,
+excludes nodes with missing gender (0), and omits gender from input features.
+Both tasks share the raw school files but retain separate task-specific split caches.
+The named gender presets are `fb100-gender-3`, `fb100-gender-6`, and
+`fb100-gender-16`; the main study uses `fb100-year-6`.
+
 The frozen repeat configuration retains the validation-selected parameters for these seven datasets: 245 configurations, each run with seeds 1 through 5, totaling 1,225 runs. No new tuning is needed to run it:
 
 ```bash

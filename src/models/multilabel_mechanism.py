@@ -69,7 +69,7 @@ def _micro_auroc(scores: torch.Tensor, target: torch.Tensor) -> float:
     order = np.argsort(s, kind='mergesort')
     ranks = np.empty(len(s), dtype=np.float64)
     ranks[order] = np.arange(1, len(s) + 1)
-    # Average ranks within ties, matching binary_mechanism._auroc.  Without
+    # Average ranks within ties, matching objectives._binary_auroc.  Without
     # this a constant predictor scores != 0.5 (measured 0.4988 on a
     # PPI-shaped target), which is where README's "AUROC 0.4955" floor came
     # from.  float64 because the flattened (node, label) pool is large.

@@ -1,6 +1,5 @@
 """
-Tests for SparseExpand, root sampling, and the SparseGNN engine, covering both
-expansion orientations ('in' = Algorithm 5, the default; 'out' = Algorithm 2/4).
+Tests for incoming SparseExpand (Algorithm 5), root sampling, and SparseGNN.
 """
 
 import math
@@ -10,7 +9,7 @@ import torch
 
 from src.processing.sparse_expand import (
     SparseAdjacency, batch_sparse_expand, build_adjacency,
-    build_out_adjacency, sample_roots, sparse_expand,
+    sample_roots, sparse_expand,
 )
 
 
@@ -46,34 +45,30 @@ def test_batch_sparse_expand_empty_and_preserves_root_order():
     edge_index, n = _toy_graph()
     adjacency = build_adjacency(edge_index, n, direction='in')
     assert batch_sparse_expand(
-        adjacency, torch.empty(0, dtype=torch.long), p2=1.0, r=3,
-        direction='in') == []
+        adjacency, torch.empty(0, dtype=torch.long), p2=1.0, r=3) == []
 
     roots = torch.tensor([3, 1, 3, 0], dtype=torch.long)
     subgraphs = batch_sparse_expand(
-        adjacency, roots, p2=1.0, r=3, direction='in')
+        adjacency, roots, p2=1.0, r=3)
     assert [subgraph.root for subgraph in subgraphs] == roots.tolist()
     for subgraph, root in zip(subgraphs, roots.tolist()):
         _assert_same_subgraph(
             subgraph,
-            sparse_expand(adjacency, root, p2=1.0, r=3, direction='in'),
+            sparse_expand(adjacency, root, p2=1.0, r=3),
         )
 
 
-@pytest.mark.parametrize('direction', ['in', 'out'])
 @pytest.mark.parametrize('p2', [0.0, 1.0])
-def test_batch_sparse_expand_matches_scalar_at_probability_boundaries(
-        direction, p2):
+def test_batch_sparse_expand_matches_scalar_at_probability_boundaries(p2):
     edge_index, n = _toy_graph()
-    adjacency = build_adjacency(edge_index, n, direction=direction)
+    adjacency = build_adjacency(edge_index, n)
     roots = torch.tensor([3, 1, 4, 0, 1], dtype=torch.long)
     batch_generator = torch.Generator().manual_seed(19)
     untouched_generator = torch.Generator().manual_seed(19)
     actual = batch_sparse_expand(
-        adjacency, roots, p2=p2, r=4, generator=batch_generator,
-        direction=direction)
+        adjacency, roots, p2=p2, r=4, generator=batch_generator)
     expected = [
-        sparse_expand(adjacency, root, p2=p2, r=4, direction=direction)
+        sparse_expand(adjacency, root, p2=p2, r=4)
         for root in roots.tolist()
     ]
     for batch_subgraph, scalar_subgraph in zip(actual, expected):
@@ -86,34 +81,30 @@ def test_batch_sparse_expand_matches_scalar_at_probability_boundaries(
 
 def test_batch_sparse_expand_keeps_converging_and_parallel_arcs():
     edge_index = torch.tensor(
-        [[0, 0, 1, 1, 2], [1, 2, 3, 3, 3]], dtype=torch.long)
-    adjacency = build_adjacency(edge_index, 4, direction='out')
+        [[1, 2, 3, 3, 3], [0, 0, 1, 1, 2]], dtype=torch.long)
+    adjacency = build_adjacency(edge_index, 4)
     subgraph = batch_sparse_expand(
-        adjacency, torch.tensor([0]), p2=1.0, r=2,
-        direction='out')[0]
+        adjacency, torch.tensor([0]), p2=1.0, r=2)[0]
 
     assert subgraph.nodes.tolist() == [0, 1, 2, 3]
     assert subgraph.edge_index.tolist() == [
-        [0, 0, 1, 1, 2],
         [1, 2, 3, 3, 3],
+        [0, 0, 1, 1, 2],
     ]
 
 
-@pytest.mark.parametrize('direction', ['in', 'out'])
-def test_batch_sparse_expand_is_deterministic_under_fixed_seed(direction):
+def test_batch_sparse_expand_is_deterministic_under_fixed_seed():
     edge_index = torch.tensor(
         [[0, 1, 2, 1, 1, 3, 3], [1, 2, 3, 3, 3, 1, 3]],
         dtype=torch.long)
-    adjacency = build_adjacency(edge_index, 4, direction=direction)
+    adjacency = build_adjacency(edge_index, 4)
     roots = torch.tensor([0, 3, 1, 1, 2], dtype=torch.long)
     first = batch_sparse_expand(
         adjacency, roots, p2=0.37, r=3,
-        generator=torch.Generator().manual_seed(91),
-        direction=direction)
+        generator=torch.Generator().manual_seed(91))
     second = batch_sparse_expand(
         adjacency, roots, p2=0.37, r=3,
-        generator=torch.Generator().manual_seed(91),
-        direction=direction)
+        generator=torch.Generator().manual_seed(91))
     for expected, actual in zip(first, second):
         _assert_same_subgraph(actual, expected)
 
@@ -161,9 +152,6 @@ def test_incoming_cap_handles_mixed_degrees_and_zero_probability():
     assert [sg.num_edges for sg in full] == [0, 5, 20, 20, 20]
     empty = batch_sparse_expand(adj, roots, 0.0, 1)
     assert [sg.nodes.tolist() for sg in empty] == [[root] for root in roots.tolist()]
-    # The cap is incoming-only; outgoing expansion keeps all arcs at p2=1.
-    out = build_adjacency(edges.flip(0), 5 + int(degrees.sum()), direction='out')
-    assert sparse_expand(out, 4, 1.0, 1, direction='out').num_edges == 1000
 
 
 def test_capped_incoming_counts_and_neighbor_selection_are_unbiased():
@@ -187,12 +175,11 @@ def test_capped_incoming_counts_and_neighbor_selection_are_unbiased():
     assert all(sg.nodes.unique().numel() == sg.num_nodes for sg in subgraphs)
 
 
-@pytest.mark.parametrize('direction', ['in', 'out'])
-def test_p2_one_matches_reachable_set(direction):
+def test_p2_one_matches_reachable_set():
     edge_index, n = _toy_graph()
-    adj = build_adjacency(edge_index, n, direction=direction)
+    adj = build_adjacency(edge_index, n)
     for root in range(n):
-        sg = sparse_expand(adj, root, p2=1.0, r=10, direction=direction)
+        sg = sparse_expand(adj, root, p2=1.0, r=10)
         assert sg.root == root
         assert int(sg.nodes[0]) == root           # root is local index 0
         assert set(sg.nodes.tolist()) == _reachable(adj, root, 10)
@@ -202,12 +189,8 @@ def test_in_expansion_reaches_backward_neighbours():
     """In-expansion from node 3 must collect the chain 0->1->2->3 backwards."""
     edge_index, n = _toy_graph()
     adj = build_adjacency(edge_index, n, direction='in')
-    sg = sparse_expand(adj, 3, p2=1.0, r=10, direction='in')
+    sg = sparse_expand(adj, 3, p2=1.0, r=10)
     assert set(sg.nodes.tolist()) == {3, 2, 1, 0}
-    # The out-orientation from the same root reaches nothing at all.
-    adj_out = build_adjacency(edge_index, n, direction='out')
-    sg_out = sparse_expand(adj_out, 3, p2=1.0, r=10, direction='out')
-    assert sg_out.nodes.tolist() == [3]
 
 
 def test_in_expansion_orients_edges_toward_root():
@@ -215,40 +198,31 @@ def test_in_expansion_orients_edges_toward_root():
 
     Under Algorithm 5 every level-1 arc must have the root (local index 0) as
     its TARGET, so a message-passing layer actually delivers the neighbour's
-    features to the root.  The old out-orientation put the root on the source
-    side, which left it with nothing but its self-loop.
+    features to the root.
     """
     edge_index, n = _toy_graph()
     adj = build_adjacency(edge_index, n, direction='in')
-    sg = sparse_expand(adj, 2, p2=1.0, r=1, direction='in')
+    sg = sparse_expand(adj, 2, p2=1.0, r=1)
     assert sg.num_edges > 0
     # every retained arc points INTO the root
     assert sg.edge_index[1].tolist() == [0] * sg.num_edges
     assert 0 not in sg.edge_index[0].tolist()
 
-    adj_out = build_adjacency(edge_index, n, direction='out')
-    sg_out = sparse_expand(adj_out, 2, p2=1.0, r=1, direction='out')
-    assert sg_out.edge_index[0].tolist() == [0] * sg_out.num_edges
-
-
-@pytest.mark.parametrize('direction', ['in', 'out'])
-def test_p2_zero_is_isolated_root(direction):
+def test_p2_zero_is_isolated_root():
     edge_index, n = _toy_graph()
-    adj = build_adjacency(edge_index, n, direction=direction)
-    sg = sparse_expand(adj, 0, p2=0.0, r=5, direction=direction)
+    adj = build_adjacency(edge_index, n)
+    sg = sparse_expand(adj, 0, p2=0.0, r=5)
     assert sg.nodes.tolist() == [0]
     assert sg.num_edges == 0
 
 
-@pytest.mark.parametrize('direction', ['in', 'out'])
-def test_edges_are_real_and_local(direction):
+def test_edges_are_real_and_local():
     edge_index, n = _toy_graph()
-    adj = build_adjacency(edge_index, n, direction=direction)
+    adj = build_adjacency(edge_index, n)
     real = set(zip(edge_index[0].tolist(), edge_index[1].tolist()))
     gen = torch.Generator().manual_seed(7)
     for root in range(n):
-        sg = sparse_expand(adj, root, p2=0.7, r=3, generator=gen,
-                           direction=direction)
+        sg = sparse_expand(adj, root, p2=0.7, r=3, generator=gen)
         # local indices are within range
         if sg.num_edges:
             assert int(sg.edge_index.max()) < sg.num_nodes
@@ -260,53 +234,44 @@ def test_edges_are_real_and_local(direction):
                 assert (u, v) in real
 
 
-def test_build_out_adjacency_alias_matches_build_adjacency():
-    edge_index, n = _toy_graph()
-    a = build_out_adjacency(edge_index, n)
-    b = build_adjacency(edge_index, n, direction='out')
-    assert isinstance(a, SparseAdjacency)
-    assert torch.equal(a.rowptr, b.rowptr)
-    assert torch.equal(a.col, b.col)
-
-
-@pytest.mark.parametrize('direction', ['in', 'out'])
 @pytest.mark.parametrize('p2', [0.0, 0.37, 1.0])
-def test_csr_adjacency_has_seeded_expected_expansions(direction, p2):
+def test_csr_adjacency_has_seeded_expected_expansions(p2):
     edge_index = torch.tensor(
         [[0, 1, 2, 1, 1, 3, 3], [1, 2, 3, 3, 3, 1, 3]],
         dtype=torch.long)
-    adjacency = build_adjacency(edge_index, 4, direction=direction)
+    adjacency = build_adjacency(edge_index, 4)
     assert isinstance(adjacency, SparseAdjacency)
     first = [sparse_expand(adjacency, root, p2, 3,
-                           generator=torch.Generator().manual_seed(91 + root),
-                           direction=direction)
+                           generator=torch.Generator().manual_seed(91 + root))
              for root in range(4)]
     second = [sparse_expand(adjacency, root, p2, 3,
-                            generator=torch.Generator().manual_seed(91 + root),
-                            direction=direction)
+                            generator=torch.Generator().manual_seed(91 + root))
               for root in range(4)]
     for expected, actual in zip(first, second):
         assert torch.equal(expected.nodes, actual.nodes)
         assert torch.equal(expected.edge_index, actual.edge_index)
 
 
-def test_csr_adjacency_rejects_direction_mismatch():
+@pytest.mark.parametrize("expand,root", [
+    (sparse_expand, 0),
+    (batch_sparse_expand, torch.tensor([0])),
+])
+def test_expansion_rejects_outgoing_adjacency(expand, root):
     edge_index, n = _toy_graph()
-    with pytest.raises(ValueError, match='does not match'):
-        sparse_expand(build_adjacency(edge_index, n, direction='in'), 0, .5, 1,
-                      direction='out')
+    adjacency = build_adjacency(edge_index, n, direction='out')
+    with pytest.raises(ValueError):
+        expand(adjacency, root, .5, 1)
 
 
 
 
-@pytest.mark.parametrize('direction', ['in', 'out'])
-def test_determinism_under_fixed_seed(direction):
+def test_determinism_under_fixed_seed():
     edge_index, n = _toy_graph()
-    adj = build_adjacency(edge_index, n, direction=direction)
+    adj = build_adjacency(edge_index, n)
     g1 = torch.Generator().manual_seed(42)
     g2 = torch.Generator().manual_seed(42)
-    a = sparse_expand(adj, 0, p2=0.5, r=3, generator=g1, direction=direction)
-    b = sparse_expand(adj, 0, p2=0.5, r=3, generator=g2, direction=direction)
+    a = sparse_expand(adj, 0, p2=0.5, r=3, generator=g1)
+    b = sparse_expand(adj, 0, p2=0.5, r=3, generator=g2)
     assert a.nodes.tolist() == b.nodes.tolist()
     assert a.edge_index.tolist() == b.edge_index.tolist()
 
@@ -342,32 +307,27 @@ def test_sparse_gnn_smoke_reduces_loss():
     cand = torch.where(data.train_mask)[0]
     # subgraph_loss on a labeled root is a finite scalar
     root = int(cand[0])
-    sg = sparse_expand(adj, root, p2=1.0, r=2, direction='in')
+    sg = sparse_expand(adj, root, p2=1.0, r=2)
     loss0 = mech.subgraph_loss(sg)
     assert torch.isfinite(loss0)
 
     accs = train_sparse_gnn(
-        mech, data, data, adj=adj, direction='in', p1=1.0, p2=1.0,
+        mech, data, data, adj=adj, p1=1.0, p2=1.0,
         r=2, T=30, seed=0)
     # After 30 full-batch steps on CiteSeer, train accuracy should clear chance.
     assert accs['train'] > 1.0 / dataset.num_classes
 
 
 def test_in_expansion_actually_reaches_the_root_representation():
-    """End-to-end guard: the root's GNN output must depend on its neighbours.
-
-    With the pre-v35 out-orientation the root's representation was identical to
-    that of an isolated root, i.e. the mechanism was a graph-blind MLP.  Under
-    Algorithm 5 it must differ.
-    """
+    """The root's GNN output must depend on the retained incoming neighbours."""
     from torch_geometric.nn import GCNConv
 
     torch.manual_seed(0)
     x = torch.randn(2, 4)
     conv = GCNConv(4, 3, add_self_loops=True, normalize=True)
     isolated = conv(x, torch.zeros((2, 0), dtype=torch.long))[0]
-    toward_root = conv(x, torch.tensor([[1], [0]], dtype=torch.long))[0]
-    away_from_root = conv(x, torch.tensor([[0], [1]], dtype=torch.long))[0]
+    edges = torch.tensor([[1], [0]], dtype=torch.long)
+    subgraph = sparse_expand(build_adjacency(edges, 2), 0, p2=1.0, r=1)
+    toward_root = conv(x[subgraph.nodes], subgraph.edge_index)[0]
 
     assert not torch.allclose(toward_root, isolated)
-    assert torch.allclose(away_from_root, isolated)

@@ -1,6 +1,5 @@
-import csv
+import json
 import math
-import sys
 from types import SimpleNamespace
 
 import torch
@@ -12,10 +11,10 @@ from src.training.baselines import (
     BaselineTrainer,
     _LayerwiseNeighborSampler,
 )
-import src.experiments.run as run_module
-import src.experiments.sparse as sparse_module
+from scripts import run_experiment as worker
+from src.data import datasets
 import src.training.dpar as dpar_module
-from src.experiments.run import _resolve_task_metadata
+from src.data.task_metadata import _resolve_task_metadata
 from src.models.objectives import _binary_auroc, _task_loss
 from src.models.baselines import GIN, GraphSAGE
 from src.training.dpar import (
@@ -520,20 +519,6 @@ def test_dataset_task_metadata_is_authoritative():
         _resolve_task_metadata(dataset, {"binary": False})
 
 
-@pytest.mark.parametrize("method", ["heterpoisson", "unknown"])
-def test_unsupported_method_rejected_before_loading_dataset(monkeypatch, method):
-    def unexpected_load(*args, **kwargs):
-        pytest.fail("unsupported methods must not load datasets")
-
-    monkeypatch.setattr(run_module, "load_dataset", unexpected_load)
-    with pytest.raises(ValueError, match="unsupported method"):
-        run_module.run({
-            "dataset": "facebook100",
-            "method": method,
-            "device": "cpu",
-        })
-
-
 def _fixed_regression_dataset():
     nodes = torch.arange(30)
     data = Data(
@@ -559,7 +544,7 @@ def _fixed_regression_dataset():
 def test_run_preserves_fixed_regression_partitions_across_seeds(monkeypatch, tmp_path):
     dataset, data = _fixed_regression_dataset()
     monkeypatch.setattr(
-        run_module, "load_dataset", lambda *args, **kwargs: (dataset, data.clone()))
+        datasets, "load_dataset", lambda *args, **kwargs: (dataset, data.clone()))
     original_fit = BaselineTrainer.fit
 
     def fit(self, split):
@@ -571,64 +556,21 @@ def test_run_preserves_fixed_regression_partitions_across_seeds(monkeypatch, tmp
         return original_fit(self, split)
 
     monkeypatch.setattr(BaselineTrainer, "fit", fit)
+    monkeypatch.chdir(worker.REPO_ROOT)
     for seed in (0, 19):
-        result = run_module.run({
-            "dataset": "synthetic-regression", "method": "mlp", "device": "cpu",
-            "seed": seed, "split_root": tmp_path,
-            "parameters": {"epochs": 1, "hidden_size": 4, "dropout": 0.0},
-        })
+        output = tmp_path / f"run-{seed}"
+        assert worker.main([
+            "--dataset", "synthetic-regression", "--method", "mlp",
+            "--device", "cpu", "--seed", str(seed),
+            "--split-root", str(tmp_path / "splits"), "--out-dir", str(output),
+            "--epochs", "1", "--mlp-hidden", "4", "--dropout", "0",
+            "--lr", "0.01", "--batch-size", "32", "--bootstrap-resamples", "0",
+        ]) == 0
+        result = json.loads((output / "result.json").read_text())
+        config = json.loads((output / "config.json").read_text())
         assert result["split_strategy"] == "native"
-        assert result["primary_metric"] == "r2"
-        assert [result["partitions"][name]["nodes"]
+        assert result["metric"] == "r2"
+        assert [config["partitions"][name]["nodes"]
                 for name in ("train", "val", "test")] == [24, 3, 3]
-        # Portable baselines retain their legacy score-column names for R².
-        assert math.isfinite(result["test_accuracy"])
+        assert math.isfinite(result["test_r2"])
 
-
-def test_run_rejects_resplitting_fixed_regression_targets(monkeypatch, tmp_path):
-    dataset, data = _fixed_regression_dataset()
-    monkeypatch.setattr(
-        run_module, "load_dataset", lambda *args, **kwargs: (dataset, data))
-    with pytest.raises(ValueError, match="conflicts with dataset split_strategy"):
-        run_module.run({
-            "dataset": "synthetic-regression", "method": "mlp", "device": "cpu",
-            "split_strategy": "stratified", "split_root": tmp_path,
-        })
-    assert not list(tmp_path.iterdir())
-
-
-def test_sparse_common_split_trains_with_fixed_regression_masks(monkeypatch, tmp_path):
-    dataset, data = _fixed_regression_dataset()
-    monkeypatch.setattr(sparse_module.torch.cuda, "is_available", lambda: False)
-    monkeypatch.setattr(
-        sparse_module, "load_dataset", lambda *args, **kwargs: (dataset, data.clone()))
-    original_train = sparse_module.train_sparse_gnn
-
-    def train(mechanism, train_graph, test_graph, **kwargs):
-        for name in ("train", "val", "test"):
-            expected_mask = getattr(data, f"{name}_mask")
-            assert torch.equal(getattr(train_graph, f"{name}_mask"), expected_mask)
-            assert torch.equal(getattr(test_graph, f"{name}_mask"), expected_mask)
-        torch.testing.assert_close(train_graph.y, data.y)
-        assert data.train_mask[train_graph.edge_index].all()
-        roles = data.val_mask.long() + 2 * data.test_mask.long()
-        source, target = test_graph.edge_index
-        assert torch.equal(roles[source], roles[target])
-        return original_train(mechanism, train_graph, test_graph, **kwargs)
-
-    monkeypatch.setattr(sparse_module, "train_sparse_gnn", train)
-    monkeypatch.setattr(sys, "argv", [
-        "sparse", "--dataset", "synthetic-regression", "--model", "regression_gnn",
-        "--common_inductive_split", "--split_seed", "19",
-        "--split_root", str(tmp_path / "splits"),
-        "--p1", "1", "--p2", "1", "--r", "1", "--T", "1", "--seeds", "1",
-        "--hidden", "4", "--num_layers", "1", "--dropout", "0",
-        "--out_dir", str(tmp_path),
-    ])
-    sparse_module.main()
-
-    with (tmp_path / "sparse_gnn_synthetic-regression_results.csv").open(newline="") as fh:
-        row = next(csv.DictReader(fh))
-    assert row["metric"] == "r2"
-    assert math.isfinite(float(row["test_acc"]))
-    assert not any("mae" in key or "rmse" in key for key in row)
