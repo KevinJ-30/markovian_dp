@@ -77,7 +77,7 @@ def complete_ofat(root, epsilon=8):
     return rows
 
 
-def test_seed_means_and_standard_errors_keep_each_ablation_point(tmp_path):
+def test_seed_means_and_standard_deviations_keep_each_ablation_point(tmp_path):
     complete_ofat(tmp_path)
     rows, signatures = analysis.read_results(tmp_path, 8)
     assert set(signatures) == {"ogbn-products", "fb100-year-6", "ogbn-arxiv"}
@@ -89,9 +89,8 @@ def test_seed_means_and_standard_errors_keep_each_ablation_point(tmp_path):
             assert point["test_mean"] == pytest.approx(.2)
             assert point["validation_mean"] == pytest.approx(.8)
             assert point["test_sd"] == pytest.approx(math.sqrt(.025))
-            assert point["test_se"] == pytest.approx(math.sqrt(.005))
         else:
-            assert point["test_mean"] == point["test_sd"] == point["test_se"] == 0.
+            assert point["test_mean"] == point["test_sd"] == 0.
     curves = analysis.relationship_curves(points)
     assert len(curves) == 72
     products_sage = [row for row in curves if row["protocol"] == "ogbn-products"
@@ -99,6 +98,34 @@ def test_seed_means_and_standard_errors_keep_each_ablation_point(tmp_path):
     assert [row["curve_value"] for row in products_sage if row["curve_parameter"] == "r"] == [1, 2, 3]
     assert [row["curve_value"] for row in products_sage if row["curve_parameter"] == "p2"] == [.05, .1, .25, .5, 1.]
     assert [row["curve_value"] for row in products_sage if row["curve_parameter"] == "K_out"] == [5, 10, 20, 40]
+
+
+def test_rendered_error_bars_span_sample_sd_not_standard_error(tmp_path, monkeypatch):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+
+    complete_ofat(tmp_path)
+    rows, _ = analysis.read_results(tmp_path, 8)
+    curves = analysis.relationship_curves(analysis.aggregate_seeds(rows))
+    figures = []
+    close = plt.close
+
+    def record_closed_figure(figure=None):
+        if isinstance(figure, Figure):
+            figures.append(figure)
+        close(figure)
+
+    monkeypatch.setattr(plt, "close", record_closed_figure)
+    analysis.draw_figures(curves, tmp_path)
+    axis = figures[-1].axes[0]
+    sage_bars = axis.containers[0].lines[2][0].get_segments()
+    gin_bars = axis.containers[1].lines[2][0].get_segments()
+    for segment in sage_bars:
+        assert segment[:, 1] == pytest.approx((.2 - math.sqrt(.025), .2 + math.sqrt(.025)))
+    for segment in gin_bars:
+        assert segment[:, 1] == pytest.approx((0., 0.))
 
 
 def test_moved_repeat_root_resolves_recorded_outputs(tmp_path):

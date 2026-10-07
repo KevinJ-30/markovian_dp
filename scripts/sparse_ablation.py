@@ -11,7 +11,7 @@ Seed-0 tuning results are not accepted and no configurations are selected here.
 
 Three line panels show expansion radius, edge retention, and outgoing cap.
 Colors denote datasets; solid lines denote SAGE and dotted lines denote GIN.
-Error bars are ±1 standard error of the training-seed mean (sample SD / sqrt(5)).
+Error bars are ±1 sample standard deviation across the five training seeds (ddof=1).
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ POLICY = {
     "accounting": "Gaussian-mixture substitution accounting with incoming expansion.",
     "p2_equals_one": "p2=1 removes Bernoulli edge thinning only; preprocessing and incoming sampling caps remain.",
     "checkpoint": "Best validation-primary-metric checkpoint; no test-based or repeat-seed configuration selection.",
-    "uncertainty": "Mean ±1 standard error across training seeds 1–5: sample SD (ddof=1) / sqrt(5).",
+    "uncertainty": "Mean ±1 sample standard deviation across training seeds 1–5 (ddof=1).",
     "radius": "Radius 1/2 uses two layers; radius 3 uses three. Incoming sampling caps are 20, 10, 5 on successive hops.",
     "metrics": "Products, FB-100, and Arxiv test accuracy share a 0–1 display range; scores are never averaged across datasets.",
 }
@@ -355,7 +355,6 @@ def aggregate_seeds(rows):
             "epochs": reference["epochs"], "layers": reference["layers"],
             "n": len(cohort), "seeds": list(SEEDS),
             "test_mean": statistics.mean(scores), "test_sd": sd,
-            "test_se": sd / math.sqrt(len(cohort)),
             "validation_mean": statistics.mean(row["validation_metric"] for row in cohort),
             "run_ids": [row["run_id"] for row in cohort],
         })
@@ -416,7 +415,7 @@ def draw_figures(curves, out_dir):
                     values = [row["curve_value"] for row in selected]
                     xs = values if parameter == "r" else list(range(len(values)))
                     ax.errorbar(xs, [row["test_mean"] for row in selected],
-                                yerr=[row["test_se"] for row in selected],
+                                yerr=[row["test_sd"] for row in selected],
                                 color=color, linestyle=style, linewidth=3.5, alpha=1,
                                 marker="o", markersize=5, markerfacecolor="white",
                                 markeredgecolor=color, markeredgewidth=1.5, capsize=4,
@@ -442,7 +441,7 @@ def draw_figures(curves, out_dir):
         figure.subplots_adjust(left=0.175, right=0.99, bottom=0.28, top=0.94, wspace=0.12)
         outputs = []
         for extension in ("png", "pdf"):
-            path = out_dir / f"ablation_se_eps{epsilon:g}.{extension}"
+            path = out_dir / f"ablation_sd_eps{epsilon:g}.{extension}"
             metadata = ({"CreationDate": None, "ModDate": None} if extension == "pdf"
                         else {"Software": "SparseExpand ablation analysis"})
             figure.savefig(path, dpi=180, bbox_inches="tight", pad_inches=0.15, metadata=metadata)

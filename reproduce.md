@@ -66,7 +66,7 @@ for epsilon in 1 2 5 8; do
 done
 ```
 
-Figures are saved under `results/sparse_ablation_eps1258_repeats/figures_eps<EPSILON>/` as `ablation_se_eps<EPSILON>.png` and `.pdf`, alongside the plotted CSV data. Error bars show ±1 standard error across five seeds. All runs for the selected epsilon must be complete. To render again, supply a fresh `--out-dir`; existing figure directories are not overwritten.
+Figures are saved under `results/sparse_ablation_eps1258_repeats/figures_eps<EPSILON>/` as `ablation_sd_eps<EPSILON>.png` and `.pdf`, alongside the plotted CSV data. Error bars show ±1 sample standard deviation across five seeds (ddof=1). All runs for the selected epsilon must be complete. To render again, supply a fresh `--out-dir`; existing figure directories are not overwritten.
 
 ### Using your own validation-selected configuration
 
