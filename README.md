@@ -16,7 +16,7 @@ The environment targets Linux x86_64 and includes the dependencies for all metho
 
 ## Datasets
 
-OGB, Twitch, Facebook, and MAG datasets download automatically when an experiment first loads them. Downloads and processed data are cached under `data/`, so the first run needs an internet connection and may take longer.
+OGB, Facebook, and MAG datasets download automatically when an experiment first loads them. Downloads and processed data are cached under `data/`, so the first run needs an internet connection and may take longer.
 
 The GraphSAINT datasets require a manual download. Download the Reddit, Yelp, and Amazon folders from the [GraphSAINT dataset collection](https://drive.google.com/open?id=1zycmmDES39zVlbVCYs88JTJ1Wm5FbfLz), linked from the [GraphSAINT repository](https://github.com/GraphSAINT/GraphSAINT#datasets), and extract them into this layout:
 
@@ -33,7 +33,10 @@ You can store the GraphSAINT folders elsewhere by setting `GRAPHSAINT_DATA_ROOT`
 
 ## Running the experiments
 
-The [reproduction guide](reproduce.md) gives the commands for training, repeated runs, result tables, ablations, and numerical figures. Experiment settings are stored in `configs/`.
+The [reproduction guide](reproduce.md) gives the commands for training, repeated runs, result tables, ablations, and numerical figures. `configs/` contains the two frozen final-paper configurations, both using seeds 1–5:
+
+- `main_r1_eps1258_repeats.json`: main comparison, 1,085 runs.
+- `sparse_ablation_eps1258_repeats.json`: Products, FB-100, and Arxiv ablations at epsilon 1, 2, 5, and 8, 1,200 runs.
 
 To preview the frozen validation-selected configurations and run their five-seed repeats on GPU 0:
 
@@ -42,7 +45,7 @@ python scripts/run_experiments.py configs/main_r1_eps1258_repeats.json --gpus 0 
 python scripts/run_experiments.py configs/main_r1_eps1258_repeats.json --gpus 0
 ```
 
-Replace `0` with the GPUs you want to use, such as `0,1`. Results and logs are written to `results/main_r1_eps1258_repeats/`. To continue an interrupted run, use the same command with `--resume`. The reproduction guide also covers fresh tuning.
+Replace `0` with the GPUs you want to use, such as `0,1`. Results and logs are written to `results/main_r1_eps1258_repeats/`. To continue an interrupted run, use the same command with `--resume`. The reproduction guide also covers the sparse ablations and plotting.
 
 We also note that the configuration files use a custom-written scheduler, which attempts to add as many jobs as possible to each GPU, since the jobs are largely CPU-dependent. 
 

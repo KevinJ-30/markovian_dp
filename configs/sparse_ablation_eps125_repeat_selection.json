@@ -1,8 +1,0 @@
-{
-  "source_config": "sparse_ablation_eps125.json",
-  "results_dir": "../results/sparse_ablation_yelp_mag_eps125",
-  "output_config": "sparse_ablation_eps125_repeats.json",
-  "name": "sparse_ablation_yelp_mag_eps125_repeats",
-  "seeds": [1, 2, 3, 4, 5],
-  "select_over": ["lr", "batch_size"]
-}

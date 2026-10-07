@@ -4,7 +4,7 @@
 Usage: python scripts/sparse_ablation.py --ofat-root REPEAT_ROOT
                                       [--epsilon 8] [--out-dir NEW_DIRECTORY]
 
-Requires all 200 runs for the selected epsilon: Yelp and MAG;
+Requires all 300 runs for the selected epsilon: Products, FB-100, and Arxiv;
 SparseSAGE and SparseGIN; ten OFAT settings; training seeds 1–5.
 Batch size and learning rate must be frozen within each five-seed cohort.
 Seed-0 tuning results are not accepted and no configurations are selected here.
@@ -30,12 +30,14 @@ import sys
 
 CONFIG_KEYS = ("protocol", "method", "epsilon", "lr", "batch_size", "epochs", "seed", "p2", "r", "K_out")
 TASKS = {
-    "mag-allbut2": ("mag-countries", "accuracy", False, False, "domain"),
-    "saint-yelp": ("saint-yelp", "micro_f1", False, True, "native"),
+    "ogbn-products": ("ogbn-products", "accuracy", False, False, "native"),
+    "fb100-year-6": ("facebook100-year", "accuracy", False, False, "domain"),
+    "ogbn-arxiv": ("ogbn-arxiv", "accuracy", False, False, "native"),
 }
 DATASETS = (
-    ("saint-yelp", "Yelp", "#009E73"),
-    ("mag-allbut2", "MAG", "#0072B2"),
+    ("ogbn-products", "Products", "#D55E00"),
+    ("fb100-year-6", "FB-100", "#0072B2"),
+    ("ogbn-arxiv", "Arxiv", "#56B4E9"),
 )
 METHODS = (("sparse_sage", "SAGE", "-"), ("sparse_gin", "GIN", ":"))
 SEEDS = (1, 2, 3, 4, 5)
@@ -51,7 +53,7 @@ POLICY = {
     "checkpoint": "Best validation-primary-metric checkpoint; no test-based or repeat-seed configuration selection.",
     "uncertainty": "Mean ±1 standard error across training seeds 1–5: sample SD (ddof=1) / sqrt(5). Not a confidence interval or node-bootstrap interval.",
     "radius": "Radius 1/2 uses two layers; radius 3 uses three. Incoming sampling caps are 20, 10, 5 on successive hops.",
-    "metrics": "Yelp micro-F1 and MAG accuracy share a 0–0.75 display range; scores are never averaged across datasets.",
+    "metrics": "Products, FB-100, and Arxiv test accuracy share a 0–1 display range; scores are never averaged across datasets.",
 }
 
 
@@ -418,23 +420,23 @@ def draw_figures(curves, out_dir):
                     ax.errorbar(xs, [row["test_mean"] for row in selected],
                                 yerr=[row["test_se"] for row in selected],
                                 color=color, linestyle=style, linewidth=3.5, alpha=1,
-                                marker="o", markersize=7, markerfacecolor="white",
-                                markeredgecolor=color, markeredgewidth=1.5, capsize=3,
-                                elinewidth=1.1, capthick=1.1, zorder=3)
+                                marker="o", markersize=5, markerfacecolor="white",
+                                markeredgecolor=color, markeredgewidth=1.5, capsize=4,
+                                elinewidth=1.6, capthick=1.6, zorder=3)
             ax.set_xticks(xs, [f"{x:g}" for x in values])
             ax.margins(x=0.05)
-            ax.set(xlabel=xlabel, ylim=(0, 0.75))
-            ax.set_yticks((0, 0.25, 0.5, 0.75))
-            ax.text(0.025, 0.99, panel, transform=ax.transAxes,
-                    ha="left", va="top", fontsize=18, fontweight="bold")
+            ax.set(xlabel=xlabel, ylim=(0, 1))
+            ax.set_yticks((0, 0.25, 0.5, 0.75, 1))
+            ax.text(0.025, 1.025, panel, transform=ax.transAxes,
+                    ha="left", va="bottom", fontsize=18, fontweight="bold")
             ax.set_axisbelow(True)
             ax.grid(which="major", color="0.88", linewidth=0.6)
             ax.spines[["top", "right"]].set_visible(False)
-        axes[0].set_ylabel("Test metric")
+        axes[0].set_ylabel("Test accuracy")
         figure.legend(
             handles=[*[Patch(facecolor=color, label=label) for _, label, color in DATASETS],
                      *[Line2D([], [], color="0.2", linestyle=style, linewidth=3.5, alpha=1,
-                              marker="o", markersize=7, markerfacecolor="white",
+                              marker="o", markersize=5, markerfacecolor="white",
                               markeredgewidth=1.5, label=label)
                        for _, label, style in METHODS]],
             loc="center left", bbox_to_anchor=(0.005, 0.55), borderaxespad=0,
@@ -442,7 +444,7 @@ def draw_figures(curves, out_dir):
         figure.subplots_adjust(left=0.175, right=0.99, bottom=0.28, top=0.94, wspace=0.12)
         outputs = []
         for extension in ("png", "pdf"):
-            path = out_dir / f"ablation_eps{epsilon:g}.{extension}"
+            path = out_dir / f"ablation_se_eps{epsilon:g}.{extension}"
             metadata = ({"CreationDate": None, "ModDate": None} if extension == "pdf"
                         else {"Software": "SparseExpand ablation analysis"})
             figure.savefig(path, dpi=180, bbox_inches="tight", pad_inches=0.15, metadata=metadata)
