@@ -72,8 +72,6 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--progap-depth", type=int, default=None,
                      help="ProGAP propagation depth (default: 3, four training stages; ProGAP only)")
     cli.add_argument("--progap-python", help="ProGAP interpreter (default: this Python executable)")
-    cli.add_argument("--bootstrap-resamples", type=int, default=1000,
-                     help="final-test node bootstrap resamples at 95%% confidence; 0 disables")
     cli.add_argument("--split-root", type=Path, default=REPO_ROOT / "data" / "inductive_splits",
                      help="common seed-0 split cache (relative paths are repository-relative)")
     cli.add_argument("--domain-split", type=json.loads, default=None,
@@ -148,7 +146,7 @@ def normalize_parameters(values: dict) -> dict:
         raise ValueError("parameters must be a string-keyed JSON object")
     required = {"dataset", "method", "lr", "batch_size", "epochs"}
     defaults = {"seed": 0, "dropout": 0.5, "mlp_hidden": 64, "gnn_hidden": 128,
-                "degree_bound": None, "bootstrap_resamples": 1000, "weight_decay": 0.0,
+                "degree_bound": None, "weight_decay": 0.0,
                 "split_root": str(REPO_ROOT / "data" / "inductive_splits"), "domain_split": None}
     method_fields = {"epsilon", "p2", "gin_pooling", "sparse_radius", "sparse_degree_cap",
                      "dpgnn_radius", "progap_depth", "progap_python"}
@@ -182,11 +180,8 @@ def normalize_parameters(values: dict) -> dict:
     for name in ("batch_size", "epochs", "mlp_hidden", "gnn_hidden"):
         if type(result[name]) is not int or result[name] < 1:
             raise ValueError(f"{name} must be a positive integer")
-    for name in ("seed", "bootstrap_resamples"):
-        if type(result[name]) is not int or result[name] < 0:
-            raise ValueError(f"{name} must be a nonnegative integer")
-    if result["seed"] >= 2**32:
-        raise ValueError("seed must be in [0, 2**32)")
+    if type(result["seed"]) is not int or not 0 <= result["seed"] < 2**32:
+        raise ValueError("seed must be an integer in [0, 2**32)")
     result["lr"] = _finite_number(result["lr"], "lr")
     if result["lr"] <= 0:
         raise ValueError("lr must be positive")
@@ -321,11 +316,6 @@ def _load_split(protocol: str, split_root: Path, domain_split: dict | None = Non
     return dataset_name, split, task, strategy
 
 
-def _bootstrap(args: argparse.Namespace) -> dict[str, Any]:
-    return {"bootstrap_confidence": 0.95, "bootstrap_resamples": args.bootstrap_resamples,
-            "bootstrap_seed": 0}
-
-
 def _task_options(task: dict[str, Any]) -> dict[str, Any]:
     return {key: task[key] for key in ("binary", "multilabel", "regression", "metric_ignore_label")}
 
@@ -337,7 +327,7 @@ def _baseline(args, split, task, batch, delta):
         "method": args.method, "hidden_size": args.mlp_hidden if args.method in {"mlp", "dp_mlp"} else args.gnn_hidden,
         "learning_rate": args.lr, "batch_size": batch, "epochs": args.epochs,
         "weight_decay": args.weight_decay,
-        "dropout": args.dropout, "seed": args.seed, **_task_options(task), **_bootstrap(args),
+        "dropout": args.dropout, "seed": args.seed, **_task_options(task),
     }
     if args.method in {"graphsage", "gin"} and args.degree_bound is not None:
         options["max_fanout"] = args.degree_bound
@@ -374,7 +364,7 @@ def _dpar(args, split, task, batch, delta):
         epochs=args.epochs, dropout=args.dropout, seed=args.seed,
         weight_decay=args.weight_decay,
         **({"topk": args.degree_bound} if args.degree_bound is not None else {}),
-        **_task_options(task), **_bootstrap(args),
+        **_task_options(task),
     )
     result = DPARTrainer(config, device=args.device).fit(split)
     # The trainer replaces both noises and split deltas after native calibration.
@@ -449,7 +439,7 @@ def _dpgnn(args, split, task, batch, delta):
         weight_decay=args.weight_decay, delta=delta,
         noise_multiplier=calibration["noise_multiplier"], max_degree=max_degree,
         radius=args.dpgnn_radius,
-        seed=args.seed, **_task_options(task), **_bootstrap(args),
+        seed=args.seed, **_task_options(task),
     )
     result = PartitionedDPGNN(config, device=args.device).fit(
         split.train.data, split.val.data, split.test.data)
@@ -495,7 +485,6 @@ def _sparse_evaluation_graph(split, device):
 def _sparse(args, split, task, batch, delta):
     import torch
     from torch_geometric.data import Data
-    from src.models.bootstrap import BootstrapConfig
     from src.privacy.accounting import calibrate_sparsegnn_noise
     from src.processing.graphs import max_degrees, preprocess_edges
     from src.processing.sparse_expand import INCOMING_EDGE_CAPS, build_adjacency
@@ -547,8 +536,7 @@ def _sparse(args, split, task, batch, delta):
         mechanism, train, evaluation, p1=p1, p2=args.p2, r=args.sparse_radius, T=steps,
         adj=adjacency, dp=True, clip=1.0,
         sigma=calibration.noise_multiplier, seed=args.seed, eval_every=interval,
-        track_every=0, bootstrap=BootstrapConfig(
-            confidence_level=0.95, n_resamples=args.bootstrap_resamples, seed=0),
+        track_every=0,
     )
     result["calibration"] = calibration.as_dict()
     result["privacy"] = {
@@ -576,7 +564,7 @@ def _sparse(args, split, task, batch, delta):
         "accounting_grid": 1e-3,
         "calibration_rtol": 1e-3, "calibration_atol": 1e-6,
         "evaluate_every": interval, "max_private_batch_nodes": mechanism.max_private_batch_nodes,
-        **_task_options(task), **_bootstrap(args),
+        **_task_options(task),
     }
     result["train_metric_evaluated"] = False
     return result, parameters
@@ -600,7 +588,7 @@ def _progap(args, split, task, batch, delta):
     config = {
         "source_dir": str(source), "command": [args.progap_python, "inductive_adapter.py"],
         "environment": {"PROGAP_DEVICE": args.device, "PROGAP_VERBOSE": "0"},
-        "parameters": options, "seed": args.seed, **_bootstrap(args),
+        "parameters": options, "seed": args.seed,
     }
     result = UpstreamBaseline("progap", config).run(split)
     population = int(split.train.data.num_nodes)
@@ -614,7 +602,7 @@ def _progap(args, split, task, batch, delta):
         "base_layers": 1, "head_layers": 1, "activation": "selu", "jk": "cat",
         "batch_norm": True, "layerwise": False,
         "normalization": "upstream_ModuleValidator.fix",
-        "progap_python": args.progap_python, **_bootstrap(args),
+        "progap_python": args.progap_python,
     }
     return result, parameters
 
@@ -774,7 +762,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     result = {
         "native_result": native, **identity, "parameters": parameters,
         "test_metric": test, f"test_{metric}": test, "validation_metric": validation,
-        "selection": selection, "test_confidence_intervals": native.get("test_confidence_intervals", {}),
+        "selection": selection,
         "status": "completed", "completed_epochs": args.epochs,
         "calibration_and_training_seconds": duration,
         "loading_seconds": loading_seconds,
@@ -787,7 +775,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     row = {**identity, "status": "completed", "test_metric": test,
            f"test_{metric}": test, "validation_metric": validation,
            "parameters": parameters, "selection": selection,
-           "test_confidence_intervals": native.get("test_confidence_intervals", {}),
            "completed_epochs": args.epochs}
     config, result, row = map(_json_value, (config, result, row))
     atomic_json(args.out_dir / "config.json", config)

@@ -18,8 +18,6 @@ from typing import Any
 
 import torch
 
-from src.models.bootstrap import BootstrapConfig
-
 
 UPSTREAM_METHODS = {
     "progap": {
@@ -123,11 +121,6 @@ def _target_environment(
     task_metadata: dict[str, Any],
 ) -> dict[str, str]:
     """Encode ProGAP controls without ambient-environment aliases."""
-    bootstrap = BootstrapConfig(
-        confidence_level=config.get("bootstrap_confidence", 0.95),
-        n_resamples=config.get("bootstrap_resamples", 1000),
-        seed=config.get("bootstrap_seed", 0),
-    )
     prohibited = {"PROGAP_TARGET_EPSILON", "PROGAP_TARGET_DELTA", "PROGAP_EPSILON"}
     conflicting = prohibited & set(configured_env)
     if conflicting:
@@ -152,9 +145,6 @@ def _target_environment(
         "PROGAP_TARGET_EPSILON": str(epsilon),
         "PROGAP_TARGET_DELTA": str(delta),
         "PROGAP_SEED": str(int(config.get("seed", 0))),
-        "PROGAP_BOOTSTRAP_CONFIDENCE": str(bootstrap.confidence_level),
-        "PROGAP_BOOTSTRAP_RESAMPLES": str(bootstrap.n_resamples),
-        "PROGAP_BOOTSTRAP_SEED": str(bootstrap.seed),
     }
     supported = {
         "target_epsilon", "target_delta", "epochs", "batch_size", "max_degree",

@@ -31,6 +31,8 @@ python scripts/summarize_results.py results/main_r1_eps1258_repeats/results.csv 
 
 This writes `summary.csv` and `summary.md` with mean test scores and sample standard deviations across seeds 1–5. Do not add `--best` or `--best-validation`; the configurations are already selected.
 
+Without `--seed`, the summarizer reports each run's test point estimate without uncertainty. Individual runs do not compute confidence intervals.
+
 ### Using your own validation-selected configuration
 
 Tune on seed 0, select by validation score, then run the selected settings on seeds 1–5:

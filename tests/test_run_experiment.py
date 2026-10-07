@@ -15,7 +15,7 @@ from scripts import run_experiment as worker
 
 def _parameters(**overrides):
     return {"dataset": "fixture", "method": "mlp", "lr": 0.01,
-            "batch_size": 32, "epochs": 1, "bootstrap_resamples": 0, **overrides}
+            "batch_size": 32, "epochs": 1, **overrides}
 
 
 def _arguments(output, **overrides):
@@ -28,7 +28,7 @@ def _arguments(output, **overrides):
 
 @pytest.mark.parametrize("change", [
     {"epochs": True}, {"batch_size": 1.0}, {"seed": False}, {"seed": 2**32},
-    {"bootstrap_resamples": -1}, {"gnn_hidden": 0}, {"degree_bound": True},
+    {"gnn_hidden": 0}, {"degree_bound": True},
     {"lr": float("nan")}, {"lr": float("inf")}, {"lr": True}, {"lr": 0},
     {"dropout": 1}, {"dropout": -0.01}, {"dropout": float("-inf")},
     {"method": "missing"}, {"dataset": ""}, {"split_root": ""},

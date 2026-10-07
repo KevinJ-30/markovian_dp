@@ -8,7 +8,6 @@ import torch
 from torch_geometric.data import Data
 
 from src.models.binary_mechanism import BinaryGNNMechanism
-from src.models.bootstrap import BootstrapConfig, BootstrapMetrics
 from src.models.gnn_mechanism import GNNMechanism
 from src.models.multilabel_mechanism import MultiLabelGNNMechanism, _micro_f1
 from src.models.regression_mechanism import RegressionGNNMechanism
@@ -178,16 +177,12 @@ def test_validation_only_evaluation_needs_no_train_or_test_mask(
 
     mechanism.module = FixedPredictions()
     del data.train_mask
-    accumulator = BootstrapMetrics(
-        mechanism.metric_name, BootstrapConfig(n_resamples=10))
-    metrics = mechanism.evaluate(
-        data, splits=("val",), bootstrap=accumulator)
+    metrics = mechanism.evaluate(data, splits=("val",))
 
     expected_metrics = {"val": expected}
     if secondary:
         expected_metrics[secondary] = 1.
     assert metrics == expected_metrics
-    assert accumulator.compute()["n_observations"] == 0
 
 
 # ── mechanisms plug into the engine ───────────────────────────────────────────

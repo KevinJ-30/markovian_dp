@@ -25,7 +25,6 @@ from typing import Any, Callable, Dict, List, Optional
 import torch
 
 from src.models.base_mechanism import BaseMechanism
-from src.models.bootstrap import BootstrapConfig, BootstrapMetrics
 from src.privacy.accounting import SparseGNNNoiseCalibration, calibrate_sparsegnn_noise
 from src.processing.padded import iter_padded_root_batches
 from src.processing.sparse_expand import (
@@ -124,22 +123,6 @@ class OpacusPrivateUpdate:
         self._process(current, final=True)
 
 
-def _evaluate(mechanism, test_data, bootstrap=None):
-    if bootstrap is None or bootstrap.n_resamples == 0:
-        return dict(mechanism.evaluate(test_data))
-    task = mechanism.metric_name
-    if task == "auroc":
-        metrics = ("auroc", "accuracy")
-    elif task == "micro_f1":
-        metrics = ("micro_f1", "micro_auroc")
-    else:
-        metrics = (task,)
-    accumulator = BootstrapMetrics(task, bootstrap, metrics=metrics)
-    result = dict(mechanism.evaluate(test_data, bootstrap=accumulator))
-    result["test_confidence_intervals"] = accumulator.compute()
-    return result
-
-
 def train_sparse_gnn(
     mechanism: BaseMechanism,
     train_data,
@@ -159,7 +142,6 @@ def train_sparse_gnn(
     progress_every: Optional[int] = None,
     verbose: bool = False,
     checkpoint_callback: Optional[Callable[[Dict[str, float]], None]] = None,
-    bootstrap: Optional[BootstrapConfig] = None,
 ) -> Dict[str, Any]:
     """Run all T updates, then evaluate the best validation-primary-metric model.
 
@@ -175,8 +157,6 @@ def train_sparse_gnn(
         clip, sigma:     clipping norm C and Opacus noise multiplier (required
                          when dp=True; absolute noise std is sigma*C).
         seed:            base seed for reproducible root/edge sampling.
-        bootstrap:       optional node bootstrap for the final test evaluation;
-                         None or n_resamples=0 disables confidence intervals.
         eval_every:      validation/selection interval, independent of verbosity.
                          Zero uses ceil(1/p1), one expected epoch; the final step
                          is always a candidate. With p1=0, select at the final step.
@@ -267,7 +247,7 @@ def train_sparse_gnn(
         if select or track or progress:
             # Reuse one forward when selection and explicitly requested tracking
             # coincide. Ordinary validation/logging never reduces test metrics.
-            accs = (_evaluate(mechanism, test_data) if track else
+            accs = (mechanism.evaluate(test_data) if track else
                     mechanism.evaluate(test_data, splits=("val",)))
         if select:
             validation = float(accs["val"])
@@ -294,7 +274,7 @@ def train_sparse_gnn(
 
     if best_state is not None:
         mechanism.module.load_state_dict(best_state)
-    final = _evaluate(mechanism, test_data, bootstrap)
+    final = dict(mechanism.evaluate(test_data))
     if best_state is None:
         # Preserve evaluation-only runs (T=0) without inventing a training step.
         validation = float(final["val"])
@@ -342,9 +322,8 @@ def train_sparse_gnn_with_budget(
     progress_every: Optional[int] = None,
     verbose: bool = False,
     checkpoint_callback=None,
-    bootstrap: Optional[BootstrapConfig] = None,
 ) -> tuple[dict[str, Any], SparseGNNNoiseCalibration]:
-    """Calibrate noise and train once, optionally bootstrapping final test metrics."""
+    """Calibrate noise and train once, evaluating the selected model."""
 
     calibration = calibrate_sparsegnn_noise(
         target_epsilon=target_epsilon, target_delta=target_delta,
@@ -358,6 +337,6 @@ def train_sparse_gnn_with_budget(
         sigma=calibration.noise_multiplier, seed=seed,
         eval_every=eval_every, track_every=track_every, verbose=verbose,
         progress_every=progress_every,
-        checkpoint_callback=checkpoint_callback, bootstrap=bootstrap,
+        checkpoint_callback=checkpoint_callback,
     )
     return metrics, calibration

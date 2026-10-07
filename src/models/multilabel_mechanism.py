@@ -16,7 +16,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base_mechanism import BaseMechanism
-from .bootstrap import BootstrapMetrics
 from .layers import PaddedGNNStack, build_conv_stack
 
 
@@ -123,8 +122,7 @@ class MultiLabelGNNMechanism(BaseMechanism):
         return losses * batch.loss_mask.to(losses.dtype)
 
     @torch.no_grad()
-    def evaluate(self, data=None, *, splits=("train", "val", "test"),
-                 bootstrap: BootstrapMetrics = None) -> Dict[str, float]:
+    def evaluate(self, data=None, *, splits=("train", "val", "test")) -> Dict[str, float]:
         data = data or self.data
         self.eval_mode()
         logits = self.module(data.x, self.eval_edges(data))
@@ -137,6 +135,4 @@ class MultiLabelGNNMechanism(BaseMechanism):
                               if n else float("nan"))
             metrics[f"{split}_auroc"] = (
                 _micro_auroc(logits[mask], data.y[mask]) if n else float("nan"))
-            if split == "test" and bootstrap is not None:
-                bootstrap.update(logits[mask], data.y[mask].float())
         return metrics

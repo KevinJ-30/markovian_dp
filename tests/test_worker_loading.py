@@ -32,7 +32,7 @@ def _train_at_preprocessing_barrier(root, seed, barrier):
         status = worker.main([
             "--dataset", "fixture", "--method", "mlp", "--lr", "0.01",
             "--batch-size", "8", "--epochs", "1", "--mlp-hidden", "4",
-            "--seed", str(seed), "--bootstrap-resamples", "0", "--device", "cpu",
+            "--seed", str(seed), "--device", "cpu",
             "--split-root", str(root / "splits"), "--out-dir", str(root / f"seed{seed}"),
         ])
     assert status == 0

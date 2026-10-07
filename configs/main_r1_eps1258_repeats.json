@@ -14,7 +14,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -35,7 +34,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -56,7 +54,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -77,7 +74,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -98,7 +94,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -119,7 +114,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -140,7 +134,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -161,7 +154,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -182,7 +174,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -203,7 +194,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -224,7 +214,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -245,7 +234,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -266,7 +254,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -287,7 +274,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -308,7 +294,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -330,7 +315,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -352,7 +336,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -374,7 +357,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -396,7 +378,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -418,7 +399,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -440,7 +420,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -462,7 +441,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -484,7 +462,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -506,7 +483,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -528,7 +504,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -550,7 +525,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -572,7 +546,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -594,7 +567,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -616,7 +588,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -635,7 +606,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -654,7 +624,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -673,7 +642,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -692,7 +660,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -711,7 +678,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -730,7 +696,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -749,7 +714,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -768,7 +732,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -787,7 +750,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -806,7 +768,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -825,7 +786,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -844,7 +804,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -863,7 +822,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -882,7 +840,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -899,7 +856,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -916,7 +872,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -933,7 +888,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -950,7 +904,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -967,7 +920,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -984,7 +936,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -1001,7 +952,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -1018,7 +968,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -1035,7 +984,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -1052,7 +1000,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1069,7 +1016,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1086,7 +1032,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -1103,7 +1048,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -1120,7 +1064,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1138,7 +1081,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1156,7 +1098,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1175,7 +1116,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1194,7 +1134,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1213,7 +1152,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1232,7 +1170,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -1250,7 +1187,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -1268,7 +1204,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -1287,7 +1222,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -1306,7 +1240,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -1325,7 +1258,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -1344,7 +1276,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -1362,7 +1293,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -1380,7 +1310,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -1399,7 +1328,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -1418,7 +1346,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -1437,7 +1364,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -1456,7 +1382,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -1474,7 +1399,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -1492,7 +1416,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -1511,7 +1434,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -1530,7 +1452,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -1549,7 +1470,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -1568,7 +1488,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -1586,7 +1505,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -1604,7 +1522,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -1623,7 +1540,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -1642,7 +1558,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -1661,7 +1576,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -1680,7 +1594,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1698,7 +1611,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1716,7 +1628,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1735,7 +1646,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1754,7 +1664,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1773,7 +1682,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1792,7 +1700,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -1810,7 +1717,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -1828,7 +1734,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -1847,7 +1752,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -1866,7 +1770,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -1885,7 +1788,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -1904,7 +1806,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1925,7 +1826,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1946,7 +1846,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -1967,7 +1866,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -1988,7 +1886,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -2009,7 +1906,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -2030,7 +1926,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -2051,7 +1946,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -2072,7 +1966,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -2093,7 +1986,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -2114,7 +2006,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -2135,7 +2026,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -2156,7 +2046,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -2177,7 +2066,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -2198,7 +2086,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2220,7 +2107,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2242,7 +2128,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2264,7 +2149,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2286,7 +2170,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -2308,7 +2191,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -2330,7 +2212,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -2352,7 +2233,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -2374,7 +2254,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -2396,7 +2275,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -2418,7 +2296,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -2440,7 +2317,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -2462,7 +2338,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -2484,7 +2359,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -2506,7 +2380,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2525,7 +2398,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2544,7 +2416,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2563,7 +2434,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2582,7 +2452,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -2601,7 +2470,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -2620,7 +2488,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -2639,7 +2506,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -2658,7 +2524,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -2677,7 +2542,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -2696,7 +2560,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -2715,7 +2578,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -2734,7 +2596,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -2753,7 +2614,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -2772,7 +2632,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2790,7 +2649,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2808,7 +2666,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2827,7 +2684,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2846,7 +2702,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2865,7 +2720,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2884,7 +2738,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2902,7 +2755,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2920,7 +2772,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2939,7 +2790,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2958,7 +2808,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2977,7 +2826,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2996,7 +2844,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -3014,7 +2861,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -3032,7 +2878,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -3051,7 +2896,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -3070,7 +2914,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -3089,7 +2932,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -3108,7 +2950,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -3126,7 +2967,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -3144,7 +2984,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -3163,7 +3002,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -3182,7 +3020,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -3201,7 +3038,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -3220,7 +3056,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -3238,7 +3073,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -3256,7 +3090,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -3275,7 +3108,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -3294,7 +3126,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -3313,7 +3144,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -3332,7 +3162,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3350,7 +3179,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3368,7 +3196,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3387,7 +3214,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3406,7 +3232,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3425,7 +3250,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3444,7 +3268,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -3462,7 +3285,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -3480,7 +3302,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -3499,7 +3320,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -3518,7 +3338,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -3537,7 +3356,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -3556,7 +3374,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -3573,7 +3390,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -3590,7 +3406,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -3607,7 +3422,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -3624,7 +3438,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -3641,7 +3454,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3658,7 +3470,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -3675,7 +3486,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -3693,7 +3503,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -3711,7 +3520,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -3729,7 +3537,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -3747,7 +3554,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -3765,7 +3571,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -3783,7 +3588,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -3801,7 +3605,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -3819,7 +3622,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -3837,7 +3639,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -3855,7 +3656,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -3873,7 +3673,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-reddit",
         "degree_bound": 5,
         "domain_split": null,
@@ -3891,7 +3690,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -3909,7 +3707,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -3927,7 +3724,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -3945,7 +3741,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-yelp",
         "degree_bound": 5,
         "domain_split": null,
@@ -3963,7 +3758,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -3981,7 +3775,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -3999,7 +3792,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -4017,7 +3809,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "saint-amazon",
         "degree_bound": 5,
         "domain_split": null,
@@ -4035,7 +3826,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -4053,7 +3843,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -4071,7 +3860,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -4089,7 +3877,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 0,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -4107,7 +3894,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -4125,7 +3911,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -4143,7 +3928,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,
@@ -4161,7 +3945,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 0,
         "dataset": "mag-allbut2",
         "degree_bound": 5,
         "domain_split": null,

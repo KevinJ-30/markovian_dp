@@ -11,7 +11,6 @@ import math
 import os
 from pathlib import Path
 import random
-import sys
 import time
 
 import numpy as np
@@ -19,10 +18,6 @@ import torch
 import torch.nn.functional as F
 from torch_geometric.data import Data
 from torch_geometric.transforms import ToSparseTensor
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from src.models.bootstrap import BootstrapConfig, BootstrapMetrics
 
 from core import console
 from core.data.loader.node import NodeDataLoader
@@ -95,9 +90,7 @@ def stage_embeddings(model, data, chunk_size):
 
 
 @torch.no_grad()
-def evaluate_stage(
-    model, data, chunk_size=16384, metric_ignore_label=None, *, bootstrap=None,
-):
+def evaluate_stage(model, data, chunk_size=16384, metric_ignore_label=None):
     """Reduce a whole-split score, never an average of chunk-level metrics."""
     model.eval()
     device = next(model.parameters()).device
@@ -154,12 +147,6 @@ def evaluate_stage(
             predicted_counts += torch.bincount(prediction, minlength=logits.shape[1])
             actual_counts += torch.bincount(labels, minlength=logits.shape[1])
             true_counts += torch.bincount(labels[correct], minlength=logits.shape[1])
-        if bootstrap is not None:
-            # Binary output publishes AUROC only, using these sigmoid-score ties.
-            bootstrap.update(
-                scores[-1] if binary else logits,
-                targets[-1] if binary else labels,
-            )
     if regression:
         totals[0] = regression_metric.residual_sum
     values = totals.cpu().tolist()
@@ -400,7 +387,7 @@ class InductiveNodeLevelProGAP(NodeLevelProGAP):
             "epoch": self.stage_states[-1]["epoch"],
         }
 
-    def evaluate_partition(self, data, *, bootstrap=None):
+    def evaluate_partition(self, data):
         """Run the upstream final-classifier NAP pipeline with full CPU context."""
         graph = _prepare(Data(**data.to_dict())).cpu()
         graph.x0 = graph.x
@@ -422,19 +409,14 @@ class InductiveNodeLevelProGAP(NodeLevelProGAP):
                     del embeddings
             return evaluate_stage(
                 model, graph, self.eval_chunk_size, getattr(self, "metric_ignore_label", None),
-                bootstrap=bootstrap,
             )
         finally:
             model.current_stage = self.num_stages - 1
 
 
-def _metrics(method, data, *, bootstrap=None):
+def _metrics(method, data):
     if hasattr(method, "evaluate_partition"):
-        result = (
-            method.evaluate_partition(data)
-            if bootstrap is None
-            else method.evaluate_partition(data, bootstrap=bootstrap)
-        )
+        result = method.evaluate_partition(data)
         return result["score"], result.get("macro_f1", result["score"])
     # Do not call NodeLevelProGAP.setup here: it would recalibrate the private
     # training mechanism from a held-out graph. Prediction stages reuse the
@@ -447,11 +429,6 @@ def _metrics(method, data, *, bootstrap=None):
     mask = _score_mask(data, getattr(method, "metric_ignore_label", None)).cpu()
     probabilities = probabilities[mask]
     target = target[mask]
-    if bootstrap is not None:
-        # The prediction API returns probabilities, not the stage's raw logits.
-        bootstrap.update(
-            probabilities - 0.5 if target.ndim == 2 else probabilities, target,
-        )
     if getattr(method.classifier, "regression", False):
         metric = RegressionR2()
         metric.update(probabilities, target)
@@ -588,11 +565,6 @@ def _task_metadata(manifest):
         )
     return binary, primary_metric, metric_ignore_label
 def main():
-    bootstrap_config = BootstrapConfig(
-        confidence_level=float(os.environ.get("PROGAP_BOOTSTRAP_CONFIDENCE", "0.95")),
-        n_resamples=int(os.environ.get("PROGAP_BOOTSTRAP_RESAMPLES", "1000")),
-        seed=int(os.environ.get("PROGAP_BOOTSTRAP_SEED", "0")),
-    )
     manifest_path = os.environ["PARTITION_MANIFEST"]
     manifest = json.loads(Path(manifest_path).read_text())
     result_path = Path(os.environ["RESULT_PATH"])
@@ -663,17 +635,8 @@ def main():
         validation_primary, validation_macro_f1 = _metrics(
             method, _load(manifest_path, manifest, "val")
         )
-    bootstrap = None
-    if bootstrap_config.n_resamples:
-        bootstrap = BootstrapMetrics(
-            "r2" if regression else "auroc" if binary else "micro_f1" if multilabel else "accuracy",
-            bootstrap_config,
-            metrics=("auroc",) if binary else None,
-            inclusive_threshold=True,
-            zero_division=0.0,
-        )
     test_primary, test_macro_f1 = _metrics(
-        method, _load(manifest_path, manifest, "test"), bootstrap=bootstrap,
+        method, _load(manifest_path, manifest, "test"),
     )
     coefficients = list(method.composed_mechanism.params["coeff_list"])
     stage_counts = [
@@ -748,8 +711,6 @@ def main():
         })
     if regression:
         result["metric"] = "r2"
-    if bootstrap is not None:
-        result["test_confidence_intervals"] = bootstrap.compute()
     result_path.write_text(json.dumps(result, indent=2) + "\n")
 
 

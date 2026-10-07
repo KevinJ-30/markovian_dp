@@ -6,7 +6,6 @@ import pytest
 import torch
 from torch_geometric.data import Data
 
-from src.models.bootstrap import BootstrapConfig
 from src.models.gnn_mechanism import GNNMechanism
 from src.models.regression_mechanism import RegressionGNNMechanism
 from src.training.sparse_gnn import train_sparse_gnn
@@ -33,10 +32,9 @@ class _RecordingRegression(RegressionGNNMechanism):
         self.evaluations = []
         self.build_optimizer(lr=.25, kind="sgd", momentum=1.)
 
-    def evaluate(self, data=None, *, splits=("train", "val", "test"), bootstrap=None):
-        self.evaluations.append(
-            (int(self.module.updates), tuple(splits), bootstrap is not None))
-        return super().evaluate(data, splits=splits, bootstrap=bootstrap)
+    def evaluate(self, data=None, *, splits=("train", "val", "test")):
+        self.evaluations.append((int(self.module.updates), tuple(splits)))
+        return super().evaluate(data, splits=splits)
 
 
 def _regression_fixture(validation_center=1.5625):
@@ -55,14 +53,13 @@ def _regression_fixture(validation_center=1.5625):
 
 
 @pytest.mark.parametrize("track_every", [0, 1])
-def test_restores_strict_validation_max_and_earliest_tie_before_test_bootstrap(track_every):
+def test_restores_strict_validation_max_and_earliest_tie_before_test(track_every):
     data, mechanism = _regression_fixture()
     callbacks = []
     result = train_sparse_gnn(
         mechanism, data, data, p1=1., p2=1., r=0, T=4,
         eval_every=1, track_every=track_every,
-        checkpoint_callback=lambda checkpoint: callbacks.append(dict(checkpoint)),
-        bootstrap=BootstrapConfig(n_resamples=30, seed=9))
+        checkpoint_callback=lambda checkpoint: callbacks.append(dict(checkpoint)))
 
     # Step 2 improves over step 1; distinct weights at step 3 tie with step 2;
     # step 4 is worse. All updates still execute, then model buffers restore too.
@@ -75,20 +72,14 @@ def test_restores_strict_validation_max_and_earliest_tie_before_test_bootstrap(t
     }
     assert result["val"] == -24.390625
     assert result["test"] == 1.
-    ci = result["test_confidence_intervals"]
-    assert ci["n_observations"] == 2
-    assert ci["metrics"]["r2"] == {
-        "lower": 1., "upper": 1., "valid_resamples": 30,
-    }
     training_splits = ("train", "val", "test") if track_every else ("val",)
     assert mechanism.evaluations == [
-        (step, training_splits, False) for step in range(1, 5)
-    ] + [(2, ("train", "val", "test"), True)]
+        (step, training_splits) for step in range(1, 5)
+    ] + [(2, ("train", "val", "test"))]
     if track_every:
         assert callbacks == result["history"]
         assert [checkpoint["step"] for checkpoint in callbacks] == [1, 2, 3, 4]
         assert callbacks[-1]["test"] < result["test"]
-        assert all("test_confidence_intervals" not in checkpoint for checkpoint in callbacks)
     else:
         assert callbacks == []
 
@@ -118,8 +109,8 @@ def test_final_step_competes_outside_regular_validation_cadence():
     assert result["selection"]["step"] == 4
     assert float(mechanism.module.offset) == 2.0625
     assert mechanism.evaluations == [
-        (3, ("val",), False), (4, ("val",), False),
-        (4, ("train", "val", "test"), False),
+        (3, ("val",)), (4, ("val",)),
+        (4, ("train", "val", "test")),
     ]
 
 
@@ -148,8 +139,8 @@ def test_empty_draws_do_not_skip_default_epoch_validation_or_final_candidate():
     assert result["selection"]["step"] == 3  # identical model ties at step 4
     assert mechanism.module.training_offsets == []
     assert mechanism.evaluations == [
-        (0, ("val",), False), (0, ("val",), False),
-        (0, ("train", "val", "test"), False),
+        (0, ("val",)), (0, ("val",)),
+        (0, ("train", "val", "test")),
     ]
 
 

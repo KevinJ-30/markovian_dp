@@ -13,7 +13,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -34,7 +33,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -55,7 +53,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -76,7 +73,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -97,7 +93,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -118,7 +113,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -139,7 +133,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -160,7 +153,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -181,7 +173,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -202,7 +193,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -223,7 +213,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -244,7 +233,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -265,7 +253,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -287,7 +274,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -309,7 +295,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -331,7 +316,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -353,7 +337,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -375,7 +358,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -397,7 +379,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -419,7 +400,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -441,7 +421,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -463,7 +442,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -485,7 +463,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -507,7 +484,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -529,7 +505,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -550,7 +525,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -571,7 +545,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -592,7 +565,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -613,7 +585,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -634,7 +605,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -655,7 +625,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -676,7 +645,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -697,7 +665,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -718,7 +685,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -739,7 +705,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -760,7 +725,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -781,7 +745,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -803,7 +766,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -825,7 +787,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -847,7 +808,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -869,7 +829,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -891,7 +850,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -913,7 +871,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -935,7 +892,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -957,7 +913,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -979,7 +934,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -1001,7 +955,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -1023,7 +976,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -1045,7 +997,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1066,7 +1017,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1087,7 +1037,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1108,7 +1057,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1129,7 +1077,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1150,7 +1097,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1171,7 +1117,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1192,7 +1137,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1213,7 +1157,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1234,7 +1177,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1255,7 +1197,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1276,7 +1217,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1297,7 +1237,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1319,7 +1258,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1341,7 +1279,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1363,7 +1300,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1385,7 +1321,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1407,7 +1342,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1429,7 +1363,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1451,7 +1384,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1473,7 +1405,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1495,7 +1426,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1517,7 +1447,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1539,7 +1468,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -1561,7 +1489,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1582,7 +1509,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1603,7 +1529,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1624,7 +1549,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1645,7 +1569,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1666,7 +1589,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1687,7 +1609,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1708,7 +1629,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1729,7 +1649,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1750,7 +1669,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1771,7 +1689,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1792,7 +1709,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1813,7 +1729,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1834,7 +1749,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1855,7 +1769,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1876,7 +1789,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1897,7 +1809,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1919,7 +1830,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1941,7 +1851,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1963,7 +1872,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -1985,7 +1893,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2007,7 +1914,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2029,7 +1935,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2051,7 +1956,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2073,7 +1977,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2095,7 +1998,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2117,7 +2019,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2139,7 +2040,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2161,7 +2061,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2183,7 +2082,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2205,7 +2103,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2227,7 +2124,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 5,
         "domain_split": null,
@@ -2249,7 +2145,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2270,7 +2165,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2291,7 +2185,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2312,7 +2205,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2333,7 +2225,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2354,7 +2245,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2375,7 +2265,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2396,7 +2285,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2417,7 +2305,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2438,7 +2325,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2459,7 +2345,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2480,7 +2365,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2501,7 +2385,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2522,7 +2405,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2543,7 +2425,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2564,7 +2445,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2585,7 +2465,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2607,7 +2486,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2629,7 +2507,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2651,7 +2528,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2673,7 +2549,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2695,7 +2570,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2717,7 +2591,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2739,7 +2612,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2761,7 +2633,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2783,7 +2654,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2805,7 +2675,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2827,7 +2696,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2849,7 +2717,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2871,7 +2738,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2893,7 +2759,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2915,7 +2780,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 5,
         "domain_split": null,
@@ -2937,7 +2801,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -2958,7 +2821,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -2979,7 +2841,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3000,7 +2861,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3021,7 +2881,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3042,7 +2901,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3063,7 +2921,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3084,7 +2941,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3105,7 +2961,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3126,7 +2981,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3147,7 +3001,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3168,7 +3021,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3189,7 +3041,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3210,7 +3061,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3231,7 +3081,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3252,7 +3101,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3273,7 +3121,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3295,7 +3142,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3317,7 +3163,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3339,7 +3184,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3361,7 +3205,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3383,7 +3226,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3405,7 +3247,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3427,7 +3268,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3449,7 +3289,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3471,7 +3310,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3493,7 +3331,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3515,7 +3352,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3537,7 +3373,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3559,7 +3394,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3581,7 +3415,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3603,7 +3436,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 5,
         "domain_split": null,
@@ -3625,7 +3457,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 10,
         "domain_split": null,
@@ -3646,7 +3477,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 20,
         "domain_split": null,
@@ -3667,7 +3497,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 40,
         "domain_split": null,
@@ -3688,7 +3517,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 10,
         "domain_split": null,
@@ -3709,7 +3537,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 20,
         "domain_split": null,
@@ -3730,7 +3557,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 40,
         "domain_split": null,
@@ -3751,7 +3577,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 10,
         "domain_split": null,
@@ -3772,7 +3597,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 20,
         "domain_split": null,
@@ -3793,7 +3617,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 40,
         "domain_split": null,
@@ -3814,7 +3637,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 10,
         "domain_split": null,
@@ -3835,7 +3657,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 20,
         "domain_split": null,
@@ -3856,7 +3677,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 40,
         "domain_split": null,
@@ -3877,7 +3697,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 10,
         "domain_split": null,
@@ -3899,7 +3718,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 20,
         "domain_split": null,
@@ -3921,7 +3739,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 40,
         "domain_split": null,
@@ -3943,7 +3760,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 10,
         "domain_split": null,
@@ -3965,7 +3781,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 20,
         "domain_split": null,
@@ -3987,7 +3802,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 40,
         "domain_split": null,
@@ -4009,7 +3823,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 10,
         "domain_split": null,
@@ -4031,7 +3844,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 20,
         "domain_split": null,
@@ -4053,7 +3865,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 40,
         "domain_split": null,
@@ -4075,7 +3886,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 10,
         "domain_split": null,
@@ -4097,7 +3907,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 20,
         "domain_split": null,
@@ -4119,7 +3928,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-arxiv",
         "degree_bound": 40,
         "domain_split": null,
@@ -4141,7 +3949,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 10,
         "domain_split": null,
@@ -4162,7 +3969,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 20,
         "domain_split": null,
@@ -4183,7 +3989,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 40,
         "domain_split": null,
@@ -4204,7 +4009,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 10,
         "domain_split": null,
@@ -4225,7 +4029,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 20,
         "domain_split": null,
@@ -4246,7 +4049,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 40,
         "domain_split": null,
@@ -4267,7 +4069,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 10,
         "domain_split": null,
@@ -4288,7 +4089,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 20,
         "domain_split": null,
@@ -4309,7 +4109,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 40,
         "domain_split": null,
@@ -4330,7 +4129,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 10,
         "domain_split": null,
@@ -4351,7 +4149,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 20,
         "domain_split": null,
@@ -4372,7 +4169,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 40,
         "domain_split": null,
@@ -4393,7 +4189,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 10,
         "domain_split": null,
@@ -4415,7 +4210,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 20,
         "domain_split": null,
@@ -4437,7 +4231,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 40,
         "domain_split": null,
@@ -4459,7 +4252,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 10,
         "domain_split": null,
@@ -4481,7 +4273,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 20,
         "domain_split": null,
@@ -4503,7 +4294,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 40,
         "domain_split": null,
@@ -4525,7 +4315,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 10,
         "domain_split": null,
@@ -4547,7 +4336,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 20,
         "domain_split": null,
@@ -4569,7 +4357,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 40,
         "domain_split": null,
@@ -4591,7 +4378,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 10,
         "domain_split": null,
@@ -4613,7 +4399,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 20,
         "domain_split": null,
@@ -4635,7 +4420,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "ogbn-products",
         "degree_bound": 40,
         "domain_split": null,
@@ -4657,7 +4441,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 10,
         "domain_split": null,
@@ -4678,7 +4461,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 20,
         "domain_split": null,
@@ -4699,7 +4481,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 40,
         "domain_split": null,
@@ -4720,7 +4501,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 10,
         "domain_split": null,
@@ -4741,7 +4521,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 20,
         "domain_split": null,
@@ -4762,7 +4541,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 40,
         "domain_split": null,
@@ -4783,7 +4561,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 10,
         "domain_split": null,
@@ -4804,7 +4581,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 20,
         "domain_split": null,
@@ -4825,7 +4601,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 40,
         "domain_split": null,
@@ -4846,7 +4621,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 10,
         "domain_split": null,
@@ -4867,7 +4641,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 20,
         "domain_split": null,
@@ -4888,7 +4661,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 40,
         "domain_split": null,
@@ -4909,7 +4681,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 10,
         "domain_split": null,
@@ -4931,7 +4702,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 20,
         "domain_split": null,
@@ -4953,7 +4723,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 40,
         "domain_split": null,
@@ -4975,7 +4744,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 10,
         "domain_split": null,
@@ -4997,7 +4765,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 20,
         "domain_split": null,
@@ -5019,7 +4786,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 40,
         "domain_split": null,
@@ -5041,7 +4807,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 10,
         "domain_split": null,
@@ -5063,7 +4828,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 20,
         "domain_split": null,
@@ -5085,7 +4849,6 @@
     {
       "parameters": {
         "batch_size": 1024,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 40,
         "domain_split": null,
@@ -5107,7 +4870,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 10,
         "domain_split": null,
@@ -5129,7 +4891,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 20,
         "domain_split": null,
@@ -5151,7 +4912,6 @@
     {
       "parameters": {
         "batch_size": 256,
-        "bootstrap_resamples": 1000,
         "dataset": "fb100-year-6",
         "degree_bound": 40,
         "domain_split": null,

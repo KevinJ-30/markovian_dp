@@ -11,7 +11,6 @@ import torch
 from torch import Tensor, nn
 from torch.func import functional_call, grad, vmap
 
-from src.models.bootstrap import BootstrapConfig, BootstrapMetrics
 from src.models.objectives import _metric_rows, _task_loss, _task_metric
 from src.privacy.accountants import DPMLPAccountant
 
@@ -37,16 +36,6 @@ class BaselineConfig:
     metric_ignore_label: int | None = None
     graphsage_sampling: str = "hierarchical"
     max_fanout: int = 10
-    bootstrap_confidence: float = 0.95
-    bootstrap_resamples: int = 1000
-    bootstrap_seed: int = 0
-
-    def __post_init__(self) -> None:
-        BootstrapConfig(
-            confidence_level=self.bootstrap_confidence,
-            n_resamples=self.bootstrap_resamples,
-            seed=self.bootstrap_seed,
-        )
 
 
 @dataclass(frozen=True)
@@ -143,10 +132,7 @@ class BaselineTrainer:
         return model(data.x, getattr(data, "edge_index", None))
 
     @torch.no_grad()
-    def _evaluate(
-        self, model: nn.Module, partition: Any, *,
-        bootstrap: BootstrapMetrics | None = None,
-    ) -> tuple[float, float]:
+    def _evaluate(self, model: nn.Module, partition: Any) -> tuple[float, float]:
         data = partition.data.to(self.device)
         model.eval()
         logits = self._forward(model, data)
@@ -156,8 +142,6 @@ class BaselineTrainer:
             eval_mask=getattr(partition, "eval_mask", None),
             metric_ignore_label=self.config.metric_ignore_label,
         )
-        if bootstrap is not None:
-            bootstrap.update(logits, labels)
         return _task_metric(
             logits, labels, self.config.multilabel,
             regression=self.config.regression, binary=self.config.binary)
@@ -230,20 +214,7 @@ class BaselineTrainer:
         assert best_state is not None
         model.load_state_dict(best_state)
         validation, val_f1 = self._evaluate(model, split.val)
-        bootstrap = (
-            BootstrapMetrics(
-                "r2" if self.config.regression else
-                "auroc" if self.config.binary else
-                "micro_f1" if self.config.multilabel else "accuracy",
-                BootstrapConfig(
-                    confidence_level=self.config.bootstrap_confidence,
-                    n_resamples=self.config.bootstrap_resamples,
-                    seed=self.config.bootstrap_seed,
-                ),
-            )
-            if self.config.bootstrap_resamples else None
-        )
-        test, test_f1 = self._evaluate(model, split.test, bootstrap=bootstrap)
+        test, test_f1 = self._evaluate(model, split.test)
         privacy = None
         if self.config.method == "dp_mlp":
             privacy = DPMLPAccountant().account(
@@ -287,8 +258,6 @@ class BaselineTrainer:
             })
         if self.config.regression:
             result["metric"] = "r2"
-        if bootstrap is not None:
-            result["test_confidence_intervals"] = bootstrap.compute()
         return result
 
     def _sampled_gnn_epoch(

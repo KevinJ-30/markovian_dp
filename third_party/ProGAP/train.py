@@ -14,7 +14,6 @@ with console.status('importing modules'):
     from core.loggers.logger import Logger
     from core.methods.base import NodeClassification
     from core.methods.registry import supported_methods
-    from core.utils import confidence_interval
     from torch_geometric import seed_everything
 
 
@@ -86,7 +85,6 @@ def run(seed:        Annotated[int,  ArgInfo(help='initial random seed')] = 1234
     for metric, values in run_metrics.items():
         summary[metric + '_mean'] = np.mean(values)
         summary[metric + '_std'] = np.std(values)
-        summary[metric + '_ci'] = confidence_interval(values, size=1000, ci=95, seed=seed)
         if torch.cuda.is_available():
             gpu_mem = torch.cuda.max_memory_allocated() / 1024 ** 3
             summary['gpu_mem'] = gpu_mem

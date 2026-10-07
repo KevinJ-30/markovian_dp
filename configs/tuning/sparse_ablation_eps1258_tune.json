@@ -6,8 +6,7 @@
     "dropout": 0.5,
     "mlp_hidden": 64,
     "gnn_hidden": 128,
-    "weight_decay": 0.0,
-    "bootstrap_resamples": 1000
+    "weight_decay": 0.0
   },
   "grid": {
     "dataset": [

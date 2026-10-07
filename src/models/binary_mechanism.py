@@ -18,7 +18,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base_mechanism import BaseMechanism
-from .bootstrap import BootstrapMetrics
 from .layers import PaddedGNNStack, build_conv_stack
 
 
@@ -84,8 +83,7 @@ class BinaryGNNMechanism(BaseMechanism):
         return losses * batch.loss_mask.to(losses.dtype)
 
     @torch.no_grad()
-    def evaluate(self, data=None, *, splits=("train", "val", "test"),
-                 bootstrap: BootstrapMetrics = None) -> Dict[str, float]:
+    def evaluate(self, data=None, *, splits=("train", "val", "test")) -> Dict[str, float]:
         data = data or self.data
         self.eval_mode()
         # The caller supplies the evaluation graph, preserving held-out nodes'
@@ -105,6 +103,4 @@ class BinaryGNNMechanism(BaseMechanism):
             metrics[f"{split}_bin_acc"] = (
                 float(((scores[mask] > 0).to(y.dtype) == y[mask]).float().mean())
                 if mask.any() else float("nan"))
-            if split == "test" and bootstrap is not None:
-                bootstrap.update(scores[mask], y[mask])
         return metrics

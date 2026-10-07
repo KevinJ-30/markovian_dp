@@ -42,12 +42,6 @@ def _row(**changes):
     return row
 
 
-def _ci(lower, upper, metric="accuracy"):
-    return json.dumps({"confidence_level": .95, "metrics": {
-        metric: {"lower": lower, "upper": upper, "valid_resamples": 1000},
-    }})
-
-
 def _invoke(tmp_path, *arguments, name="summary"):
     prefix = tmp_path / name
     result = subprocess.run(
@@ -69,32 +63,30 @@ def _missing(value):
     return value.strip().lower() in {"", "n/a", "na", "none", "null"}
 
 
-def test_asymmetric_bootstrap_preserves_point_endpoints_and_primary_metric(tmp_path):
-    point, lower, upper = .27288, .23627287853577372, .31114808652246256
+def test_per_run_preserves_point_estimate_and_primary_metric(tmp_path):
+    point = .27288
     source = _csv(tmp_path / "results.csv", [_row(
         protocol="fixture-protocol", dataset="fixture-dataset", metric="r2",
-        test_metric=point, test_confidence_intervals=_ci(lower, upper, metric="r2"),
+        test_metric=point,
     )])
-    rows, _, _ = _summary(tmp_path, source, "--bootstrap")
+    rows, _, _ = _summary(tmp_path, source)
     assert len(rows) == 1
     row = rows[0]
     assert (row["dataset"], row["method"], row["metric"]) == (
         "fixture-protocol", "SparseGNN-SAGE", "r2",
     )
     assert float(row["value"]) == pytest.approx(point)
-    assert float(row["ci_lower"]) == lower
-    assert float(row["ci_upper"]) == upper
-    assert float(row["confidence_level"]) == .95
-    assert float(row["uncertainty"]) == pytest.approx(upper - point)
+    assert _missing(row["uncertainty"])
+    assert row["uncertainty_type"] == "none"
+    assert float(row["display"]) == pytest.approx(point)
 
 
-def test_bootstrap_best_keeps_completed_runs_privacy_regimes_and_splits(tmp_path):
+def test_per_run_best_keeps_completed_runs_privacy_regimes_and_splits(tmp_path):
     common = {"regime": "first", "domain_split_id": "split-a"}
     source = _csv(tmp_path / "runs.csv", [
         _row(**common, status="failed", test_metric=.99),
         _row(**common, test_metric=.4),
-        _row(**common, seed=1, lr=.02, test_metric=.6,
-             test_confidence_intervals=_ci(.55, .65)),
+        _row(**common, seed=1, lr=.02, test_metric=.6),
         _row(**common, target_epsilon=2, test_metric=.5),
         _row(**common, method="mlp", target_epsilon="", dp=False, test_metric=.7),
         _row(**{**common, "domain_split_id": "split-b"}, test_metric=.8),
@@ -105,19 +97,16 @@ def test_bootstrap_best_keeps_completed_runs_privacy_regimes_and_splits(tmp_path
         {"name": name, "files": [source.name], "where": {"regime": name}}
         for name in ("first", "second")
     ]}), encoding="utf-8")
-    rows, markdown, stderr = _summary(tmp_path, "--groups", groups, "--bootstrap", "--best")
+    rows, markdown, stderr = _summary(tmp_path, "--groups", groups, "--best")
     assert sorted(float(row["value"]) for row in rows) == [.3, .5, .6, .7, .8]
     assert {row["selection"] for row in rows} == {"best_test"}
     assert [float(row["value"]) for row in rows if row["group"] == "second"] == [.3]
     winner = next(row for row in rows if float(row["value"]) == .6)
     assert float(winner["epsilon"]) == 1
-    assert float(winner["ci_lower"]) == .55
-    assert float(winner["ci_upper"]) == .65
     other_private = next(row for row in rows if float(row["value"]) == .5)
     nonprivate = next(row for row in rows if float(row["value"]) == .7)
     assert float(other_private["epsilon"]) == 2
     assert _missing(other_private["uncertainty"])
-    assert _missing(other_private["ci_lower"]) and _missing(other_private["ci_upper"])
     assert nonprivate["epsilon"] == "non-private"
     assert "test" in (markdown + stderr).lower()
     assert "bias" in (markdown + stderr).lower()
@@ -173,8 +162,8 @@ def test_groups_resolve_relative_recursive_globs_filter_and_deduplicate(tmp_path
         "name": "small learning rate", "files": ["data/**/*.csv", "data/nested/results.csv"],
         "where": {"lr": [.01], "batch_size": 256},
     }]}), encoding="utf-8")
-    rows, _, _ = _summary(tmp_path, "--groups", groups, "--bootstrap")
-    assert len(rows) == 2  # The overlapping glob must not duplicate bootstrap runs.
+    rows, _, _ = _summary(tmp_path, "--groups", groups)
+    assert len(rows) == 2  # The overlapping glob must not duplicate runs.
     assert sorted(float(row["value"]) for row in rows) == [.2, .6]
     assert {row["group"] for row in rows} == {"small learning rate"}
     seed_rows, _, _ = _summary(tmp_path, "--groups", groups, "--seed", name="seed")
@@ -190,7 +179,7 @@ def test_invalid_group_filters_are_actionable_errors(tmp_path, where):
     groups.write_text(json.dumps({"groups": [{
         "name": "requested regime", "files": [source.name], "where": where,
     }]}), encoding="utf-8")
-    result, _ = _invoke(tmp_path, "--groups", groups, "--bootstrap")
+    result, _ = _invoke(tmp_path, "--groups", groups)
     assert result.returncode != 0
     assert "requested regime" in result.stderr
     assert "misspelled_lr" in result.stderr or "match" in result.stderr.lower()
@@ -198,12 +187,12 @@ def test_invalid_group_filters_are_actionable_errors(tmp_path, where):
 
 def test_explicit_metric_never_relabels_primary_score(tmp_path):
     source = _csv(tmp_path / "results.csv", [_row(test_metric=.9)])
-    result, _ = _invoke(tmp_path, source, "--bootstrap", "--metric", "auroc")
+    result, _ = _invoke(tmp_path, source, "--metric", "auroc")
     assert result.returncode != 0
     assert "no usable final results" in result.stderr
 
     _csv(source, [_row(test_metric=.9, test_auroc=.7)])
-    rows, _, _ = _summary(tmp_path, source, "--bootstrap", "--metric", "auroc")
+    rows, _, _ = _summary(tmp_path, source, "--metric", "auroc")
     assert rows[0]["metric"] == "auroc"
     assert float(rows[0]["value"]) == pytest.approx(.7)
 
@@ -227,7 +216,7 @@ def test_best_validation_precedes_test_and_breaks_ties_by_run_index(tmp_path, va
         _row(batch_size=1024, validation_metric=validation[1], test_metric=.95, run_index=9),
         _row(batch_size=256, validation_metric=validation[0], test_metric=.4, run_index=2),
     ])
-    rows, _, _ = _summary(tmp_path, source, "--bootstrap", "--best-validation")
+    rows, _, _ = _summary(tmp_path, source, "--best-validation")
     assert len(rows) == 1
     assert float(rows[0]["value"]) == .4
     assert float(rows[0]["validation_value"]) == .8
@@ -296,7 +285,7 @@ def test_validation_metric_override_does_not_relabel_primary_selection(tmp_path)
         test_auroc=.8, validation_metric=.9,
         selection=json.dumps({"metric": "accuracy", "validation_score": .9}),
     )])
-    result, _ = _invoke(tmp_path, source, "--bootstrap", "--best-validation", "--metric", "auroc")
+    result, _ = _invoke(tmp_path, source, "--best-validation", "--metric", "auroc")
     assert result.returncode == 2
 
 

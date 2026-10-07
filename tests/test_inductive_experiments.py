@@ -271,8 +271,8 @@ def test_dpar_supervises_roots_only_but_uses_nonroot_features(monkeypatch, priva
     monkeypatch.setattr(dpar_module, "_sample_train_partition", sample_roots)
 
     class ObservedTrainer(DPARTrainer):
-        def _evaluate(self, model, partition, *, bootstrap=None):
-            result = super()._evaluate(model, partition, bootstrap=bootstrap)
+        def _evaluate(self, model, partition):
+            result = super()._evaluate(model, partition)
             self.state = {
                 name: value.detach().clone() for name, value in model.state_dict().items()
             }
@@ -564,7 +564,7 @@ def test_run_preserves_fixed_regression_partitions_across_seeds(monkeypatch, tmp
             "--device", "cpu", "--seed", str(seed),
             "--split-root", str(tmp_path / "splits"), "--out-dir", str(output),
             "--epochs", "1", "--mlp-hidden", "4", "--dropout", "0",
-            "--lr", "0.01", "--batch-size", "32", "--bootstrap-resamples", "0",
+            "--lr", "0.01", "--batch-size", "32",
         ]) == 0
         result = json.loads((output / "result.json").read_text())
         config = json.loads((output / "config.json").read_text())

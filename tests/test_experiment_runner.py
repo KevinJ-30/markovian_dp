@@ -31,7 +31,6 @@ def _config(seeds=(0,), *, resources=None, **parameters):
         block["resources"] = resources
     return {"name": "runner-test", "defaults": {
         "dataset": "ogbn-arxiv", "lr": .01, "epochs": 1, "batch_size": 32,
-        "bootstrap_resamples": 0,
     }, "grid": {"seed": list(seeds)}, "runs": [block]}
 
 
@@ -109,7 +108,7 @@ def test_block_overrides_replace_scalar_and_axis_without_mutating_input():
 def test_documented_grid_expands_eight_jobs_without_conditional_axes():
     config = {
         "defaults": {"dataset": "saint-amazon", "batch_size": 1024,
-                     "epochs": 20, "bootstrap_resamples": 0},
+                     "epochs": 20},
         "grid": {"seed": [0, 1], "lr": [.001]},
         "runs": [{"parameters": {"method": "sparse_sage"},
                   "grid": {"epsilon": [2, 8], "p2": [.1, .5]}}],
@@ -377,7 +376,7 @@ def test_progap_parent_only_allocator_peak_cannot_authorize_overlap(tmp_path):
 
 @pytest.mark.parametrize("field,value", [
     ("batch_size", 64), ("mlp_hidden", 16), ("gnn_hidden", 16), ("p2", .75),
-    ("sparse_radius", 2), ("sparse_degree_cap", 20), ("bootstrap_resamples", 100),
+    ("sparse_radius", 2), ("sparse_degree_cap", 20),
     ("split_root", "/another/split"), ("domain_split", {**DOMAIN_SPLIT, "test": ["jp"]}),
 ])
 def test_shape_changes_never_reuse_resource_profiles(field, value):

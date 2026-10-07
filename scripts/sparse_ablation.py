@@ -11,8 +11,7 @@ Seed-0 tuning results are not accepted and no configurations are selected here.
 
 Three line panels show expansion radius, edge retention, and outgoing cap.
 Colors denote datasets; solid lines denote SAGE and dotted lines denote GIN.
-Error bars are ±1 standard error of the training-seed mean (sample SD / sqrt(5)),
-not test-node bootstrap intervals or 95% confidence intervals.
+Error bars are ±1 standard error of the training-seed mean (sample SD / sqrt(5)).
 """
 from __future__ import annotations
 
@@ -51,7 +50,7 @@ POLICY = {
     "accounting": "Gaussian-mixture substitution accounting with incoming expansion.",
     "p2_equals_one": "p2=1 removes Bernoulli edge thinning only; preprocessing and incoming sampling caps remain.",
     "checkpoint": "Best validation-primary-metric checkpoint; no test-based or repeat-seed configuration selection.",
-    "uncertainty": "Mean ±1 standard error across training seeds 1–5: sample SD (ddof=1) / sqrt(5). Not a confidence interval or node-bootstrap interval.",
+    "uncertainty": "Mean ±1 standard error across training seeds 1–5: sample SD (ddof=1) / sqrt(5).",
     "radius": "Radius 1/2 uses two layers; radius 3 uses three. Incoming sampling caps are 20, 10, 5 on successive hops.",
     "metrics": "Products, FB-100, and Arxiv test accuracy share a 0–1 display range; scores are never averaged across datasets.",
 }
@@ -253,7 +252,6 @@ def read_run(root, index_path, indexed, original_root=None):
     same(result["weight_decay"], 0, "weight decay")
     same(parameters["weight_decay"], 0, "optimizer weight decay")
     same(settings["epochs"], 20, "epochs")
-    ci = result.get("test_confidence_intervals") or {}
     resources = result.get("resources") or {}
     native = result.get("native_result") or {}
     sampling = native.get("sampling_statistics") or {}
@@ -292,7 +290,7 @@ def read_run(root, index_path, indexed, original_root=None):
         "recorded_output_path": pointer,
         **{name + "_path": str(path) for name, path in paths.items()},
         "parameters": parameters, "selection": selection,
-        "test_confidence_intervals": ci, "resources": resources,
+        "resources": resources,
     }
     signature = {
         "task": task, "train_nodes": config["train_nodes"], "split_strategy": strategy,
@@ -346,7 +344,7 @@ def aggregate_seeds(rows):
             for field in ("metric", "lr", "batch_size", "epochs", "hidden", "layers", "dropout"):
                 same(row[field], reference[field], f"mixed repeat configurations: {key}/{field}")
             for field in row["parameters"].keys() | reference["parameters"].keys():
-                if field not in {"cap_seed", "K_in_achieved", "K_out_achieved", "bootstrap_seed"}:
+                if field not in {"cap_seed", "K_in_achieved", "K_out_achieved"}:
                     same(row["parameters"].get(field), reference["parameters"].get(field),
                          f"mixed repeat configurations: {key}/{field}")
         scores = [row["test_metric"] for row in cohort]

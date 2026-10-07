@@ -512,7 +512,7 @@ def test_regression_evaluate_scores_only_selected_targets_with_negative_r2():
     ((4.0, 3.0, 2.0), False, 5, -1.0, 0.0),
     ((3.0, 2.0, 4.0), True, 2, None, 1.0),
 ])
-def test_fit_restores_validation_selected_model_for_test_and_bootstrap(
+def test_fit_restores_validation_selected_model_for_test(
         candidates, undefined, selected_step, validation_score, test_score, architecture):
     edges = torch.empty((2, 0), dtype=torch.long)
     train = SimpleNamespace(
@@ -536,21 +536,19 @@ def test_fit_restores_validation_selected_model_for_test_and_bootstrap(
                 model._module.decoder.weight.zero_()
                 model._module.decoder.bias.fill_(prediction)
 
-        def evaluate(self, model, data, *, seed, bootstrap=None):
+        def evaluate(self, model, data, *, seed):
             if data is val:
                 self.validation_steps.append(self.updates)
                 assert seed == self.config.seed + 3
-                assert bootstrap is None
             else:
                 assert data is test
                 assert self.updates == self.config.steps
-            return super().evaluate(model, data, seed=seed, bootstrap=bootstrap)
+            return super().evaluate(model, data, seed=seed)
 
     config = DPGNNConfig(
         num_classes=1, regression=True, steps=5, batch_size=2,
         noise_multiplier=1.0, evaluate_every=2, seed=17,
-        latent_size=128, learning_rate=0.001, architecture=architecture,
-        bootstrap_resamples=20)
+        latent_size=128, learning_rate=0.001, architecture=architecture)
     trainer = ControlledDPGNN(config)
     trainer.validation_steps = []
     result = trainer.fit(train, val, test)
@@ -569,11 +567,6 @@ def test_fit_restores_validation_selected_model_for_test_and_bootstrap(
     torch.testing.assert_close(
         result["model"](test.x, torch.tensor([[0, 1], [0, 1]]), torch.ones(2)),
         torch.full((2, 1), selected_prediction))
-    intervals = result["test_confidence_intervals"]
-    assert intervals["n_observations"] == 2
-    assert intervals["metrics"]["r2"] == {
-        "lower": test_score, "upper": test_score, "valid_resamples": 20,
-    }
     accountant = RdpAccountant(np.arange(1, 10, 0.1)[1:])
     accountant.compose(GaussianDpEvent(config.noise_multiplier), count=config.steps)
     assert result["epsilon"] == pytest.approx(
@@ -598,7 +591,7 @@ def test_validation_cadence_preserves_private_updates_and_dropout_rng():
         trainer = ObservedDPGNN(DPGNNConfig(
             num_classes=2, steps=5, batch_size=4, noise_multiplier=1.0,
             evaluate_every=evaluate_every, seed=11, latent_size=4,
-            dropout=0.5, bootstrap_resamples=0))
+            dropout=0.5))
         trainer.states = []
         result = trainer.fit(graph, graph, graph)
         assert result["selection"]["evaluate_every"] == (evaluate_every or 2)

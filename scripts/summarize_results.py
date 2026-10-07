@@ -34,15 +34,14 @@ REQUIRED_COLUMNS = {
 # The runner's parameters object is the hyperparameter identity. Replicate
 # seeds and calibration diagnostics must not split a multi-seed configuration.
 IGNORED_PARAMETERS = {
-    "seed", "cap_seed", "bootstrap_seed", "method", "target_epsilon",
+    "seed", "cap_seed", "method", "target_epsilon",
     "target_delta", "delta", "K_in_achieved", "K_out_achieved",
     "accounting_grid", "calibration_rtol", "calibration_atol", "sigma", "noise_multiplier",
 }
 OUTPUT_COLUMNS = [
     "group", "dataset", "method", "privacy", "epsilon", "delta", "split",
     "metric", "config_id", "configuration", "n", "seeds", "value", "validation_value",
-    "uncertainty", "uncertainty_type", "ci_lower", "ci_upper",
-    "confidence_level", "display", "selection", "sources",
+    "uncertainty", "uncertainty_type", "display", "selection", "sources",
 ]
 
 
@@ -153,7 +152,6 @@ class Run:
     group: str
     source: str
     line: int
-    raw: dict
     dataset: str
     method: str
     privacy: str
@@ -197,7 +195,7 @@ def make_run(row, group, source, line, requested):
         if index < 0 or not index.is_integer():
             raise SummaryError(f"{location}: run_index must be a nonnegative integer")
         run_index = int(index)
-    return Run(group, str(source), line, row, dataset, method, privacy, epsilon, delta,
+    return Run(group, str(source), line, dataset, method, privacy, epsilon, delta,
                split, metric, score, canonical(seed) if seed else "", config_id, description,
                row["validation_metric"] if metric == row["metric"] else "", run_index)
 
@@ -318,36 +316,6 @@ def usable_score(run, diagnostics):
     return value
 
 
-def bootstrap_interval(run, diagnostics):
-    text = run.raw.get("test_confidence_intervals", "")
-    payload = object_json(text, f"{run.location}: test_confidence_intervals") if populated(text) else {}
-    metrics = payload.get("metrics", {})
-    if not isinstance(metrics, dict):
-        raise SummaryError(f"{run.location}: CI metrics must be an object")
-    interval = metrics.get(run.metric)
-    if interval is None:
-        diagnostics.warn(f"{run.location}: missing stored bootstrap CI for {run.metric}; retaining point estimate with N/A uncertainty")
-        return None
-    if not isinstance(interval, dict):
-        raise SummaryError(f"{run.location}: bootstrap CI for {run.metric} must be an object")
-    valid = interval.get("valid_resamples")
-    if valid is not None and (not isinstance(valid, int) or isinstance(valid, bool) or valid < 0):
-        raise SummaryError(f"{run.location}: valid_resamples must be a nonnegative integer")
-    if valid == 0 or interval.get("lower") is None or interval.get("upper") is None:
-        diagnostics.warn(f"{run.location}: no usable stored bootstrap CI for {run.metric}; retaining point estimate with N/A uncertainty")
-        return None
-    lower = finite(interval["lower"], f"{run.location}: CI lower")
-    upper = finite(interval["upper"], f"{run.location}: CI upper")
-    if lower > upper:
-        raise SummaryError(f"{run.location}: bootstrap CI lower bound exceeds upper bound")
-    level = payload.get("confidence_level")
-    if level is not None:
-        level = finite(level, f"{run.location}: CI confidence_level")
-        if not 0 < level <= 1:
-            raise SummaryError(f"{run.location}: CI confidence_level must be in (0, 1]")
-    return lower, upper, level
-
-
 def output_row(run, value, n, seeds, sources, validation_value=None):
     return {
         "group": run.group, "dataset": run.dataset, "method": run.method,
@@ -357,7 +325,6 @@ def output_row(run, value, n, seeds, sources, validation_value=None):
         "value": value, "validation_value": validation_value if validation_value is not None else "",
         "_run_index": run.run_index,
         "uncertainty": "N/A", "uncertainty_type": "none",
-        "ci_lower": "", "ci_upper": "", "confidence_level": "",
         "selection": "all", "sources": ";".join(sorted(sources)),
     }
 
@@ -376,17 +343,10 @@ def summarize(runs, seed_mode, diagnostics, require_validation=False):
             validation = None
         scored.append((run, value, validation))
     if not seed_mode:
-        rows = []
-        for run, value, validation in scored:
-            result = output_row(run, value, 1, [run.seed] if run.seed else [], {run.source}, validation)
-            interval = bootstrap_interval(run, diagnostics)
-            if interval is not None:
-                lower, upper, level = interval
-                result.update(uncertainty=max(abs(value - lower), abs(upper - value)),
-                              uncertainty_type="stored_bootstrap_ci", ci_lower=lower,
-                              ci_upper=upper, confidence_level=level if level is not None else "")
-            rows.append(result)
-        return rows
+        return [
+            output_row(run, value, 1, [run.seed] if run.seed else [], {run.source}, validation)
+            for run, value, validation in scored
+        ]
     cells = defaultdict(dict)
     sources = defaultdict(set)
     indices = defaultdict(list)
@@ -470,7 +430,9 @@ def number_display(value):
 def export(rows, outputs, args, diagnostics):
     rows.sort(key=ordering)
     for row in rows:
-        row["display"] = f"{number_display(row['value'])} ± {number_display(row['uncertainty'])}"
+        row["display"] = number_display(row["value"])
+        if args.seed:
+            row["display"] += f" ± {number_display(row['uncertainty'])}"
     for output in outputs:
         output.parent.mkdir(parents=True, exist_ok=True)
     with outputs[0].open("w", newline="", encoding="utf-8") as handle:
@@ -479,31 +441,27 @@ def export(rows, outputs, args, diagnostics):
         writer.writerows({key: row[key] for key in OUTPUT_COLUMNS} for row in rows)
     headers = ["Group", "Dataset / split", "Method", "ε", "δ", "Metric",
                "Test result", "n", "Seeds", "Configuration"]
-    if args.bootstrap:
-        headers.insert(7, "CI level")
     lines = ["# Result summary", "", "| " + " | ".join(headers) + " |",
              "| " + " | ".join("---" for _ in headers) + " |"]
     for row in rows:
         dataset = row["dataset"] + (f" ({row['split']})" if row["split"] else "")
-        radius = number_display(row["uncertainty"])
-        display = f"${number_display(row['value'])} \\pm {radius}$" if radius != "N/A" else f"${number_display(row['value'])} \\pm \\mathrm{{N/A}}$"
+        display = f"${number_display(row['value'])}$"
+        if args.seed:
+            radius = number_display(row["uncertainty"])
+            display = f"${number_display(row['value'])} \\pm {radius}$" if radius != "N/A" else f"${number_display(row['value'])} \\pm \\mathrm{{N/A}}$"
         cells = [row["group"], dataset, row["method"], row["epsilon"], row["delta"] or "—",
                  row["metric"], None, row["n"], row["seeds"] or "—", row["configuration"]]
-        if args.bootstrap:
-            level = row["confidence_level"]
-            cells.insert(7, f"{100 * level:g}%" if isinstance(level, (int, float)) else "N/A")
         escaped = [display if value is None else markdown_cell(value) for value in cells]
         lines.append("| " + " | ".join(escaped) + " |")
     lines.extend(["", "## Interpretation", ""])
     if args.seed:
-        lines.append("- Values are means across unique seeds within one configuration; $\\pm$ is sample standard deviation (ddof=1), not a confidence interval. One seed has N/A SD.")
+        lines.append("- Values are means across unique seeds within one configuration; $\\pm$ is sample standard deviation (ddof=1). One seed has N/A SD.")
         if args.best:
             lines.append("- `--best` selects the configuration with the highest mean TEST score; its own mean, SD, and seeds are retained. Configurations are never pooled.")
     else:
-        lines.append("- Values are the original final-run TEST point estimates. Stored bootstrap CIs are not recomputed or averaged across seeds.")
-        lines.append("- $\\pm$ uses the conservative symmetric envelope radius `max(abs(value - lower), abs(upper - value))`. Original (possibly asymmetric) CI endpoints and confidence levels are preserved in the CSV; the point estimate is never replaced by the CI midpoint.")
+        lines.append("- Values are the original final-run TEST point estimates, without uncertainty.")
         if args.best:
-            lines.append("- `--best` selects the highest TEST-scoring final run across configurations and seeds, retaining exactly that run's stored CI.")
+            lines.append("- `--best` selects the highest TEST-scoring final run across configurations and seeds.")
     lines.append("- Scores remain on their input scale. Different datasets, methods, privacy budgets, splits, metrics, and named groups remain separate.")
     if args.best:
         lines.append("- **TEST-selection bias:** these best-test summaries are optimistically selected and are not validation-selected or unbiased comparisons.")
@@ -518,14 +476,12 @@ def export(rows, outputs, args, diagnostics):
 def parser():
     cli = argparse.ArgumentParser(
         description="Summarize final result CSVs by dataset, method, privacy budget, split, and named hyperparameter regime.",
-        epilog="Bootstrap mode reads stored CIs only. Seed mode averages unique seeds within each configuration and uses sample SD (ddof=1). --best deliberately selects on TEST, not validation: bootstrap chooses one final run and its CI; seed mode chooses the configuration with highest mean test score and retains its mean/SD/seeds. Both selections incur test-selection bias. No intermediate checkpoint is selected by test score.",
+        epilog="By default, report each final-run point estimate without uncertainty. --seed averages unique seeds within each configuration and uses sample SD (ddof=1). --best deliberately selects on TEST, not validation: per-run mode chooses one final run; seed mode chooses the configuration with highest mean test score and retains its mean/SD/seeds. Both selections incur test-selection bias. No intermediate checkpoint is selected by test score.",
     )
     cli.add_argument("files", nargs="*", metavar="CSV_OR_GLOB", help="CSV paths or quoted globs (including recursive **); assigned to group 'default'")
-    mode = cli.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--bootstrap", action="store_true", help="report final-run point estimates with their stored bootstrap CIs")
-    mode.add_argument("--seed", action="store_true", help="mean ± sample SD over unique seed IDs, separately per configuration")
+    cli.add_argument("--seed", action="store_true", help="mean ± sample SD over unique seed IDs, separately per configuration")
     selection = cli.add_mutually_exclusive_group()
-    selection.add_argument("--best", action="store_true", help="select highest TEST score (bootstrap) or configuration mean TEST score (seed); selection bias applies")
+    selection.add_argument("--best", action="store_true", help="select highest final-run TEST score or configuration mean TEST score with --seed; selection bias applies")
     selection.add_argument("--best-validation", action="store_true", help="select by validation score using the same unique seeds as test aggregation; retain the winner's test statistics")
     cli.add_argument("--groups", metavar="FILE.json", help='JSON: {"groups":[{"name":"regime","files":["*.csv"],"where":{"lr":[0.01]}}]}; paths relative to JSON')
     cli.add_argument("--out", required=True, metavar="PREFIX", help="write PREFIX.csv and PREFIX.md")
@@ -537,7 +493,7 @@ def main(argv=None):
     cli = parser()
     args = cli.parse_args(argv)
     diagnostics = Diagnostics()
-    # Python/platform C long limits differ; large CI/config JSON cells are legitimate.
+    # Python/platform C long limits differ; large configuration JSON cells are legitimate.
     limit = sys.maxsize
     while True:
         try:

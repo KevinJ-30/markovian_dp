@@ -12,7 +12,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base_mechanism import BaseMechanism
-from .bootstrap import BootstrapMetrics
 from .layers import PaddedGNNStack, build_conv_stack
 from .objectives import _regression_r2
 
@@ -79,8 +78,7 @@ class RegressionGNNMechanism(BaseMechanism):
         return losses * batch.loss_mask.to(losses.dtype)
 
     @torch.no_grad()
-    def evaluate(self, data=None, *, splits=("train", "val", "test"),
-                 bootstrap: BootstrapMetrics = None) -> Dict[str, float]:
+    def evaluate(self, data=None, *, splits=("train", "val", "test")) -> Dict[str, float]:
         data = data or self.data
         self.eval_mode()
         pred = self.module(data.x, self.eval_edges(data))
@@ -89,6 +87,4 @@ class RegressionGNNMechanism(BaseMechanism):
         for split in splits:
             mask = getattr(data, f"{split}_mask")
             metrics[split] = _regression_r2(pred[mask], target[mask])
-            if split == "test" and bootstrap is not None:
-                bootstrap.update(pred[mask], target[mask])
         return metrics
