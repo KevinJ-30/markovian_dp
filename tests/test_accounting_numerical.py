@@ -1,21 +1,17 @@
 """
 Numerical verification of the dominating pair against the ACTUAL mechanism.
 
-Every other test in this repo assumes Theorem 6.4's pair is correct and checks
-only that we build and compose it faithfully.  This file checks the theorem
-itself: it constructs a real neighbouring graph pair, computes the exact output
-distribution of one SparseGNN update on each, evaluates the hockey-stick
-divergence H_alpha(M_g || M_g') numerically, and asserts
+These checks construct a neighbouring graph pair, compute the output
+distribution of one SparseGNN update on each, and compare the hockey-stick
+divergence to the Gaussian-mixture accounting pair at the tested parameters:
 
-    H_alpha(M_g || M_g')  <=  H_alpha(P || Q)      for every alpha,
-
-which is precisely the claim of Theorem 6.4 (Eq. 48).
+    H_alpha(M_g || M_g')  <=  H_alpha(P || Q).
 
 Construction
 ------------
-The paper names its own worst case (Section 3.0.1): a star with the substituted
-vertex s at the centre and all paths independent.  Orient it for in-expansion
-(Algorithm 5): s -> v_1, ..., s -> v_m, so out-degree K_out = m, and every leaf
+Use a star with the substituted vertex s at the centre and independent paths.
+Orient it for incoming expansion: s -> v_1, ..., s -> v_m, so out-degree
+K_out = m, and every leaf
 has in-degree 1.  A root reaches s in one hop exactly when its single in-edge
 survives, which happens with probability p2 — independently across roots, so the
 "independent paths" condition holds exactly rather than approximately.
@@ -28,7 +24,7 @@ the divergence over all admissible g0.
 The number of contributing roots is then
     J = Bernoulli(p1)                    [the root s itself, always sees s]
         + Binomial(K_out, p1 * p2)       [each leaf: sampled AND edge kept]
-which is exactly the law pi of Eq. (46) at r=1, where q_1 = p2 and n_1 = K_out.
+which gives the affected-root count law at r=1.
 The true mechanism is therefore
     M_g  = sum_k pi_k N(+k, sigma^2),   M_g' = sum_k pi_k N(-k, sigma^2)
 in units of C.  The dominating pair uses the same +/-k centers with the
@@ -94,12 +90,12 @@ def _hockey_stick(alpha, means_p, w_p, means_q, w_q, sigma, span=60.0, n=800_001
 # ── 1. the sampling model matches the real implementation ────────────────────
 
 @pytest.mark.parametrize("p1,p2,K_out", [(0.5, 0.5, 4), (0.3, 0.8, 3)])
-def test_real_expansion_reproduces_the_theorem_sampling_law(p1, p2, K_out):
+def test_real_expansion_reproduces_the_affected_root_sampling_law(p1, p2, K_out):
     """Monte-Carlo the REAL sample_roots/batch_sparse_expand on the star and
     compare the distribution of |{roots whose subgraph contains s}| to the
     analytic law.
 
-    This is what links the theorem's abstraction to the code that actually runs.
+    This links the analytic sampling law to the expansion implementation.
     """
     n_nodes = K_out + 1
     adj = build_adjacency(_star_edges(K_out), n_nodes, direction='in')
@@ -118,7 +114,7 @@ def test_real_expansion_reproduces_the_theorem_sampling_law(p1, p2, K_out):
 
 
 
-# ── 2. the theorem's pair dominates the true mechanism ───────────────────────
+# The accounting pair dominates the star mechanism.
 
 @pytest.mark.parametrize("p1,p2,K_out,sigma", [
     (0.5, 0.5, 4, 1.0),

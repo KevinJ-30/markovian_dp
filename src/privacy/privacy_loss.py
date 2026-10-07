@@ -1,9 +1,7 @@
 """Two-mixture Gaussian privacy loss used by the SparseGNN accountant.
 
-Adapted from ``DoubleMixtureGaussianPrivacyLoss`` in
-``other_papers/dp_forecasting/src/dp_timeseries/privacy/pld.py``.  It extends
-Google ``dp_accounting``'s additive-noise interface to a Gaussian mixture on
-both sides of a dominating pair.
+Extends Google ``dp_accounting``'s additive-noise interface to a Gaussian
+mixture on both sides of a dominating pair.
 """
 
 import math

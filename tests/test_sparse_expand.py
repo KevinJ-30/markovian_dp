@@ -1,5 +1,5 @@
 """
-Tests for incoming SparseExpand (Algorithm 5), root sampling, and SparseGNN.
+Tests for incoming SparseExpand, root sampling, and SparseGNN.
 """
 
 import math
@@ -196,7 +196,7 @@ def test_in_expansion_reaches_backward_neighbours():
 def test_in_expansion_orients_edges_toward_root():
     """In-expansion must deliver neighbour features to the root.
 
-    Under Algorithm 5 every level-1 arc must have the root (local index 0) as
+    Every level-1 arc must have the root (local index 0) as
     its TARGET, so a message-passing layer actually delivers the neighbour's
     features to the root.
     """
@@ -227,7 +227,7 @@ def test_edges_are_real_and_local():
         if sg.num_edges:
             assert int(sg.edge_index.max()) < sg.num_nodes
             # remap to original ids: every retained arc must exist in G with the
-            # SAME orientation it had there (Algorithm 5 line 8).
+            # SAME orientation it had there.
             src = sg.nodes[sg.edge_index[0]]
             dst = sg.nodes[sg.edge_index[1]]
             for u, v in zip(src.tolist(), dst.tolist()):
@@ -287,35 +287,6 @@ def test_root_sampling_expected_count():
 def test_root_sampling_p1_one_returns_all():
     roots = sample_roots(50, 1.0)
     assert roots.tolist() == list(range(50))
-
-
-def test_sparse_gnn_smoke_reduces_loss():
-    from torch_geometric.datasets import Planetoid
-    from src.models.gnn_mechanism import GNNMechanism
-    from src.training.sparse_gnn import train_sparse_gnn
-
-    dataset = Planetoid(root='/tmp/CiteSeer', name='CiteSeer')
-    data = dataset[0]
-    device = torch.device('cpu')
-
-    torch.manual_seed(0)
-    adj = build_adjacency(data.edge_index, int(data.num_nodes), direction='in')
-    mech = GNNMechanism(data, dataset.num_features, dataset.num_classes,
-                        hidden=16, num_layers=2, device=device)
-    mech.build_optimizer(lr=0.01, weight_decay=5e-4, kind='adam')
-
-    cand = torch.where(data.train_mask)[0]
-    # subgraph_loss on a labeled root is a finite scalar
-    root = int(cand[0])
-    sg = sparse_expand(adj, root, p2=1.0, r=2)
-    loss0 = mech.subgraph_loss(sg)
-    assert torch.isfinite(loss0)
-
-    accs = train_sparse_gnn(
-        mech, data, data, adj=adj, p1=1.0, p2=1.0,
-        r=2, T=30, seed=0)
-    # After 30 full-batch steps on CiteSeer, train accuracy should clear chance.
-    assert accs['train'] > 1.0 / dataset.num_classes
 
 
 def test_in_expansion_actually_reaches_the_root_representation():

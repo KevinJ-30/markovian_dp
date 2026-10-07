@@ -1,4 +1,4 @@
-"""Tests for Theorem 5.4 PLD accounting."""
+"""Tests for Gaussian-mixture PLD accounting."""
 
 import math
 
@@ -47,7 +47,7 @@ def test_mixture_weights_p2_zero_is_root_only():
     assert float(weights[2:].sum()) == 0.0
 
 
-def test_double_mixture_maps_to_theorem_pair():
+def test_double_mixture_maps_to_symmetric_gaussian_pair():
     weights = np.array([0.6, 0.3, 0.1])
     support = np.arange(len(weights), dtype=float)
     sigma = 2.5

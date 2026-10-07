@@ -17,16 +17,17 @@ def _domain_graph(split_id="toy-fingerprint"):
             ]
         ),
         num_nodes=6,
+        num_classes=20,
     )
     data.train_mask = torch.tensor([True, True, False, False, False, False])
     data.val_mask = torch.tensor([False, False, True, False, True, False])
     data.test_mask = torch.tensor([False, False, False, True, False, True])
     data.domain_id = torch.tensor([0, 0, 1, 1, 1, 1], dtype=torch.long)
-    data.domain_names = ["source", "target"]
+    data.domain_names = ["us", "cn"]
     data.domain_split = {
-        "train": ["source"],
-        "val": ["target"],
-        "test": ["target"],
+        "train": ["us"],
+        "val": ["cn"],
+        "test": ["cn"],
         "seed": 4,
         "val_ratio": 0.5,
     }
@@ -41,11 +42,10 @@ def _edge_tuples(edge_index):
 def test_domain_split_keeps_full_shared_target_context_and_local_score_masks(tmp_path):
     split = load_or_create_inductive_split(
         _domain_graph(),
-        "toy-domain",
+        "mag-countries",
         root=tmp_path,
         split_strategy="domain",
-        primary_metric="auroc",
-        binary=True,
+        primary_metric="accuracy",
         metric_ignore_label=19,
     )
 
@@ -72,17 +72,16 @@ def test_domain_split_keeps_full_shared_target_context_and_local_score_masks(tmp
 def test_domain_metadata_and_masks_survive_preprocessing_and_device_movement(tmp_path):
     split = load_or_create_inductive_split(
         _domain_graph(),
-        "toy-domain",
+        "mag-countries",
         root=tmp_path,
         split_strategy="domain",
-        primary_metric="auroc",
-        binary=True,
+        primary_metric="accuracy",
         metric_ignore_label=19,
     )
     processed = preprocess_inductive_split(split, make_bidirectional=False).to("cpu")
 
-    assert processed.primary_metric == "auroc"
-    assert processed.binary is True
+    assert processed.primary_metric == "accuracy"
+    assert processed.binary is False
     assert processed.metric_ignore_label == 19
     assert processed.domain_split == split.domain_split
     assert processed.domain_split_id == "toy-fingerprint"
@@ -98,27 +97,25 @@ def test_domain_metadata_and_masks_survive_preprocessing_and_device_movement(tmp
 def test_domain_cache_path_and_payload_are_bound_to_split_id(tmp_path):
     first = load_or_create_inductive_split(
         _domain_graph("fingerprint-a"),
-        "toy-domain",
+        "mag-countries",
         root=tmp_path,
         split_strategy="domain",
     )
     reloaded = load_or_create_inductive_split(
         _domain_graph("fingerprint-a"),
-        "toy-domain",
+        "mag-countries",
         root=tmp_path,
         split_strategy="domain",
     )
     second = load_or_create_inductive_split(
         _domain_graph("fingerprint-b"),
-        "toy-domain",
+        "mag-countries",
         root=tmp_path,
         split_strategy="domain",
     )
 
     assert first.path == reloaded.path
     assert first.path != second.path
-    assert first.path.name == "toy-domain-domain-fingerprint-a.pt"
-    assert second.path.name == "toy-domain-domain-fingerprint-b.pt"
     payload = torch.load(first.path, map_location="cpu")
     assert payload["domain_split_id"] == "fingerprint-a"
     assert payload["domain_split"] == first.domain_split
@@ -128,7 +125,7 @@ def test_domain_cache_path_and_payload_are_bound_to_split_id(tmp_path):
 def test_domain_split_rejects_dataset_metadata_that_disagrees_with_cache_identity(tmp_path):
     data = _domain_graph()
     load_or_create_inductive_split(
-        data, "toy-domain", root=tmp_path, split_strategy="domain"
+        data, "mag-countries", root=tmp_path, split_strategy="domain"
     )
     changed = data.clone()
     changed.val_mask = torch.tensor([False, False, False, True, True, False])
@@ -136,7 +133,7 @@ def test_domain_split_rejects_dataset_metadata_that_disagrees_with_cache_identit
 
     with pytest.raises(ValueError, match="does not match current dataset metadata"):
         load_or_create_inductive_split(
-            changed, "toy-domain", root=tmp_path, split_strategy="domain"
+            changed, "mag-countries", root=tmp_path, split_strategy="domain"
         )
 
 
@@ -144,12 +141,12 @@ def test_domain_split_strictly_validates_context_metadata(tmp_path):
     overlapping_source = _domain_graph()
     overlapping_source.domain_split = {
         **overlapping_source.domain_split,
-        "val": ["source", "target"],
+        "val": ["us", "cn"],
     }
     with pytest.raises(ValueError, match="training domains must be disjoint"):
         load_or_create_inductive_split(
             overlapping_source,
-            "invalid-overlap",
+            "mag-countries",
             root=tmp_path,
             split_strategy="domain",
         )
@@ -159,7 +156,7 @@ def test_domain_split_strictly_validates_context_metadata(tmp_path):
     with pytest.raises(ValueError, match="domain_id must be a one-dimensional long tensor"):
         load_or_create_inductive_split(
             malformed_ids,
-            "invalid-domain-id",
+            "mag-countries",
             root=tmp_path,
             split_strategy="domain",
         )

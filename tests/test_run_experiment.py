@@ -115,7 +115,7 @@ def forbidden(*args, **kwargs):
 pathlib.Path.exists = pathlib.Path.stat = pathlib.Path.mkdir = forbidden
 worker.shutil.which = forbidden
 values = worker.normalize_parameters({
-    'dataset': 'facebook100-gender', 'method': 'progap', 'epsilon': 8,
+    'dataset': 'facebook100-year', 'method': 'progap', 'epsilon': 8,
     'lr': .01, 'batch_size': 32, 'epochs': 1, 'split_root': 'no-such-cache',
     'progap_python': 'not-installed-python',
     'domain_split': {'train': ['caltech36'], 'val': ['cornell5'], 'test': ['penn94']},
@@ -131,66 +131,65 @@ print(json.dumps(values))
 
 
 @pytest.mark.parametrize("split", [
-    [], {"unknown": 1}, {"train": ["de"]},
-    {"train": "de", "val": ["engb"], "test": ["es"]},
-    {"train": ["de", "de"], "val": ["engb"], "test": ["es"]},
-    {"train": ["de"], "val": ["de"], "test": ["es"]},
+    [], {"unknown": 1}, {"train": ["us"]},
+    {"train": "us", "val": ["cn"], "test": ["de"]},
+    {"train": ["us", "us"], "val": ["cn"], "test": ["de"]},
+    {"train": ["us"], "val": ["us"], "test": ["de"]},
     {"seed": True}, {"val_ratio": float("nan")}, {"val_ratio": 1},
 ])
 def test_invalid_domain_split_structure_is_rejected_without_loading(split):
     with pytest.raises(ValueError):
-        worker.normalize_parameters(_parameters(dataset="twitch-explicit", domain_split=split))
+        worker.normalize_parameters(_parameters(dataset="mag-countries", domain_split=split))
 
 
 def test_custom_domains_cannot_replace_named_presets_or_nondomain_data():
-    split = {"train": ["de"], "val": ["engb"], "test": ["es"]}
-    for dataset in ("twitch-allbut2", "fb100-gender-3", "flickr"):
+    split = {"train": ["us"], "val": ["cn"], "test": ["de"]}
+    for dataset in ("mag-allbut2", "fb100-year-6", "ogbn-arxiv"):
         with pytest.raises(ValueError, match="domain_split"):
             worker.normalize_parameters(_parameters(dataset=dataset, domain_split=split))
 
 
 def test_custom_domain_loading_validates_membership_before_data_access(tmp_path):
-    split = {"train": ["missing-domain"], "val": ["engb"], "test": ["es"]}
-    with pytest.raises(ValueError, match="Unknown twitch-explicit domain"):
-        worker._load_split("twitch-explicit", tmp_path, split)
+    split = {"train": ["missing-domain"], "val": ["cn"], "test": ["de"]}
+    with pytest.raises(ValueError, match="Unknown mag-countries domain"):
+        worker._load_split("mag-countries", tmp_path, split)
 
 
 def test_custom_domain_split_builds_separate_graphs_and_preserves_metadata(tmp_path, monkeypatch):
+    import numpy as np
+    import scipy.sparse as sp
+    from scipy.io import savemat
     from src.data import datasets
-    from src.data.domain_datasets import normalize_domain_split
+    from src.data.domain_datasets import FB100_FILES, FB100_YEAR_CLASSES, normalize_domain_split
 
     raw = tmp_path / "raw"
-    for index, domain in enumerate(("de", "engb", "es")):
-        folder = raw / domain.upper()
-        folder.mkdir(parents=True)
-        prefix = "musae_" + domain.upper()
-        (folder / f"{prefix}_target.csv").write_text(
-            "id,days,mature,views,partner,new_id\n"
-            "100,1,False,1,False,0\n101,1,True,1,False,1\n")
-        (folder / f"{prefix}_edges.csv").write_text("from,to\n0,1\n")
-        (folder / f"{prefix}_features.json").write_text(json.dumps({"0": [index], "1": [index + 3]}))
+    raw.mkdir()
+    for index, filename in enumerate(FB100_FILES.values()):
+        info = np.array([[index + 1, 1, 2, 3, 4, year, 5] for year in FB100_YEAR_CLASSES])
+        adjacency = sp.csr_matrix(
+            (np.ones(6), (np.arange(6), np.roll(np.arange(6), -1))), shape=(6, 6))
+        savemat(raw / filename, {"A": adjacency, "local_info": info})
     original_load = datasets.load_dataset
     monkeypatch.setattr(datasets, "load_dataset", lambda *args, **kwargs:
                         original_load(*args, **kwargs, root=raw))
-    requested = {"train": ["es"], "val": ["de"], "test": ["engb"], "seed": 17, "val_ratio": 0.3}
-    dataset, split, task, strategy = worker._load_split("twitch-explicit", tmp_path / "splits", requested)
-    expected, split_id = normalize_domain_split("twitch-explicit", requested)
-    assert dataset == "twitch-explicit" and strategy == "domain"
-    assert task["binary"] and task["primary_metric"] == "auroc"
+    requested = {"train": ["cornell5"], "val": ["penn94"], "test": ["amherst41"],
+                 "seed": 17, "val_ratio": 0.3}
+    dataset, split, task, strategy = worker._load_split("facebook100-year", tmp_path / "splits", requested)
+    expected, split_id = normalize_domain_split("facebook100-year", requested)
+    assert dataset == "facebook100-year" and strategy == "domain"
+    assert not task["binary"] and task["primary_metric"] == "accuracy"
     assert split.domain_split == expected and split.domain_split_id == split_id
-    assert split.train.node_ids.tolist() == [4, 5]
-    assert split.val.node_ids.tolist() == [0, 1]
-    assert split.test.node_ids.tolist() == [2, 3]
+    assert split.train.node_ids.tolist() == list(range(12, 18))
+    assert split.val.node_ids.tolist() == list(range(6))
+    assert split.test.node_ids.tolist() == list(range(6, 12))
     for partition in (split.train, split.val, split.test):
-        assert partition.data.num_nodes == 2
-        assert partition.data.edge_index.max().item() == 1
-        assert partition.eval_mask.tolist() == [True, True]
+        assert partition.data.num_nodes == 6
+        assert partition.data.edge_index.max().item() == 5
+        assert partition.eval_mask.tolist() == [True] * 6
 
 
 @pytest.mark.parametrize("protocol,canonical,train", [
-    ("twitch-allbut2", "twitch-explicit", {"de", "fr", "ptbr", "ru", "tw"}),
     ("mag-allbut2", "mag-countries", {"us", "fr", "ru", "jp"}),
-    ("fb100-gender-3", "facebook100-gender", {"johns-hopkins55", "caltech36", "amherst41"}),
     ("fb100-year-6", "facebook100-year",
      {"johns-hopkins55", "caltech36", "amherst41", "reed98", "brandeis99", "princeton12"}),
 ])
@@ -199,23 +198,6 @@ def test_named_protocols_preserve_domain_membership(protocol, canonical, train):
     assert dataset == canonical
     assert set(roles["train"]) == train
     assert not (train & (set(roles["val"]) | set(roles["test"])))
-
-
-def test_allbuttwo_facebook_protocol_preserves_held_out_schools():
-    from src.data.domain_datasets import FB100_DOMAINS
-
-    dataset, roles = worker._protocol("fb100-gender-16")
-    assert dataset == "facebook100-gender"
-    assert roles["val"] == ["cornell5"] and roles["test"] == ["penn94"]
-    assert set(roles["train"]) == set(FB100_DOMAINS) - {"cornell5", "penn94"}
-
-
-@pytest.mark.parametrize("dataset", ["facebook100", "facebook100-allbut2", "fb100-gender-1"])
-def test_retired_facebook_task_or_preset_is_rejected(dataset, tmp_path):
-    split_root = tmp_path / "splits"
-    with pytest.raises(ValueError):
-        worker._load_split(dataset, split_root)
-    assert not split_root.exists()
 
 
 def test_worker_occupied_output_is_untouched(tmp_path):

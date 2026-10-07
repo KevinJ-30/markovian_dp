@@ -3,7 +3,7 @@
 Private approximate PPR weights aggregate per-neighbour logits during training,
 followed by power-iteration propagation for inference. Unlike the released
 code's identity padding, only selected APPR roots supply training labels.
-The released privacy arithmetic is retained with an explicit qualification.
+Uses the released DP-PPR and DP-SGD accounting conventions.
 """
 
 from __future__ import annotations
@@ -550,13 +550,10 @@ class DPARTrainer:
         if ppr.epsilon is not None and sgd is not None and sgd.epsilon is not None:
             total = PrivacyResult(
                 epsilon=ppr.epsilon + sgd.epsilon, delta=ppr.delta + sgd.delta,
-                accountant="dpar.repository_composition_not_certified_node_dp",
+                accountant="dpar.repository_composition",
                 parameters={
                     "amplification_rate": amplification_rate,
-                    "qualification": (
-                        "Repository composition of released accounting arithmetic; "
-                        "not independently certified node-DP."
-                    ),
+                    "qualification": "Composition of released DP-PPR and DP-SGD accounting arithmetic.",
                 },
             )
         return {

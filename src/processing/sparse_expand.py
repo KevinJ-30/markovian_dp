@@ -10,9 +10,9 @@ arcs uniformly without replacement.
 An arc joins E_v before the "already visited" test, so E_v may contain arcs into
 already-discovered vertices.
 
-Capped Algorithm 5 traverses incoming arcs (w, u) and keeps their original
+The expansion traverses incoming arcs (w, u) and keeps their original
 orientation, so messages flow toward the root. Its accounting shell size is
-n_d = K_out^d (Eq. 44).
+n_d = K_out^d.
 """
 
 import math
@@ -140,7 +140,7 @@ def sparse_expand(
     r: int,
     generator: torch.Generator = None,
 ) -> RootedSubgraph:
-    """SparseExpand: randomized incoming rooted expansion (Algorithm 5).
+    """SparseExpand: randomized incoming rooted expansion.
 
     Args:
         adj:       incoming neighbour lists from `build_adjacency`.
@@ -174,8 +174,7 @@ def sparse_expand(
                 kept_neighbors = neighbors[keep].tolist()
             u_local = visited[u]
             for w in kept_neighbors:
-                # Add the edge regardless of whether w is new (Alg 5 line 8
-                # precedes the membership test on line 9).
+                # Add the edge regardless of whether w is new.
                 if w not in visited:
                     visited[w] = len(nodes_order)
                     nodes_order.append(w)

@@ -6,8 +6,7 @@ sparsified subgraph, reading off the root's output — but the label of a root i
 a 0/1 vector rather than a class index, so the per-root loss is
 `binary_cross_entropy_with_logits` and the reported metric is micro-F1.
 
-Use this mechanism for multilabel datasets such as GraphSAINT PPI-large
-(121 binary labels per node).
+Use this mechanism for multilabel datasets such as GraphSAINT Yelp and Amazon.
 """
 
 from typing import Dict

@@ -1,9 +1,9 @@
 """
-Algorithm 1: SparseGNN — the model-agnostic training engine.
+SparseGNN — the model-agnostic training engine.
 
     for t = 1..T:
         V_root <- { v : B_v = 1 },  B_v ~ Bernoulli(p1)          (root sampling)
-        S_t    <- { SparseExpand(G, v, p2, r) : v in V_root }    (Algorithm 5)
+        S_t    <- { SparseExpand(G, v, p2, r) : v in V_root }
         theta  <- Alg(theta, S_t)                                (Alg adds noise)
 
 `Alg` is realized here in two modes:

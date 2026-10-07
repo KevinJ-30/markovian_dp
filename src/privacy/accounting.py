@@ -1,4 +1,4 @@
-"""Theorem 5.4 substitution accounting for SparseGNN.
+"""Gaussian-mixture substitution accounting for SparseGNN.
 
 For in-expansion, let ``pi`` be the law of the number of affected sampled
 rooted subgraphs.  The one-step mechanism is dominated by

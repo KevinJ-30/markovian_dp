@@ -1,5 +1,5 @@
 """
-Unified dataset loading for Planetoid, OGB, and PyG benchmark datasets.
+Unified dataset loading for OGB, GraphSAINT, and domain-disjoint benchmarks.
 """
 
 import os
@@ -8,7 +8,6 @@ from pathlib import Path
 
 import torch
 from torch_geometric.data import Data
-from torch_geometric.datasets import Planetoid
 
 from src.processing.cache import cache_access_lock, cache_creation_lock
 
@@ -25,48 +24,16 @@ def _cached_pyg_dataset(dataset_class, cache_root, required_files, **kwargs):
         return dataset_class(**kwargs)
 
 
-def _download_dataset_file(url, path):
-    """Acquire standalone raw files without exposing a downloader's partial file."""
-    from torch_geometric.data import download_url
-
-    path = Path(path)
-    with cache_creation_lock(path):
-        if not path.exists():
-            with tempfile.TemporaryDirectory(
-                    prefix=f".{path.name}.", dir=path.parent) as temporary:
-                downloaded = download_url(url, temporary)
-                os.replace(downloaded, path)
-
-
 SUPPORTED_DATASETS = {
-    # Planetoid (transductive node classification)
-    'cora': 'Cora',
-    'cora-ml': 'Cora-ML',
-    'citeseer': 'CiteSeer',
-    'pubmed': 'PubMed',
     # OGB node classification
     'ogbn-products': 'ogbn-products',
     'ogbn-arxiv': 'ogbn-arxiv',
-    # PyG Reddit (large transductive node classification)
-    'reddit': 'Reddit',
-    # Inductive node classification benchmarks
-    'flickr': 'Flickr',
-    # GAP/ProGAP's Facebook: the UIllinois20 FB100 network, year label filtered
-    # to classes with >=1000 nodes.  For head-to-head comparison with those
-    # papers on a dataset where the graph actually carries signal.
-    'facebook': 'Facebook',
     # Provenance-specific domain-disjoint node-classification benchmarks.
-    'twitch-explicit': 'Twitch-Explicit',
-    'facebook100-gender': 'Facebook100-Gender',
     'facebook100-year': 'Facebook100-Year',
     'mag-countries': 'MAG-Countries',
     # GraphSAINT benchmark graphs (Zeng et al., ICLR 2020), loaded from the
     # authors' released files under their inductive protocol.  Shorthands for
-    # the generic form `graphsaint:<name>`.  NOTE these are NOT the same graphs
-    # as the bare 'reddit' / 'flickr' keys above, which are PyG's
-    # versions -- GraphSAINT's Reddit is ~5x sparser and splits differ.
-    'ppi-large': 'graphsaint:ppi-large',
-    'saint-flickr': 'graphsaint:flickr',
+    # the generic form `graphsaint:<name>`.
     'saint-reddit': 'graphsaint:reddit',
     'saint-yelp': 'graphsaint:yelp',
     'saint-amazon': 'graphsaint:amazon',
@@ -157,8 +124,6 @@ class _SimpleDataset:
 GRAPHSAINT_DATASETS = {
     # name -> (is_multilabel, human note).  Statistics are GraphSAINT Table 1,
     # reproduced exactly by this loader (see _load_graphsaint's docstring).
-    'ppi-large': (True,  '56,944 nodes / 818,716 edges / 50 feat / 121 labels'),
-    'flickr':    (False, '89,250 nodes / 899,756 edges / 500 feat / 7 classes'),
     'reddit':    (False, '232,965 nodes / 11,606,919 edges / 602 feat / 41 classes'),
     'yelp':      (True,  '716,847 nodes / 6,977,410 edges / 300 feat / 100 labels'),
     'amazon':    (True,  '1,598,960 nodes / 132,169,734 edges / 200 feat / 107 labels'),
@@ -195,12 +160,9 @@ def _load_graphsaint(name, root=None):
       * BINARIZE.  The stored matrices hold 1/deg, not 1 -- they are the
         row-normalized adjacency, which is also why `A != A.T` before
         binarizing.  After binarizing they are exactly symmetric.
-      * DROP SELF-LOOPS.  PPI-large carries 25,084 of them.  The paper's "Edges"
-        column counts them: 793,632 undirected edges + 25,084 self-loops =
-        818,716, its stated figure.  Reddit has none, and its 23,213,838 arcs
-        are exactly 2 x 11,606,919.  We drop them because the accounting counts
-        paths in a simple graph and degree capping would otherwise spend a node's
-        budget on an arc to itself.
+      * DROP SELF-LOOPS.  The accounting counts paths in a simple graph and
+        degree capping would otherwise spend a node's budget on an arc to
+        itself. Reddit's 23,213,838 arcs are exactly 2 x 11,606,919 edges.
       * STANDARDIZE FEATURES.  Match GraphSAINT's loader by fitting a
         StandardScaler on nodes present in the training adjacency and applying
         it to every split.
@@ -313,152 +275,6 @@ def _graphsaint_labels(directory, num_nodes, multilabel):
     return labels if labels is not None else torch.load(cache)
 
 
-def _load_cora_ml():
-    """Load the Cora-ML sparse graph distributed with DPAR.
-
-    The upstream archive is intentionally used rather than silently substituting
-    Planetoid Cora, which is a different graph and feature matrix.
-    """
-    import numpy as np
-    import scipy.sparse as sp
-
-    root = os.environ.get('CORA_ML_DATA_ROOT', 'data/cora_ml')
-    os.makedirs(root, exist_ok=True)
-    path = os.path.join(root, 'cora_ml.npz')
-    _download_dataset_file(
-        'https://raw.githubusercontent.com/Emory-AIMS/DPAR/'
-        'b31f371522af8a5142f4c6b34f712cff30623b31/data/cora_ml.npz', path)
-    with np.load(path, allow_pickle=True) as archive:
-        raw = dict(archive)
-
-    def csr(prefix):
-        for separator in ('.', '_'):
-            key = f'{prefix}{separator}data'
-            if key in raw:
-                return sp.csr_matrix((raw[key], raw[f'{prefix}{separator}indices'],
-                                      raw[f'{prefix}{separator}indptr']),
-                                     shape=raw[f'{prefix}{separator}shape'])
-        raise KeyError(f'Cora-ML archive lacks {prefix} CSR fields')
-
-    adjacency = csr('adj_matrix') if 'adj_matrix.data' in raw or 'adj_matrix_data' in raw else csr('adj')
-    attributes = csr('attr_matrix') if 'attr_matrix.data' in raw or 'attr_matrix_data' in raw else csr('attr')
-    labels = torch.from_numpy(raw['labels']).long()
-    coo = adjacency.tocoo()
-    data = Data(x=torch.from_numpy(attributes.toarray()).float(), y=labels,
-                edge_index=torch.from_numpy(np.vstack((coo.row, coo.col))).long())
-    return _SimpleDataset(data, int(data.x.size(1)), int(labels.max()) + 1), data
-
-
-def _load_facebook(name='UIllinois20', target='year', min_count=1000,
-                   val_ratio=0.10, test_ratio=0.15, seed=0):
-    """GAP/ProGAP's Facebook: one FB100 university network, node classification.
-
-    Replicates core/datasets/facebook.py + its pre_transform in the ProGAP repo
-    (github.com/sisaman/ProGAP):
-
-      * download <name>.mat from sisaman/pyg-datasets (features in `local_info`,
-        adjacency in `A`);
-      * label y = `target` column (default 'year'); one-hot the other five
-        categorical attributes as features, treating value 0 as missing;
-      * split 75/val/test at random over ALL nodes, THEN keep only classes with
-        >= `min_count` members and drop the rest (FilterClassByCount), which is
-        what reduces UIllinois20's years to ~6 classes / ~26k nodes;
-      * remove self-loops and isolated nodes.
-
-    The D=100 degree bound is NOT applied here — it is a training-time cap,
-    matched by `--K_out 100` in the SparseGNN pipeline.
-
-    The split is random (their protocol), not their exact split; they report a
-    mean over random splits, so a fixed-seed 75/10/15 split is comparable.
-    """
-    import ssl
-    import numpy as np
-    import pandas as pd
-    from scipy.io import loadmat
-    from torch_geometric.utils import subgraph
-
-    targets = ['status', 'gender', 'major', 'minor', 'housing', 'year']
-    root = os.environ.get('FACEBOOK_DATA_ROOT', 'data/facebook100')
-    os.makedirs(root, exist_ok=True)
-    mat_path = os.path.join(root, f'{name}.mat')
-    if not os.path.exists(mat_path):
-        ctx = ssl._create_default_https_context
-        ssl._create_default_https_context = ssl._create_unverified_context
-        try:
-            _download_dataset_file(
-                'https://github.com/sisaman/pyg-datasets/raw/main/'
-                f'datasets/facebook100/{name}.mat', mat_path)
-        finally:
-            ssl._create_default_https_context = ctx
-
-    mat = loadmat(mat_path)
-    feats = pd.DataFrame(mat['local_info'][:, :-1], columns=targets)
-
-    # label: LabelEncoder == sorted-unique codes; shift to 0-based if 0 present.
-    y_codes = pd.Categorical(feats[target]).codes.astype(np.int64)
-    y = torch.from_numpy(y_codes)
-    if (feats[target] == 0).any():
-        y = y - 1
-
-    # features: one-hot the other attributes, value 0 -> missing (no column).
-    x_df = feats.drop(columns=target).replace({0: None})
-    x = torch.tensor(pd.get_dummies(x_df).values, dtype=torch.float)
-
-    from torch_geometric.utils import from_scipy_sparse_matrix
-    edge_index = from_scipy_sparse_matrix(mat['A'])[0]
-
-    # drop unlabeled, relabel
-    keep = y >= 0
-    edge_index, _ = subgraph(keep, edge_index, relabel_nodes=True,
-                             num_nodes=len(y))
-    x, y = x[keep], y[keep]
-    n = int(y.numel())
-
-    # 75/10/15 random split over all nodes (their RandomNodeSplit order: before
-    # the class filter).
-    g = torch.Generator().manual_seed(seed)
-    perm = torch.randperm(n, generator=g)
-    n_val, n_test = int(val_ratio * n), int(test_ratio * n)
-    val_mask = torch.zeros(n, dtype=torch.bool)
-    test_mask = torch.zeros(n, dtype=torch.bool)
-    train_mask = torch.zeros(n, dtype=torch.bool)
-    test_mask[perm[:n_test]] = True
-    val_mask[perm[n_test:n_test + n_val]] = True
-    train_mask[perm[n_test + n_val:]] = True
-
-    # FilterClassByCount(min_count, remove_unlabeled=True): keep classes with
-    # >= min_count members, drop the rest, relabel classes to 0..C-1.
-    onehot = torch.nn.functional.one_hot(y)
-    counts = onehot.sum(0)
-    onehot = onehot[:, counts >= min_count]
-    row_keep = onehot.sum(1).bool()
-    y = onehot.argmax(1)
-    idx = torch.where(row_keep)[0]
-    edge_index, _ = subgraph(row_keep, edge_index, relabel_nodes=True,
-                             num_nodes=n)
-    x, y = x[row_keep], y[row_keep]
-    train_mask, val_mask, test_mask = (train_mask[row_keep], val_mask[row_keep],
-                                       test_mask[row_keep])
-
-    # remove self-loops, then isolated nodes
-    sl = edge_index[0] != edge_index[1]
-    edge_index = edge_index[:, sl]
-    deg = torch.zeros(int(y.numel()), dtype=torch.long)
-    deg.index_add_(0, edge_index[0], torch.ones(edge_index.size(1), dtype=torch.long))
-    deg.index_add_(0, edge_index[1], torch.ones(edge_index.size(1), dtype=torch.long))
-    not_iso = deg > 0
-    edge_index, _ = subgraph(not_iso, edge_index, relabel_nodes=True,
-                             num_nodes=int(y.numel()))
-    x, y = x[not_iso], y[not_iso]
-    train_mask, val_mask, test_mask = (train_mask[not_iso], val_mask[not_iso],
-                                       test_mask[not_iso])
-
-    data = Data(x=x, y=y, edge_index=edge_index)
-    data.train_mask, data.val_mask, data.test_mask = train_mask, val_mask, test_mask
-    num_classes = int(y.max()) + 1
-    return _SimpleDataset(data, int(x.size(1)), num_classes), data
-
-
 def load_dataset(name, device='cpu', domain_split=None, *, root=None):
     """
     Load a dataset by name.
@@ -485,9 +301,7 @@ def load_dataset(name, device='cpu', domain_split=None, *, root=None):
     if domain_split is not None:
         raise ValueError(
             f"domain_split is only supported for domain datasets, not '{name}'")
-    # GraphSAINT graphs are named graphsaint:<name>.  Deliberately NOT folded
-    # into the bare 'reddit'/'flickr' keys: those are the PyG versions, which are
-    # different graphs with different splits (see _load_graphsaint).
+    # GraphSAINT graphs use provenance-specific aliases or graphsaint:<name>.
     if isinstance(spec, str) and spec.startswith('graphsaint:'):
         dataset, data = _load_graphsaint(
             spec.split(':', 1)[1], root=root)
@@ -497,48 +311,5 @@ def load_dataset(name, device='cpu', domain_split=None, *, root=None):
         raise ValueError(f"Unknown dataset '{name}'. Supported: "
                          f"{list(SUPPORTED_DATASETS.keys())} or "
                          f"graphsaint:<name>")
-    if key == 'cora-ml':
-        dataset, data = _load_cora_ml()
-        return dataset, data.to(device)
-
-    if key in ('ogbn-products', 'ogbn-arxiv'):
-        dataset, data = _load_ogb_node(key)
-        data = data.to(device)
-        return dataset, data
-
-    if key == 'reddit':
-        from torch_geometric.datasets import Reddit
-        root = os.environ.get('REDDIT_DATA_ROOT', 'data/Reddit')
-        dataset = _cached_pyg_dataset(
-            Reddit, root,
-            ('processed/data.pt', 'raw/reddit_data.npz', 'raw/reddit_graph.npz'),
-            root=root)
-        data = dataset[0].to(device)
-        return dataset, data
-
-    if key == 'flickr':
-        # Single graph with native train/val/test masks for inductive partitioning.
-        from torch_geometric.datasets import Flickr
-        root = os.environ.get('FLICKR_DATA_ROOT', 'data/Flickr')
-        dataset = _cached_pyg_dataset(
-            Flickr, root,
-            ('processed/data.pt', 'raw/adj_full.npz', 'raw/feats.npy',
-             'raw/class_map.json', 'raw/role.json'),
-            root=root)
-        data = dataset[0].to(device)
-        return dataset, data
-
-    if key == 'facebook':
-        dataset, data = _load_facebook()
-        data = data.to(device)
-        return dataset, data
-
-    canonical = SUPPORTED_DATASETS[key]
-    dataset = _cached_pyg_dataset(
-        Planetoid, Path(f'/tmp/{canonical}') / canonical,
-        ('processed/data.pt',) + tuple(
-            f'raw/ind.{canonical.lower()}.{suffix}'
-            for suffix in ('x', 'tx', 'allx', 'y', 'ty', 'ally', 'graph', 'test.index')),
-        root=f'/tmp/{canonical}', name=canonical)
-    data = dataset[0].to(device)
-    return dataset, data
+    dataset, data = _load_ogb_node(key)
+    return dataset, data.to(device)

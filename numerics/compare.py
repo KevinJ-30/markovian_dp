@@ -17,7 +17,7 @@ Group privacy:
 
 This is just our pair with p2=1; see our main paper for more details.
 
-Daigavane et al., Theorem 1: https://arxiv.org/abs/2111.15521
+Daigavane et al. RDP bound: https://arxiv.org/abs/2111.15521
     H ~ Hypergeometric(N, M, m), with m/N = p1,
     R_alpha = log E exp(2*alpha*(alpha-1)*H**2/sigma**2) / (alpha-1).
 This is also the Renyi divergence of the count-revealing joint Gaussian pair
@@ -69,7 +69,7 @@ def methods(args):
 
 
 def daigavane_rdp(population, batch_size, max_terms, sigma, orders=ORDERS):
-    """Theorem 1, with C=1 and actual noise standard deviation sigma."""
+    """Daigavane RDP bound with C=1 and actual noise standard deviation sigma."""
     counts = np.arange(max(0, batch_size - (population - max_terms)),
                        min(max_terms, batch_size) + 1)
     log_probs = hypergeom.logpmf(counts, population, max_terms, batch_size)

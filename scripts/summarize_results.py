@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Summarize final CSV results without importing the training environment."""
+"""Summarize completed run_experiment.py CSVs without the training environment.
+
+Use the runner's explicit identities and parameters object; each row is final.
+"""
 
 import argparse
 import csv
@@ -9,7 +12,6 @@ import json
 import math
 import os
 from pathlib import Path
-import re
 import statistics
 import sys
 from collections import defaultdict
@@ -18,45 +20,23 @@ from decimal import Decimal, InvalidOperation
 
 
 METRICS = ("accuracy", "auroc", "micro_f1", "r2", "macro_f1")
-METRIC_COLUMNS = {
-    "accuracy": ("test_accuracy",),
-    "auroc": ("test_auroc", "test_auc"),
-    "micro_f1": ("test_micro_f1", "test_f1_micro"),
-    "r2": ("test_r2",),
-    "macro_f1": ("test_macro_f1", "test_f1_macro"),
+METHOD_NAMES = {
+    "mlp": "MLP", "graphsage": "GraphSAGE", "gin": "GIN", "dp_mlp": "DP-MLP",
+    "progap": "ProGAP", "dpar": "DPAR",
+    "dp_gnn_sage": "DP-GNN-SAGE", "dp_gnn_gin": "DP-GNN-GIN",
+    "sparse_sage": "SparseGNN-SAGE", "sparse_gin": "SparseGNN-GIN",
 }
-ALIASES = {
-    "lr": "lr", "learning_rate": "lr",
-    "hidden": "hidden", "hidden_size": "hidden", "hidden_dim": "hidden",
-    "latent_size": "hidden", "L": "layers", "layers": "layers",
-    "num_layers": "layers", "T": "steps", "steps": "steps",
-    "epochs": "epochs", "epochs_per_stage": "epochs",
-    "depth": "depth", "stages": "stages",
-    "sigma": "sigma", "noise_multiplier": "sigma",
-    "clip": "clip", "clip_norm": "clip", "max_grad_norm": "clip",
+REQUIRED_COLUMNS = {
+    "protocol", "method", "dp", "target_epsilon", "target_delta", "metric",
+    "seed", "parameters", "status", "test_metric", "validation_metric",
+    "split", "domain_split", "domain_split_id",
 }
-CONFIG_COLUMNS = set(ALIASES) | {
-    "batch_size", "p1", "p2", "r", "dropout", "weight_decay", "optimizer",
-    "momentum", "K_in", "K_out", "cap_mode", "direction", "fanouts",
-    "fanout", "activation", "heads", "num_heads", "normalize", "residual",
-    "batch_norm", "layer_norm", "sampling_rate", "sample_rate", "q",
-    "train_batch_size", "eval_batch_size", "max_degree", "degree_bound",
-    "num_neighbors", "aggregation", "aggr", "architecture", "legacy_shells",
-    "epsilon_split", "epsilon_agg", "epsilon_train", "delta_agg", "delta_train",
-    "aggregation_steps", "num_stages", "patience", "min_delta",
-    "selection_metric", "selection_evaluate_every", "evaluate_every",
-}
+# The runner's parameters object is the hyperparameter identity. Replicate
+# seeds and calibration diagnostics must not split a multi-seed configuration.
 IGNORED_PARAMETERS = {
-    "seed", "seeds", "cap_seed", "bootstrap_seed", "step", "epoch",
-    "dataset", "protocol", "method", "model", "family", "dp", "private",
-    "is_private", "is_dp", "metric", "primary_metric", "domain_split",
-    "domain_split_id", "split", "split_id", "target_epsilon", "epsilon_target",
-    "epsilon", "calibrated_epsilon", "actual_epsilon", "epsilon_estimate",
-    "epsilon_context", "target_delta", "delta", "status", "accepted",
-    "selection", "test_confidence_intervals", "K_in_achieved", "K_out_achieved",
-    "noise_std", "noise_variance", "calibration_evaluations", "accounting_grid",
-    "calibration_rtol", "calibration_atol", "output", "out", "output_dir",
-    "device", "num_workers", "completed_epochs", "updates_completed",
+    "seed", "cap_seed", "bootstrap_seed", "method", "target_epsilon",
+    "target_delta", "delta", "K_in_achieved", "K_out_achieved",
+    "accounting_grid", "calibration_rtol", "calibration_atol", "sigma", "noise_multiplier",
 }
 OUTPUT_COLUMNS = [
     "group", "dataset", "method", "privacy", "epsilon", "delta", "split",
@@ -86,12 +66,8 @@ def populated(value):
     return value is not None and str(value).strip() != ""
 
 
-def first(row, *keys):
-    return next((row[k] for k in keys if populated(row.get(k))), "")
-
-
 def canonical(value):
-    """Comparable text for numeric aliases, seeds, and raw-column filters."""
+    """Comparable text for numeric settings, seeds, and raw-column filters."""
     if isinstance(value, (dict, list)):
         return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     text = str(value).strip()
@@ -111,9 +87,9 @@ def canonical(value):
 
 def flag(value, location):
     text = str(value).strip().lower()
-    if text in {"true", "1", "yes", "y", "private", "dp"}:
+    if text == "true":
         return True
-    if text in {"false", "0", "no", "n", "nonprivate", "non-private"}:
+    if text == "false":
         return False
     raise SummaryError(f"{location}: expected a boolean, got {value!r}")
 
@@ -140,166 +116,36 @@ def object_json(value, location):
     return result
 
 
-def compact(value):
-    return re.sub(r"[^a-z0-9]", "", str(value).lower())
-
-
-def architecture(row):
-    text = compact(first(row, "aggregation", "aggr", "architecture"))
-    if "gin" in text:
-        return "GIN"
-    if "gcn" in text:
-        return "GCN"
-    if text in {"", "mean", "sage", "graphsage"}:
-        return "SAGE"
-    return first(row, "aggregation", "aggr", "architecture").upper()
-
-
-def method_name(row, location):
-    explicit = first(row, "method", "model", "family")
-    if not explicit:
-        raise SummaryError(f"{location}: missing method/model/family identity")
-    name = compact(explicit)
-    family = compact(row.get("family", ""))
-    arch = architecture(row)
-    generic = name in {"gnn", "binarygnn", "multilabelgnn", "regressiongnn"}
-    if name in {"dpgnn", "dpgnnsage", "dpgnngraphsage", "dpgnngin", "dpgnngcn", "dpgraphsage", "dpgin", "dpgcn"} or (
-        family in {"dpgnn", "pnpignn"} and (generic or name in {"graphsage", "sage", "gin", "gcn"})
-    ):
-        suffix = "GIN" if "gin" in name else "GCN" if "gcn" in name else "SAGE" if "sage" in name else arch
-        return f"DP-GNN-{suffix}"
-    if name in {"sparse", "sparsegnn", "sparsesage", "sparsegin", "sparsegcn",
-                "sparsegnnsage", "sparsegnngraphsage", "sparsegnngin", "sparsegnngcn"} or generic:
-        suffix = "GIN" if "gin" in name else "GCN" if "gcn" in name else "SAGE" if "sage" in name else arch
-        return f"SparseGNN-{suffix}"
-    if name in {"dpmlp", "privatemlp"}:
-        return "DP-MLP"
-    if name == "dpar":
-        return "DPAR"
-    if name == "progap":
-        return "ProGAP"
-    if name in {"graphsage", "sage", "nonprivategraphsage", "nonprivatesage"}:
-        return "GraphSAGE"
-    if name in {"gin", "nonprivategin"}:
-        return "GIN"
-    if name in {"mlp", "nonprivatemlp"}:
-        return "DP-MLP" if family == "dpmlp" else "MLP"
-    return explicit.strip()
-
-
-def privacy_fields(row, method, location):
-    private = None
-    for key in ("dp", "private", "is_private", "is_dp"):
-        if populated(row.get(key)):
-            private = flag(row[key], f"{location}: {key}")
-            break
-    family = compact(row.get("family", ""))
-    if private is None:
-        if family in {"nonprivate", "reference", "nonprivatereference", "mlp", "graphsage", "gin"}:
-            private = False
-        elif family in {"dp", "private", "dpmlp", "dpgnn", "dpar", "progap"}:
-            private = True
-    epsilon = first(row, "target_epsilon", "epsilon_target", "epsilon",
-                    "calibrated_epsilon", "actual_epsilon", "epsilon_estimate")
-    if private is None:
-        raw_name = compact(first(row, "method", "model"))
-        if raw_name.startswith("nonprivate") or method in {"GraphSAGE", "GIN", "MLP"}:
-            private = False
-        elif method.startswith(("DP-", "SparseGNN-")) or method in {"DPAR", "ProGAP"}:
-            private = True
-        elif epsilon:
-            private = True
-    if private is False:
-        return "non-private", "non-private", "", ""
-    target = first(row, "target_epsilon", "epsilon_target")
-    if epsilon:
-        if finite(epsilon, f"{location}: epsilon") < 0:
-            raise SummaryError(f"{location}: epsilon must be nonnegative")
-        epsilon = canonical(epsilon)
-    else:
-        epsilon = "unknown"
-    delta = first(row, "target_delta", "delta")
-    if delta:
-        if not 0 <= finite(delta, f"{location}: delta") < 1:
-            raise SummaryError(f"{location}: delta must be in [0, 1)")
-        delta = canonical(delta)
-    return "private" if private else "unknown", epsilon, delta, canonical(target) if target else ""
-
-
-def metric_name(value):
-    name = str(value).strip().lower().replace("-", "_").replace(" ", "_")
-    return {"acc": "accuracy", "auc": "auroc", "roc_auc": "auroc", "f1_micro": "micro_f1",
-            "f1_macro": "macro_f1", "r²": "r2", "r_squared": "r2"}.get(name, name)
+def privacy_fields(row, location):
+    if not flag(row["dp"], f"{location}: dp"):
+        return "non-private", "non-private", ""
+    epsilon, delta = row["target_epsilon"], row["target_delta"]
+    if finite(epsilon, f"{location}: target_epsilon") <= 0:
+        raise SummaryError(f"{location}: target_epsilon must be positive")
+    if not 0 < finite(delta, f"{location}: target_delta") < 1:
+        raise SummaryError(f"{location}: target_delta must be in (0, 1)")
+    return "private", canonical(epsilon), canonical(delta)
 
 
 def metric_fields(row, requested, location):
-    primary = metric_name(first(row, "metric", "primary_metric"))
-    if not primary:
-        primary = "accuracy"
-        # Infer the primary independently of --metric: selecting AUROC must
-        # never relabel an accuracy-only test_acc/test_metric value.
-        for candidate in ("accuracy", "r2", "auroc", "micro_f1", "macro_f1"):
-            keys = METRIC_COLUMNS[candidate]
-            if candidate == "accuracy":
-                keys += ("test_acc", "test_metric")
-            if first(row, *keys):
-                primary = candidate
-                break
+    primary = row["metric"]
+    if primary not in METRICS:
+        raise SummaryError(f"{location}: unsupported primary metric {primary!r}")
     metric = primary if requested == "auto" else requested
-    if metric not in METRICS:
-        raise SummaryError(f"{location}: unsupported primary metric {metric!r}; use --metric")
-    keys = METRIC_COLUMNS[metric]
-    if primary == metric:
-        keys += ("test_acc", "test_metric")
-    return metric, first(row, *keys)
+    score = row.get(f"test_{metric}", "")
+    if not populated(score) and metric == primary:
+        score = row["test_metric"]
+    return metric, score
 
 
-def validation_field(row, metric, selection):
-    primary, _ = metric_fields(row, "auto", "validation metric")
-    keys = tuple(key.replace("test_", prefix, 1)
-                 for prefix in ("validation_", "val_") for key in METRIC_COLUMNS[metric])
-    if primary == metric:
-        keys += ("validation_metric", "validation_acc", "val_acc")
-    value = first(row, *keys)
-    if not populated(value) and metric_name(selection.get("metric", primary)) == metric:
-        value = selection.get("validation_score", "")
-    return value
-
-
-def configuration(row, target, location):
-    settings = {}
-
-    def add(key, value):
-        if not populated(value) or value is None:
-            return
-        name = ALIASES.get(key, key)
-        if name == "sigma" and target:
-            return  # Calibration changes by seed, not the nominal experiment.
-        normalized = canonical(value)
-        if name in settings and settings[name] != normalized:
-            raise SummaryError(f"{location}: conflicting configuration aliases for {name}: "
-                               f"{settings[name]!r} versus {normalized!r}")
-        settings[name] = normalized
-
-    for key in sorted(CONFIG_COLUMNS):
-        # Architecture is already part of normalized method identity.
-        if key not in {"aggregation", "aggr", "architecture"}:
-            add(key, row.get(key))
-    for field in ("parameters", "config"):
-        if not populated(row.get(field)):
-            continue
-        for key, value in object_json(row[field], f"{location}: {field}").items():
-            if key in IGNORED_PARAMETERS or key in {"aggregation", "aggr", "architecture"}:
-                continue
-            if key.startswith(("train_", "val_", "test_")) and key not in CONFIG_COLUMNS:
-                continue
-            if any(token in key for token in ("seconds", "timing", "wall_time", "elapsed", "achieved")):
-                continue
-            add(key, value)
+def configuration(row, location):
+    parameters = object_json(row["parameters"], f"{location}: parameters")
+    settings = {key: canonical(value) for key, value in parameters.items()
+                if key not in IGNORED_PARAMETERS and populated(value)}
     serialized = json.dumps(settings, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     identifier = hashlib.sha256(serialized.encode()).hexdigest()[:16]
     description = "; ".join(f"{key}={value}" for key, value in sorted(settings.items())) or "(unspecified)"
-    return settings, identifier, description
+    return identifier, description
 
 
 @dataclass
@@ -313,15 +159,12 @@ class Run:
     privacy: str
     epsilon: str
     delta: str
-    target: str
     split: str
     metric: str
     score: str
     seed: str
-    settings: dict
     config_id: str
     configuration: str
-    selection: dict
     validation_score: str
     run_index: int | None
 
@@ -334,27 +177,20 @@ class Run:
                 self.delta, self.split, self.metric)
 
 
-def accepted(row, location):
-    if populated(row.get("accepted")) and not flag(row["accepted"], f"{location}: accepted"):
-        return False
-    status = compact(row.get("status", ""))
-    return status in {"", "ok", "success", "successful", "succeeded", "complete", "completed",
-                      "finished", "accepted", "done", "pass", "passed"}
-
-
 def make_run(row, group, source, line, requested):
     location = f"{source}:{line}"
-    dataset = first(row, "protocol", "dataset").strip()
+    dataset = row["protocol"]
     if not dataset:
-        raise SummaryError(f"{location}: missing dataset/protocol identity")
-    method = method_name(row, location)
-    privacy, epsilon, delta, target = privacy_fields(row, method, location)
+        raise SummaryError(f"{location}: missing protocol")
+    if row["method"] not in METHOD_NAMES:
+        raise SummaryError(f"{location}: unsupported method {row['method']!r}")
+    method = METHOD_NAMES[row["method"]]
+    privacy, epsilon, delta = privacy_fields(row, location)
     metric, score = metric_fields(row, requested, location)
-    settings, config_id, description = configuration(row, target, location)
-    split = "; ".join(f"{key}={row[key]}" for key in ("domain_split", "domain_split_id", "split", "split_id")
-                      if populated(row.get(key)))
-    selection = object_json(row["selection"], f"{location}: selection") if populated(row.get("selection")) else {}
-    seed = first(row, "seed", "random_seed", "run_seed")
+    config_id, description = configuration(row, location)
+    split = "; ".join(f"{key}={row[key]}" for key in ("domain_split", "domain_split_id", "split")
+                      if populated(row[key]))
+    seed = row["seed"]
     run_index = None
     if populated(row.get("run_index")):
         index = finite(row["run_index"], f"{location}: run_index")
@@ -362,8 +198,8 @@ def make_run(row, group, source, line, requested):
             raise SummaryError(f"{location}: run_index must be a nonnegative integer")
         run_index = int(index)
     return Run(group, str(source), line, row, dataset, method, privacy, epsilon, delta,
-               target, split, metric, score, canonical(seed) if seed else "", settings,
-               config_id, description, selection, validation_field(row, metric, selection), run_index)
+               split, metric, score, canonical(seed) if seed else "", config_id, description,
+               row["validation_metric"] if metric == row["metric"] else "", run_index)
 
 
 def expand_patterns(patterns, base, label):
@@ -446,6 +282,9 @@ def read_group(name, files, where, requested, diagnostics):
                     raise SummaryError(f"{path}: missing or empty CSV column names")
                 if len(header) != len(set(header)):
                     raise SummaryError(f"{path}: duplicate CSV column names")
+                missing = REQUIRED_COLUMNS - set(header)
+                if missing:
+                    raise SummaryError(f"{path}: missing runner CSV columns: {', '.join(sorted(missing))}")
                 missing = set(filters) - set(header)
                 if missing:
                     raise SummaryError(f"group {name!r}, {path}: unknown filter columns: {', '.join(sorted(missing))}")
@@ -457,8 +296,8 @@ def read_group(name, files, where, requested, diagnostics):
                     if any(canonical(row[key]) not in values for key, values in filters.items()):
                         continue
                     matched += 1
-                    if not accepted(row, location):
-                        diagnostics.warn(f"{location}: skipping unsuccessful/unaccepted outcome")
+                    if row["status"] != "completed":
+                        diagnostics.warn(f"{location}: skipping outcome with status {row['status']!r}")
                         continue
                     runs.append(make_run(row, name, path, reader.line_num, requested))
         except (OSError, UnicodeError, csv.Error) as exc:
@@ -466,47 +305,6 @@ def read_group(name, files, where, requested, diagnostics):
     if not matched:
         raise SummaryError(f"group {name!r}: no CSV rows matched the configured filters")
     return runs
-
-
-def progress(run, key):
-    value = run.raw.get(key)
-    return finite(value, f"{run.location}: {key}") if populated(value) else None
-
-
-def final_runs(runs, diagnostics):
-    logical = defaultdict(list)
-    for run in runs:
-        # Fixed-noise tracking rows may contain achieved epsilon at each step;
-        # their nominal noise/configuration, not interim accounting, identifies a run.
-        evolving = any(populated(run.raw.get(key)) for key in ("step", "epoch")) and "sigma" in run.settings
-        epsilon = run.target or ("fixed-noise" if evolving else run.epsilon)
-        key = (run.source, run.dataset, run.method, run.privacy, epsilon,
-               run.delta, run.split, run.metric, run.config_id, run.seed)
-        logical[key].append(run)
-    finals = []
-    for candidates in logical.values():
-        selected = [run for run in candidates if run.selection]
-        if selected:
-            finals.extend(selected)
-            continue
-        key = "step" if any(populated(run.raw.get("step")) for run in candidates) else "epoch"
-        tracked = [(run, progress(run, key)) for run in candidates]
-        if all(value is None for _, value in tracked):
-            finals.extend(candidates)  # Ordinary one-row-per-seed exports need no tracking metadata.
-            continue
-        budget_key = "steps" if key == "step" else "epochs"
-        budget = candidates[0].settings.get(budget_key)
-        if budget is not None:
-            expected = finite(budget, f"{candidates[0].location}: {budget_key}")
-            final = [run for run, value in tracked if value == expected]
-            if not final:
-                diagnostics.warn(f"{candidates[0].location}: incomplete run: no final {key}={expected:g}; skipping run")
-                continue
-        else:
-            last = max(value for _, value in tracked if value is not None)
-            final = [run for run, value in tracked if value == last]
-        finals.extend(final)
-    return finals
 
 
 def usable_score(run, diagnostics):
@@ -526,10 +324,7 @@ def bootstrap_interval(run, diagnostics):
     metrics = payload.get("metrics", {})
     if not isinstance(metrics, dict):
         raise SummaryError(f"{run.location}: CI metrics must be an object")
-    entries = [entry for name, entry in metrics.items() if metric_name(name) == run.metric]
-    if len(entries) > 1:
-        raise SummaryError(f"{run.location}: ambiguous bootstrap CI aliases for {run.metric}")
-    interval = entries[0] if entries else None
+    interval = metrics.get(run.metric)
     if interval is None:
         diagnostics.warn(f"{run.location}: missing stored bootstrap CI for {run.metric}; retaining point estimate with N/A uncertainty")
         return None
@@ -642,17 +437,13 @@ def select_best(rows, diagnostics):
     chosen = {}
     for row in sorted(rows, key=ordering):
         key = tuple(row[field] for field in ("group", "dataset", "method", "privacy", "epsilon", "delta", "split", "metric"))
-        if row["privacy"] != "non-private" and row["epsilon"] == "unknown":
-            diagnostics.warn(f"group {row['group']!r}, {row['dataset']}/{row['method']}: unknown private epsilon; "
-                             "--best keeps different configurations separate because privacy budgets are not comparable")
-            key += (row["config_id"],)
         if key not in chosen or row["value"] > chosen[key]["value"]:
             row["selection"] = "best_test"
             chosen[key] = row
     return list(chosen.values())
 
 
-def select_best_validation(rows, diagnostics):
+def select_best_validation(rows):
     chosen = {}
     candidates = sorted(rows, key=lambda row: (
         row["_run_index"] is None, row["_run_index"] if row["_run_index"] is not None else 0,
@@ -662,10 +453,6 @@ def select_best_validation(rows, diagnostics):
         score = finite(row["validation_value"], "best-validation: validation score")
         key = tuple(row[field] for field in (
             "group", "dataset", "method", "privacy", "epsilon", "delta", "split", "metric"))
-        if row["privacy"] != "non-private" and row["epsilon"] == "unknown":
-            diagnostics.warn(f"group {row['group']!r}, {row['dataset']}/{row['method']}: unknown private epsilon; "
-                             "--best-validation keeps different configurations separate")
-            key += (row["config_id"],)
         if key not in chosen or score > chosen[key]["validation_value"]:
             row["selection"] = "best_validation"
             chosen[key] = row
@@ -717,7 +504,7 @@ def export(rows, outputs, args, diagnostics):
         lines.append("- $\\pm$ uses the conservative symmetric envelope radius `max(abs(value - lower), abs(upper - value))`. Original (possibly asymmetric) CI endpoints and confidence levels are preserved in the CSV; the point estimate is never replaced by the CI midpoint.")
         if args.best:
             lines.append("- `--best` selects the highest TEST-scoring final run across configurations and seeds, retaining exactly that run's stored CI.")
-    lines.append("- Scores remain on their input scale. Different datasets, methods, privacy budgets, splits, metrics, and named groups remain separate. `unknown` epsilon never means non-private.")
+    lines.append("- Scores remain on their input scale. Different datasets, methods, privacy budgets, splits, metrics, and named groups remain separate.")
     if args.best:
         lines.append("- **TEST-selection bias:** these best-test summaries are optimistically selected and are not validation-selected or unbiased comparisons.")
     if args.best_validation:
@@ -742,7 +529,7 @@ def parser():
     selection.add_argument("--best-validation", action="store_true", help="select by validation score using the same unique seeds as test aggregation; retain the winner's test statistics")
     cli.add_argument("--groups", metavar="FILE.json", help='JSON: {"groups":[{"name":"regime","files":["*.csv"],"where":{"lr":[0.01]}}]}; paths relative to JSON')
     cli.add_argument("--out", required=True, metavar="PREFIX", help="write PREFIX.csv and PREFIX.md")
-    cli.add_argument("--metric", choices=("auto",) + METRICS, default="auto", help="auto respects row metric/primary_metric, otherwise infers populated test columns")
+    cli.add_argument("--metric", choices=("auto",) + METRICS, default="auto", help="auto uses the runner's metric field; an override reads the corresponding test_<metric> column")
     return cli
 
 
@@ -764,15 +551,15 @@ def main(argv=None):
         rows = []
         for name, files, where in groups:
             runs = read_group(name, files, where, args.metric, diagnostics)
-            results = summarize(final_runs(runs, diagnostics), args.seed, diagnostics,
+            results = summarize(runs, args.seed, diagnostics,
                                 require_validation=args.best_validation)
             if not results:
-                raise SummaryError(f"group {name!r}: no usable final results; check outcome status, final step/budget, metric, and warnings")
+                raise SummaryError(f"group {name!r}: no usable final results; check status, metric, and warnings")
             rows.extend(results)
         if args.best:
             rows = select_best(rows, diagnostics)
         elif args.best_validation:
-            rows = select_best_validation(rows, diagnostics)
+            rows = select_best_validation(rows)
         export(rows, outputs, args, diagnostics)
     except (SummaryError, OSError) as exc:
         cli.error(str(exc))

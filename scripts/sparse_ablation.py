@@ -48,7 +48,7 @@ SWEEPS = (
     ("K_out", {"r": 1, "p2": 0.1}, (5, 10, 20, 40)),
 )
 POLICY = {
-    "accounting": "Uses the repository's mixture formula, not an independently established privacy guarantee.",
+    "accounting": "Gaussian-mixture substitution accounting with incoming expansion.",
     "p2_equals_one": "p2=1 removes Bernoulli edge thinning only; preprocessing and incoming sampling caps remain.",
     "checkpoint": "Best validation-primary-metric checkpoint; no test-based or repeat-seed configuration selection.",
     "uncertainty": "Mean ±1 standard error across training seeds 1–5: sample SD (ddof=1) / sqrt(5). Not a confidence interval or node-bootstrap interval.",

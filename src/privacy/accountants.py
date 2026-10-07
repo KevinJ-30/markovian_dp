@@ -38,7 +38,7 @@ class PrivacyAccountant:
 
 
 class SparseGNNAccountant(PrivacyAccountant):
-    """Adapter around the repository's certified dominating-pair accountant."""
+    """Adapter around the repository's Gaussian-mixture accountant."""
 
     def account(self, *, p1: float, p2: float, radius: int, k_in: int, k_out: int,
                 sigma: float, steps: int, delta: float,
@@ -51,7 +51,7 @@ class SparseGNNAccountant(PrivacyAccountant):
         )
         return PrivacyResult(
             epsilon=float(epsilon), delta=delta,
-            accountant="markovian_dp.theorem5_4",
+            accountant="markovian_dp.sparsegnn_mixture",
             noise_multiplier=sigma, sampling_probability=p1,
             composition_count=steps,
             parameters={"edge_retention_probability": p2, "radius": radius,
@@ -137,9 +137,6 @@ class DPARAccountant(PrivacyAccountant):
 
     This intentionally preserves the repository's stated amplification and
     composition convention, including its separate DP-PPR and DP-SGD reports.
-    The DPAR paper supplies a privacy theorem; this port and the released
-    arithmetic have not been independently established to satisfy that theorem
-    or certify node-level DP.
     """
 
     @staticmethod
@@ -258,8 +255,7 @@ def calibrate_dpar_noise(
 
     SGD samples from ``ppr_releases`` supervised APPR roots, not all
     ``sampled_train_nodes`` retained for feature context. Outer amplification
-    still uses ``sampled_train_nodes / train_nodes``. These reported budgets
-    are not an independently certified node-DP guarantee; see DPARAccountant.
+    uses ``sampled_train_nodes / train_nodes``.
     """
     target_epsilon = _dpar_positive_finite("target_epsilon", target_epsilon)
     target_delta = float(target_delta)

@@ -1,6 +1,5 @@
 import hashlib
 import io
-import json
 import urllib.error
 
 import numpy as np
@@ -15,54 +14,6 @@ from src.data import domain_datasets as domain
 from src.processing.splits import load_or_create_inductive_split
 
 
-def _write_twitch_domain(root, name, node_rows, edges, features):
-    upper = name.upper()
-    folder = root / upper
-    folder.mkdir(parents=True)
-    prefix = f"musae_{upper}"
-    target = folder / f"{prefix}_target.csv"
-    target.write_text(
-        "id,days,mature,views,partner,new_id\n"
-        + "".join(
-            f"{source_id},1,{str(mature)},1,False,{graph_id}\n"
-            for source_id, graph_id, mature in node_rows
-        ),
-        encoding="utf-8",
-    )
-    (folder / f"{prefix}_edges.csv").write_text(
-        "from,to\n" + "".join(f"{source},{target}\n" for source, target in edges),
-        encoding="utf-8",
-    )
-    (folder / f"{prefix}_features.json").write_text(
-        json.dumps({str(node): values for node, values in features.items()}),
-        encoding="utf-8",
-    )
-
-
-def _three_domain_twitch_fixture(root):
-    _write_twitch_domain(
-        root,
-        "de",
-        [(1000, 30, False), (1001, 10, True)],
-        [(30, 10)],
-        {30: [2, 100, 2], 10: [7]},
-    )
-    _write_twitch_domain(
-        root,
-        "engb",
-        [(2000, 9, True), (2001, 7, False)],
-        [(7, 9)],
-        {9: [3], 7: []},
-    )
-    _write_twitch_domain(
-        root,
-        "es",
-        [(3000, 400, False), (3001, 100, True)],
-        [(400, 100)],
-        {400: [4], 100: [5]},
-    )
-
-
 def _split(train, val, test, seed=0, val_ratio=0.2):
     return {
         "train": train,
@@ -73,62 +24,8 @@ def _split(train, val, test, seed=0, val_ratio=0.2):
     }
 
 
-def test_twitch_noncontiguous_ids_disconnected_offsets_and_public_loading(tmp_path):
-    _three_domain_twitch_fixture(tmp_path)
-    requested = _split(["de"], ["engb"], ["es"])
-
-    dataset, data = datasets.load_dataset(
-        "twitch-explicit", domain_split=requested, root=tmp_path
-    )
-
-    assert data.domain_names == ["de", "engb", "es"]
-    assert data.domain_id.dtype == torch.long
-    assert data.domain_id.tolist() == [0, 0, 1, 1, 2, 2]
-    # Node order follows target rows, while raw graph IDs are mapped explicitly.
-    assert data.edge_index.tolist() == [[0, 3, 4], [1, 2, 5]]
-    assert data.y.tolist() == [0, 1, 1, 0, 0, 1]
-    assert data.x.shape == (6, domain.TWITCH_NUM_FEATURES)
-    assert data.x[0, 2] == 1 and data.x[0, 100] == 1
-    assert data.x[1, 7] == 1 and data.x[3].sum() == 0
-    assert data.train_mask.tolist() == [True, True, False, False, False, False]
-    assert data.val_mask.tolist() == [False, False, True, True, False, False]
-    assert data.test_mask.tolist() == [False, False, False, False, True, True]
-    assert dataset.num_features == domain.TWITCH_NUM_FEATURES
-    assert dataset.num_classes == 2
-    assert dataset.domain_dataset is True
-    assert dataset.task_type == "BINARY"
-    assert dataset.primary_metric == "auroc"
-    assert dataset.metric_ignore_label is None
-    assert dataset.domain_split == data.domain_split == requested
-    assert dataset.domain_split_id == data.domain_split_id
-    assert len(dataset.domain_split_id) == 64
-
-
-def test_twitch_rejects_unknown_edge_ids_and_conflicting_duplicate_nodes(tmp_path):
-    _write_twitch_domain(
-        tmp_path,
-        "de",
-        [(1, 10, False), (2, 10, True)],
-        [],
-        {10: [0]},
-    )
-    with pytest.raises(ValueError, match="Conflicting duplicate Twitch node ID"):
-        domain._parse_twitch_domain(tmp_path, "de")
-
-    other = tmp_path / "other"
-    _write_twitch_domain(
-        other,
-        "de",
-        [(1, 10, False)],
-        [(10, 99)],
-        {10: [0]},
-    )
-    with pytest.raises(ValueError, match="Unknown Twitch node ID"):
-        domain._parse_twitch_domain(other, "de")
-
-
-@pytest.mark.parametrize("dataset_name", ["facebook100-gender", "facebook100-year"])
-def test_normalization_defaults_equal_explicit_and_are_registry_ordered(dataset_name):
+def test_normalization_defaults_equal_explicit_and_are_registry_ordered():
+    dataset_name = "facebook100-year"
     normalized, split_id = domain.normalize_domain_split(dataset_name)
     explicit, explicit_id = domain.normalize_domain_split(
         dataset_name,
@@ -157,18 +54,18 @@ def test_normalization_defaults_equal_explicit_and_are_registry_ordered(dataset_
 @pytest.mark.parametrize(
     ("bad_split", "error"),
     [
-        ({"train": ["de"]}, "provide train, val, and test together"),
-        (_split([], ["engb"], ["es"]), "must not be empty"),
-        (_split(["DE"], ["engb"], ["es"]), "Unknown twitch-explicit domain"),
-        (_split(["de", "de"], ["engb"], ["es"]), "duplicate domains"),
-        (_split(["de"], ["de"], ["es"]), "Training domains must be disjoint"),
-        (_split(["de"], ["engb"], ["es"], val_ratio=0), "0 < val_ratio < 1"),
-        (_split(["de"], ["engb"], ["es"], val_ratio=1), "0 < val_ratio < 1"),
+        ({"train": ["us"]}, "provide train, val, and test together"),
+        (_split([], ["cn"], ["de"]), "must not be empty"),
+        (_split(["US"], ["cn"], ["de"]), "Unknown mag-countries domain"),
+        (_split(["us", "us"], ["cn"], ["de"]), "duplicate domains"),
+        (_split(["us"], ["us"], ["de"]), "Training domains must be disjoint"),
+        (_split(["us"], ["cn"], ["de"], val_ratio=0), "0 < val_ratio < 1"),
+        (_split(["us"], ["cn"], ["de"], val_ratio=1), "0 < val_ratio < 1"),
     ],
 )
 def test_invalid_domain_splits_fail_clearly(bad_split, error):
     with pytest.raises((TypeError, ValueError), match=error):
-        domain.normalize_domain_split("twitch-explicit", bad_split)
+        domain.normalize_domain_split("mag-countries", bad_split)
 
 
 def test_shared_domain_masks_are_stratified_deterministic_and_exhaustive():
@@ -209,91 +106,13 @@ def test_shared_domain_masks_are_stratified_deterministic_and_exhaustive():
     assert first.edge_index.tolist() == [[0, 1, 2, 21], [1, 0, 21, 2]]
 
 
-def _write_fb100_gender_fixture(root):
-    root.mkdir(exist_ok=True)
-    for index, filename in enumerate(domain.FB100_FILES.values()):
-        local_info = np.array(
-            [
-                [index + 1, 0, 777, 0, 1, 2005, index + 10],
-                [index + 1, 2, 2, 3, 0, 2006, 0],
-                [index + 1, 0, 778, 0, 1, 2005, index + 10],
-                [index + 1, 1, 2, 3, 0, 2006, 0],
-            ],
-            dtype=np.int64,
-        )
-        adjacency = sp.csr_matrix(
-            (np.ones(6), ([0, 1, 2, 1, 3, 3], [1, 2, 3, 3, 1, 3])),
-            shape=(4, 4),
-        )
-        savemat(root / filename, {"A": adjacency, "local_info": local_info})
-
-
-def test_facebook100_recorded_gender_filters_nodes_and_remaps_induced_edges(tmp_path):
-    _write_fb100_gender_fixture(tmp_path)
-    requested = _split(["penn94"], ["amherst41"], ["cornell5"])
-    dataset, data = datasets.load_dataset(
-        "facebook100-gender", domain_split=requested, root=tmp_path
-    )
-
-    assert data.y.tolist() == [1, 0, 1, 0, 1, 0]
-    assert data.domain_id.tolist() == [0, 0, 1, 1, 2, 2]
-    assert data.train_mask.tolist() == [True, True, False, False, False, False]
-    assert data.val_mask.tolist() == [False, False, True, True, False, False]
-    assert data.test_mask.tolist() == [False, False, False, False, True, True]
-    assert set(map(tuple, data.edge_index.t().tolist())) == {
-        (0, 1), (1, 0), (1, 1), (2, 3), (3, 2), (3, 3),
-        (4, 5), (5, 4), (5, 5),
-    }
-    # Categories present only on excluded nodes (777/778), and schools not
-    # selected by this split, still define the common raw-school vocabulary.
-    assert data.x.shape == (6, 43)
-    expected = torch.zeros(6, 43)
-    expected[:, [18, 21, 23, 24]] = 1
-    expected[torch.arange(6), torch.arange(3).repeat_interleave(2)] = 1
-    torch.testing.assert_close(data.x, expected)
-    assert dataset.num_features == 43
-    assert dataset.num_classes == 2
-    assert dataset.task_type == "MULTICLASS"
-    assert dataset.primary_metric == "accuracy"
-    assert dataset.metric_ignore_label is None
-    assert dataset.label_metadata == data.label_metadata
-    assert data.label_metadata["raw_to_class"] == {"1": 0, "2": 1}
-    assert data.label_metadata["excluded_raw_values"] == [0]
-    assert dataset.provenance == data.provenance
-    assert data.provenance["revision"] == domain.FB100_REVISION
-    assert data.provenance["feature_vocabulary_domains"] == list(domain.FB100_DOMAINS)
-    assert dataset.domain_node_counts == {
-        name: {"raw": 4, "retained": 2, "excluded": 2}
-        for name in ("penn94", "amherst41", "cornell5")
-    }
-
-
-@pytest.mark.parametrize("unexpected", [-1, 3])
-def test_facebook100_recorded_gender_rejects_unexpected_raw_categories(tmp_path, unexpected):
-    _write_fb100_gender_fixture(tmp_path)
-    # Even an unselected school is validated while fitting the raw vocabulary.
-    filename = domain.FB100_FILES["carnegie49"]
-    savemat(
-        tmp_path / filename,
-        {
-            "A": sp.csr_matrix((1, 1)),
-            "local_info": np.array([[1, unexpected, 1, 0, 1, 2005, 0]]),
-        },
-    )
-    with pytest.raises(ValueError, match="Unexpected raw gender categories"):
-        domain.load_domain_dataset(
-            "facebook100-gender",
-            _split(["penn94"], ["amherst41"], ["cornell5"]),
-            root=tmp_path,
-        )
-
-
 def _write_fb100_year_fixture(root, *, include_last_class=True):
     root.mkdir(exist_ok=True)
     for index, filename in enumerate(domain.FB100_FILES.values()):
         years = [0, 2004, 1900, 2008, 2009 if include_last_class else 2007, 2010]
         info = np.array([[index + 1, gender, 1, 0, 1, year, index + 10]
                          for gender, year in zip([1, 0, 1, 2, 1, 2], years)])
+        info[[0, 2], 2] = [777, 778]
         adjacency = sp.csr_matrix(
             (np.ones(8), ([0, 1, 1, 2, 3, 4, 4, 5], [1, 3, 4, 3, 4, 1, 5, 4])),
             shape=(6, 6),
@@ -308,6 +127,32 @@ def test_facebook100_year_cohorts_induce_edges_without_target_features(tmp_path)
     # Stable year identities, not a per-school relabeling of present classes.
     assert data.y.tolist() == [0, 4, 5] * 3
     assert dataset.num_classes == 6
+    assert data.domain_names == ["penn94", "amherst41", "cornell5"]
+    assert data.domain_id.dtype == torch.long
+    assert data.domain_id.tolist() == [0] * 3 + [1] * 3 + [2] * 3
+    # Excluded nodes and all 18 schools still define the feature vocabulary.
+    expected_features = torch.zeros(9, 44)
+    school_ids = torch.arange(3).repeat_interleave(3)
+    expected_features[torch.arange(9), school_ids] = 1
+    expected_features[torch.arange(9), torch.tensor([18, 20, 19] * 3)] = 1
+    expected_features[:, 21] = 1
+    expected_features[torch.arange(9), 26 + school_ids] = 1
+    torch.testing.assert_close(data.x, expected_features)
+    assert dataset.num_features == 44
+    assert dataset.domain_dataset is True
+    assert dataset.task_type == "MULTICLASS"
+    assert dataset.primary_metric == "accuracy"
+    assert dataset.metric_ignore_label is None
+    assert dataset.domain_split == data.domain_split == requested
+    assert dataset.domain_split_id == data.domain_split_id
+    assert dataset.label_metadata == data.label_metadata
+    assert data.label_metadata["raw_to_class"] == {
+        str(year): year - 2004 for year in range(2004, 2010)
+    }
+    assert dataset.provenance == data.provenance
+    assert data.provenance["revision"] == domain.FB100_REVISION
+    assert data.provenance["feature_columns"] == [0, 1, 2, 3, 4, 6]
+    assert data.provenance["feature_vocabulary_domains"] == list(domain.FB100_DOMAINS)
     assert data.train_mask.tolist() == [True] * 3 + [False] * 6
     assert data.val_mask.tolist() == [False] * 3 + [True] * 3 + [False] * 3
     assert data.test_mask.tolist() == [False] * 6 + [True] * 3
@@ -329,18 +174,14 @@ def test_facebook100_year_cohorts_induce_edges_without_target_features(tmp_path)
     assert torch.equal(changed.edge_index, data.edge_index)
 
 
-def test_facebook100_year_preserves_six_class_head_and_separate_cache(tmp_path):
+def test_facebook100_year_preserves_six_class_head_through_cache(tmp_path):
     raw = tmp_path / "raw"
     _write_fb100_year_fixture(raw, include_last_class=False)
     requested = _split(["penn94"], ["amherst41"], ["cornell5"])
-    splits = {}
-    for name in ("facebook100-gender", "facebook100-year"):
-        data, _ = domain.load_domain_dataset(name, requested, root=raw)
-        splits[name] = load_or_create_inductive_split(
-            data, name, root=tmp_path / "splits", split_strategy="domain"
-        )
-    year, gender = splits["facebook100-year"], splits["facebook100-gender"]
-    assert year.path != gender.path and year.domain_split_id != gender.domain_split_id
+    data, _ = domain.load_domain_dataset("facebook100-year", requested, root=raw)
+    year = load_or_create_inductive_split(
+        data, "facebook100-year", root=tmp_path / "splits", split_strategy="domain"
+    )
     assert year.num_classes == 6  # Year 2009 is absent in every fixture school.
     for name in ("train", "val", "test"):
         part = getattr(year, name)
@@ -460,24 +301,3 @@ def test_atomic_download_is_reused_and_failure_leaves_no_partial_file(tmp_path, 
         domain._download_atomic("https://example.test/missing", failed)
     assert not failed.exists()
     assert list(failed.parent.glob("*.tmp")) == []
-
-
-def test_existing_facebook_name_keeps_its_original_loader(monkeypatch):
-    expected_dataset = object()
-
-    class DataStub:
-        def to(self, device):
-            assert device == "cpu"
-            return self
-
-    expected_data = DataStub()
-    monkeypatch.setattr(
-        datasets,
-        "_load_facebook",
-        lambda: (expected_dataset, expected_data),
-    )
-
-    actual_dataset, actual_data = datasets.load_dataset("facebook")
-
-    assert actual_dataset is expected_dataset
-    assert actual_data is expected_data

@@ -32,18 +32,12 @@ METHODS = (
 )
 NONPRIVATE = {"mlp", "graphsage", "gin"}
 NATIVE_PROTOCOLS = {
-    "ogbn-arxiv", "ogbn-products", "reddit", "facebook", "flickr",
-    "saint-reddit", "saint-yelp", "saint-flickr", "saint-amazon", "ppi-large",
+    "ogbn-arxiv", "ogbn-products", "saint-reddit", "saint-yelp", "saint-amazon",
 }
 TRAIN_SCHOOLS = ("johns-hopkins55", "caltech36", "amherst41", "reed98",
                  "brandeis99", "princeton12")
-DOMAIN_DATASETS = {
-    "twitch-explicit", "facebook100-gender", "facebook100-year", "mag-countries",
-}
-DOMAIN_PRESETS = {
-    "twitch-allbut2", "mag-allbut2",
-    "fb100-gender-3", "fb100-gender-6", "fb100-gender-16", "fb100-year-6",
-}
+DOMAIN_DATASETS = {"facebook100-year", "mag-countries"}
+DOMAIN_PRESETS = {"fb100-year-6", "mag-allbut2"}
 
 
 def parser() -> argparse.ArgumentParser:
@@ -272,22 +266,16 @@ def _check_args(args: argparse.Namespace) -> None:
 def _protocol(name: str) -> tuple[str, dict[str, Any] | None]:
     if name not in DOMAIN_PRESETS:
         return name, None
-    from src.data.domain_datasets import FB100_DOMAINS, MAG_DOMAINS, TWITCH_DOMAINS
+    from src.data.domain_datasets import MAG_DOMAINS
 
-    if name.startswith("fb100-"):
-        count = int(name.rsplit("-", 1)[1])
-        schools = (list(TRAIN_SCHOOLS[:count]) if count < 16 else
-                   [school for school in FB100_DOMAINS if school not in {"cornell5", "penn94"}])
-        dataset = "facebook100-year" if name == "fb100-year-6" else "facebook100-gender"
-        return dataset, {"train": schools, "val": ["cornell5"], "test": ["penn94"],
-                         "seed": 0, "val_ratio": 0.2}
-    dataset, domains, validation, test = {
-        "twitch-allbut2": ("twitch-explicit", TWITCH_DOMAINS, "engb", "es"),
-        "mag-allbut2": ("mag-countries", MAG_DOMAINS, "cn", "de"),
-    }[name]
-    return dataset, {
-        "train": [domain for domain in domains if domain not in {validation, test}],
-        "val": [validation], "test": [test], "seed": 0, "val_ratio": 0.2,
+    if name == "fb100-year-6":
+        return "facebook100-year", {
+            "train": list(TRAIN_SCHOOLS), "val": ["cornell5"], "test": ["penn94"],
+            "seed": 0, "val_ratio": 0.2,
+        }
+    return "mag-countries", {
+        "train": [domain for domain in MAG_DOMAINS if domain not in {"cn", "de"}],
+        "val": ["cn"], "test": ["de"], "seed": 0, "val_ratio": 0.2,
     }
 
 
@@ -571,7 +559,7 @@ def _sparse(args, split, task, batch, delta):
         "parameters": {"p1": p1, "p2": args.p2, "r": args.sparse_radius,
                        "K_in": 10, "K_out": args.sparse_degree_cap,
                        "grid": 1e-3,
-                       "qualification": "Uses the repository's mixture formula, not an independently established privacy guarantee."},
+                       "qualification": "Gaussian-mixture substitution accounting with incoming expansion."},
     }
     parameters = {
         "architecture": aggr, "hidden": args.gnn_hidden, "layers": layers,

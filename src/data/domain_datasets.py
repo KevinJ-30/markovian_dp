@@ -1,4 +1,4 @@
-"""Domain-disjoint node-classification dataset loaders.
+"""FB100-year and MAG-country domain-disjoint classification loaders.
 
 The raw artifacts are kept in provenance-specific caches and converted into one
 PyG graph whose domains are disconnected components.  Split masks describe the
@@ -8,7 +8,6 @@ component, in which case only their score masks are split.
 
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
 import math
@@ -28,14 +27,6 @@ from torch_geometric.data import Data
 from torch_geometric.utils import to_undirected
 
 from src.processing.cache import cache_creation_lock
-
-TWITCH_REVISION = "af14a88470d30b1dadd3803d911dfc1064bcf172"
-TWITCH_RAW_URL = (
-    "https://raw.githubusercontent.com/CUAI/Non-Homophily-Benchmarks/"
-    f"{TWITCH_REVISION}/data/twitch"
-)
-TWITCH_DOMAINS = ("de", "engb", "es", "fr", "ptbr", "ru", "tw")
-TWITCH_NUM_FEATURES = 3170
 
 FB100_REVISION = "9a92bf1e84f73b7b24dd745eb14f13e4d1979769"
 FB100_RAW_URL = (
@@ -78,30 +69,12 @@ MAG_ARTIFACTS = {
 }
 MAG_DOMAINS = tuple(MAG_ARTIFACTS)
 
-DOMAIN_DATASET_NAMES = (
-    "twitch-explicit", "facebook100-gender", "facebook100-year", "mag-countries",
-)
+DOMAIN_DATASET_NAMES = ("facebook100-year", "mag-countries")
 DOMAIN_REGISTRIES = {
-    "twitch-explicit": TWITCH_DOMAINS,
-    "facebook100-gender": FB100_DOMAINS,
     "facebook100-year": FB100_DOMAINS,
     "mag-countries": MAG_DOMAINS,
 }
 DOMAIN_DEFAULTS = {
-    "twitch-explicit": {
-        "train": ["de"],
-        "val": ["engb"],
-        "test": ["es", "fr", "ptbr", "ru", "tw"],
-        "seed": 0,
-        "val_ratio": 0.2,
-    },
-    "facebook100-gender": {
-        "train": ["johns-hopkins55", "caltech36", "amherst41"],
-        "val": ["cornell5", "yale4"],
-        "test": ["penn94", "brown11", "texas80"],
-        "seed": 0,
-        "val_ratio": 0.2,
-    },
     "facebook100-year": {
         "train": ["johns-hopkins55", "caltech36", "amherst41"],
         "val": ["cornell5", "yale4"],
@@ -118,18 +91,6 @@ DOMAIN_DEFAULTS = {
     },
 }
 DOMAIN_TASKS = {
-    "twitch-explicit": {
-        "num_classes": 2,
-        "task_type": "BINARY",
-        "primary_metric": "auroc",
-        "metric_ignore_label": None,
-    },
-    "facebook100-gender": {
-        "num_classes": 2,
-        "task_type": "MULTICLASS",
-        "primary_metric": "accuracy",
-        "metric_ignore_label": None,
-    },
     "facebook100-year": {
         "num_classes": len(FB100_YEAR_CLASSES),
         "task_type": "MULTICLASS",
@@ -342,193 +303,6 @@ def _ensure_mag_file(
         )
 
 
-def _parse_bool(value: str, *, path: Path, row_number: int) -> int:
-    normalized = value.strip().lower() if isinstance(value, str) else ""
-    if normalized in {"true", "1"}:
-        return 1
-    if normalized in {"false", "0"}:
-        return 0
-    raise ValueError(
-        f"Invalid mature label {value!r} in {path} at CSV row {row_number}"
-    )
-
-
-def _load_unique_json_object(path: Path) -> dict[str, Any]:
-    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError(f"Duplicate JSON key {key!r} in {path}")
-            result[key] = value
-        return result
-
-    with path.open("r", encoding="utf-8") as handle:
-        value = json.load(handle, object_pairs_hook=unique_object)
-    if not isinstance(value, dict):
-        raise ValueError(f"Expected a JSON object in {path}")
-    return value
-
-
-def _parse_twitch_domain(root: Path, domain: str) -> Data:
-    upper = domain.upper()
-    folder = root / upper
-    base = f"musae_{upper}"
-    paths = {
-        kind: folder / f"{base}_{kind}.{extension}"
-        for kind, extension in (
-            ("target", "csv"),
-            ("edges", "csv"),
-            ("features", "json"),
-        )
-    }
-    for path in paths.values():
-        url = f"{TWITCH_RAW_URL}/{upper}/{path.name}"
-        _ensure_file(url, path)
-
-    node_to_local: dict[int, int] = {}
-    identities: dict[int, tuple[int, int]] = {}
-    source_to_graph: dict[int, int] = {}
-    labels: list[int] = []
-    with paths["target"].open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        required = {"id", "new_id", "mature"}
-        if reader.fieldnames is None or not required.issubset(reader.fieldnames):
-            raise ValueError(
-                f"Invalid Twitch target schema in {paths['target']}: "
-                f"required columns are {sorted(required)}"
-            )
-        for row_number, row in enumerate(reader, start=2):
-            try:
-                graph_id = int(row["new_id"])
-                source_id = int(row["id"])
-            except (TypeError, ValueError) as error:
-                raise ValueError(
-                    f"Invalid Twitch node ID in {paths['target']} at CSV row "
-                    f"{row_number}"
-                ) from error
-            label = _parse_bool(
-                row["mature"], path=paths["target"], row_number=row_number
-            )
-            if (
-                source_id in source_to_graph
-                and source_to_graph[source_id] != graph_id
-            ):
-                raise ValueError(
-                    f"Duplicate Twitch source ID {source_id} maps to multiple "
-                    f"graph IDs in {paths['target']}"
-                )
-            identity = (source_id, label)
-            if graph_id in node_to_local:
-                # The pinned FR file repeats two otherwise identical graph-node
-                # records.  Collapse those source duplicates, but never merge
-                # conflicting identities or labels.
-                if identities[graph_id] != identity:
-                    raise ValueError(
-                        f"Conflicting duplicate Twitch node ID {graph_id} in "
-                        f"{paths['target']}"
-                    )
-                continue
-            node_to_local[graph_id] = len(labels)
-            identities[graph_id] = identity
-            source_to_graph[source_id] = graph_id
-            labels.append(label)
-    if not labels:
-        raise ValueError(f"Twitch target file has no nodes: {paths['target']}")
-
-    sources: list[int] = []
-    targets: list[int] = []
-    with paths["edges"].open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        required = {"from", "to"}
-        if reader.fieldnames is None or not required.issubset(reader.fieldnames):
-            raise ValueError(
-                f"Invalid Twitch edge schema in {paths['edges']}: "
-                "required columns are ['from', 'to']"
-            )
-        for row_number, row in enumerate(reader, start=2):
-            try:
-                raw_source = int(row["from"])
-                raw_target = int(row["to"])
-            except (TypeError, ValueError) as error:
-                raise ValueError(
-                    f"Invalid Twitch edge ID in {paths['edges']} at CSV row "
-                    f"{row_number}"
-                ) from error
-            unknown = [
-                node_id
-                for node_id in (raw_source, raw_target)
-                if node_id not in node_to_local
-            ]
-            if unknown:
-                raise ValueError(
-                    f"Unknown Twitch node ID(s) {unknown} in {paths['edges']} "
-                    f"at CSV row {row_number}"
-                )
-            sources.append(node_to_local[raw_source])
-            targets.append(node_to_local[raw_target])
-
-    feature_rows = _load_unique_json_object(paths["features"])
-    x = torch.zeros((len(labels), TWITCH_NUM_FEATURES), dtype=torch.float32)
-    seen_feature_nodes: set[int] = set()
-    for raw_node, raw_features in feature_rows.items():
-        try:
-            node_id = int(raw_node)
-        except (TypeError, ValueError) as error:
-            raise ValueError(
-                f"Invalid Twitch feature node ID {raw_node!r} in {paths['features']}"
-            ) from error
-        if node_id not in node_to_local:
-            raise ValueError(
-                f"Unknown Twitch feature node ID {node_id} in {paths['features']}"
-            )
-        if node_id in seen_feature_nodes:
-            raise ValueError(
-                f"Duplicate Twitch feature node ID {node_id} in {paths['features']}"
-            )
-        seen_feature_nodes.add(node_id)
-        if isinstance(raw_features, (str, bytes)) or not isinstance(
-            raw_features, Sequence
-        ):
-            raise ValueError(
-                f"Features for Twitch node {node_id} must be a list of indices"
-            )
-        if any(
-            isinstance(feature, bool) or not isinstance(feature, Integral)
-            for feature in raw_features
-        ):
-            raise ValueError(f"Invalid feature index for Twitch node {node_id}")
-        # The pinned files contain repeated indices for some nodes. They encode
-        # the same binary feature and are therefore idempotent, not conflicting.
-        features = sorted({int(feature) for feature in raw_features})
-        invalid = [
-            feature
-            for feature in features
-            if feature < 0 or feature >= TWITCH_NUM_FEATURES
-        ]
-        if invalid:
-            raise ValueError(
-                f"Out-of-range feature indices for Twitch node {node_id}: {invalid}"
-            )
-        if features:
-            x[node_to_local[node_id], torch.tensor(features, dtype=torch.long)] = 1.0
-    missing_features = sorted(set(node_to_local) - seen_feature_nodes)
-    if missing_features:
-        raise ValueError(
-            f"Missing Twitch feature rows for node IDs {missing_features[:10]}"
-        )
-
-    if sources:
-        edge_index = torch.tensor([sources, targets], dtype=torch.long)
-    else:
-        edge_index = torch.empty((2, 0), dtype=torch.long)
-    return Data(
-        x=x,
-        edge_index=edge_index,
-        y=torch.tensor(labels, dtype=torch.long),
-        num_nodes=len(labels),
-    )
-
-
 def _validated_fb100_matrix(path: Path) -> tuple[Any, np.ndarray]:
     try:
         from scipy.io import loadmat
@@ -583,7 +357,7 @@ def _fb100_edge_index(adjacency: Any, path: Path) -> torch.Tensor:
 
 
 def _load_fb100_domains(
-    root: Path, selected: Sequence[str], *, year_task: bool
+    root: Path, selected: Sequence[str]
 ) -> dict[str, Data]:
     # The categorical feature vocabulary is fitted over the complete 18-school
     # benchmark, so every matrix must be present and validated before any
@@ -595,13 +369,6 @@ def _load_fb100_domains(
     selected_set = set(selected)
     for domain, filename in FB100_FILES.items():
         adjacency, info = _validated_fb100_matrix(root / filename)
-        if not year_task:
-            unexpected = np.setdiff1d(np.unique(info[:, 1]), [0, 1, 2])
-            if unexpected.size:
-                raise ValueError(
-                    f"Unexpected raw gender categories in {root / filename}: "
-                    f"{unexpected.tolist()}; expected only 0, 1, 2"
-                )
         # Only selected domains need their (potentially large) adjacency after
         # schema validation; every school's metadata remains for the vocabulary.
         matrices[domain] = (
@@ -609,7 +376,7 @@ def _load_fb100_domains(
             info,
         )
 
-    feature_columns = (0, 1, 2, 3, 4, 6) if year_task else (0, 2, 3, 4, 5, 6)
+    feature_columns = (0, 1, 2, 3, 4, 6)
     categories: list[np.ndarray] = []
     offsets: list[int] = []
     total_features = 0
@@ -634,8 +401,7 @@ def _load_fb100_domains(
         path = root / FB100_FILES[domain]
         edge_index = _fb100_edge_index(adjacency, path)
         # Fit the vocabulary on raw nodes, then induce the retained-label graph.
-        keep = (np.isin(info[:, 5], FB100_YEAR_CLASSES) if year_task
-                else info[:, 1] != 0)
+        keep = np.isin(info[:, 5], FB100_YEAR_CLASSES)
         remap = torch.full((raw_num_nodes,), -1, dtype=torch.long)
         remap[torch.from_numpy(keep)] = torch.arange(int(keep.sum()))
         edge_index = remap[edge_index]
@@ -657,10 +423,7 @@ def _load_fb100_domains(
                     torch.from_numpy(rows),
                     torch.from_numpy(encoded.astype(np.int64, copy=False) + offset),
                 ] = 1.0
-        if year_task:
-            y = torch.from_numpy(info[:, 5] - FB100_YEAR_CLASSES[0])
-        else:
-            y = torch.from_numpy(info[:, 1] - 1)
+        y = torch.from_numpy(info[:, 5] - FB100_YEAR_CLASSES[0])
         result[domain] = Data(
             x=x,
             edge_index=edge_index,
@@ -867,8 +630,7 @@ def _assemble_domains(
         "primary_metric": task["primary_metric"],
         "metric_ignore_label": task["metric_ignore_label"],
     }
-    if dataset_name in ("facebook100-gender", "facebook100-year"):
-        year_task = dataset_name == "facebook100-year"
+    if dataset_name == "facebook100-year":
         metadata["label_metadata"] = {
             "target": "year",
             "raw_column": 5,
@@ -876,20 +638,13 @@ def _assemble_domains(
             "retained_raw_values": list(FB100_YEAR_CLASSES),
             "excluded_raw_values_policy": "outside_retained_year_cohorts",
             "unknown_node_policy": "excluded_induced_subgraph",
-        } if year_task else {
-            "target": "recorded_gender",
-            "raw_column": 1,
-            "raw_to_class": {"1": 0, "2": 1},
-            "excluded_raw_values": [0],
-            "unknown_node_policy": "excluded_induced_subgraph",
         }
         metadata["provenance"] = {
             "source_url": FB100_RAW_URL,
             "revision": FB100_REVISION,
-            "feature_columns": [0, 1, 2, 3, 4, 6] if year_task else [0, 2, 3, 4, 5, 6],
+            "feature_columns": [0, 1, 2, 3, 4, 6],
             "feature_vocabulary_domains": list(FB100_DOMAINS),
-            "feature_vocabulary_population": ("all_raw_nodes_before_year_filter" if year_task
-                                              else "all_raw_nodes_before_gender_filter"),
+            "feature_vocabulary_population": "all_raw_nodes_before_year_filter",
             "feature_vocabulary_num_features": metadata["num_features"],
         }
         metadata["domain_node_counts"] = {
@@ -921,14 +676,7 @@ def load_domain_dataset(
         domain for domain in DOMAIN_REGISTRIES[name] if domain in selected_set
     ]
 
-    if name == "twitch-explicit":
-        cache = Path(
-            root
-            if root is not None
-            else os.environ.get("GRAPHOOD_TWITCH_DATA_ROOT", "data/graphood/twitch")
-        )
-        graphs = {domain: _parse_twitch_domain(cache, domain) for domain in selected}
-    elif name in ("facebook100-gender", "facebook100-year"):
+    if name == "facebook100-year":
         cache = Path(
             root
             if root is not None
@@ -936,9 +684,7 @@ def load_domain_dataset(
                 "GRAPHOOD_FB100_DATA_ROOT", "data/graphood/facebook100"
             )
         )
-        graphs = _load_fb100_domains(
-            cache, selected, year_task=name == "facebook100-year"
-        )
+        graphs = _load_fb100_domains(cache, selected)
     elif name == "mag-countries":
         cache = Path(
             root
@@ -959,7 +705,6 @@ __all__ = [
     "FB100_FILES",
     "MAG_ARTIFACTS",
     "MAG_DOMAINS",
-    "TWITCH_DOMAINS",
     "load_domain_dataset",
     "normalize_domain_split",
 ]

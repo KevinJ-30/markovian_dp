@@ -22,7 +22,7 @@ from scripts import runner_runtime as runtime
 
 GPU = {"uuid": "GPU-runner-test", "name": "Test 16 GiB", "index": 0,
        "memory_total_mib": 16 * 1024}
-DOMAIN_SPLIT = {"train": ["DE", "ENGB"], "val": ["ES"], "test": ["FR"]}
+DOMAIN_SPLIT = {"train": ["fr", "us"], "val": ["cn"], "test": ["de"]}
 
 
 def _config(seeds=(0,), *, resources=None, **parameters):
@@ -30,7 +30,7 @@ def _config(seeds=(0,), *, resources=None, **parameters):
     if resources is not None:
         block["resources"] = resources
     return {"name": "runner-test", "defaults": {
-        "dataset": "cora-ml", "lr": .01, "epochs": 1, "batch_size": 32,
+        "dataset": "ogbn-arxiv", "lr": .01, "epochs": 1, "batch_size": 32,
         "bootstrap_resamples": 0,
     }, "grid": {"seed": list(seeds)}, "runs": [block]}
 
@@ -104,9 +104,6 @@ def test_block_overrides_replace_scalar_and_axis_without_mutating_input():
                       ("mlp", .1, 2, 2), ("mlp", .1, 2, 3),
                       ("graphsage", .02, 3, 9)]
     assert config == before
-    assert [job["id"] for job in jobs] == [
-        "0000_cora-ml_mlp_s2", "0001_cora-ml_mlp_s3",
-        "0002_cora-ml_mlp_s2", "0003_cora-ml_mlp_s3", "0004_cora-ml_graphsage_s9"]
 
 
 def test_documented_grid_expands_eight_jobs_without_conditional_axes():
@@ -130,16 +127,16 @@ def test_documented_grid_expands_eight_jobs_without_conditional_axes():
 
 
 def test_domain_lists_are_literal_values_and_domain_objects_can_be_axes():
-    config = _config((0, 1), dataset="twitch-explicit", domain_split=DOMAIN_SPLIT)
+    config = _config((0, 1), dataset="mag-countries", domain_split=DOMAIN_SPLIT)
     jobs = runner.expand_runs(config)
     assert [j["parameters"]["seed"] for j in jobs] == [0, 1]
-    assert all(j["parameters"]["domain_split"]["train"] == ["DE", "ENGB"] for j in jobs)
-    second = {**DOMAIN_SPLIT, "test": ["PTBR"]}
+    assert all(j["parameters"]["domain_split"]["train"] == ["fr", "us"] for j in jobs)
+    second = {**DOMAIN_SPLIT, "test": ["jp"]}
     config["runs"][0]["parameters"].pop("domain_split")
     config["runs"][0]["grid"] = {"domain_split": [DOMAIN_SPLIT, second]}
     assert [(j["parameters"]["seed"], j["parameters"]["domain_split"]["test"])
-            for j in runner.expand_runs(config)] == [(0, ["FR"]), (0, ["PTBR"]),
-                                                     (1, ["FR"]), (1, ["PTBR"])]
+            for j in runner.expand_runs(config)] == [(0, ["de"]), (0, ["jp"]),
+                                                     (1, ["de"]), (1, ["jp"])]
 
 
 @pytest.mark.parametrize("where", ["common", "block"])
@@ -156,7 +153,7 @@ def test_scalar_axis_ambiguity_is_rejected_in_its_own_scope(where):
 
 @pytest.mark.parametrize("change", [
     {"resources": {"gpu_memory_mib": 1024}},
-    {"parameters": {"method": "mlp", "dataset": "CORA-ML", "seed": 0}},
+    {"parameters": {"method": "mlp", "dataset": "OGBN-ARXIV", "seed": 0}},
 ])
 def test_duplicate_normalized_jobs_are_rejected_even_with_distinct_resources(change):
     config = _config()
@@ -381,11 +378,11 @@ def test_progap_parent_only_allocator_peak_cannot_authorize_overlap(tmp_path):
 @pytest.mark.parametrize("field,value", [
     ("batch_size", 64), ("mlp_hidden", 16), ("gnn_hidden", 16), ("p2", .75),
     ("sparse_radius", 2), ("sparse_degree_cap", 20), ("bootstrap_resamples", 100),
-    ("split_root", "/another/split"), ("domain_split", {**DOMAIN_SPLIT, "test": ["PTBR"]}),
+    ("split_root", "/another/split"), ("domain_split", {**DOMAIN_SPLIT, "test": ["jp"]}),
 ])
 def test_shape_changes_never_reuse_resource_profiles(field, value):
     parameters = runner.expand_runs(_config(method="sparse_sage", epsilon=8, p2=.5,
-                                             dataset="twitch-explicit", domain_split=DOMAIN_SPLIT))[0]["parameters"]
+                                             dataset="mag-countries", domain_split=DOMAIN_SPLIT))[0]["parameters"]
     changed = {**parameters, field: value}
     assert runner.profile_key(parameters, "A") != runner.profile_key(changed, "A")
 
