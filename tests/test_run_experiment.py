@@ -340,3 +340,58 @@ def test_progap_depth_controls_native_stages_and_privacy_composition(tmp_path, d
     assert privacy["parameters"]["component_coefficients"] == [expected_depth, expected_depth + 1]
     assert privacy["composition_count"] == 2 * expected_depth + 1
     assert privacy["epsilon"] <= 8 + 1e-6
+
+
+def test_sparse_accountant_is_opt_in_and_part_of_rdp_identity():
+    p = _parameters(method="sparse_gin", p2=0.1, epsilon=2)
+    default = worker.normalize_parameters(p)
+    assert worker.normalize_parameters(dict(p, sparse_accountant="pld")) == default
+    assert worker.normalize_parameters(dict(p, sparse_accountant="rdp")) == dict(default, sparse_accountant="rdp")
+    with pytest.raises(ValueError, match="not applicable"):
+        worker.normalize_parameters(_parameters(sparse_accountant="rdp"))
+
+
+def test_calibration_p2_is_optional_and_sparse_only():
+    settings = _parameters(method="sparse_sage", epsilon=2, p2=0.1)
+    normalized = worker.normalize_parameters(settings)
+    assert "calibration_p2" not in normalized
+    assert worker.normalize_parameters(dict(settings, calibration_p2=0.1)) == normalized
+    for value in (0, 2, True, float("nan")):
+        with pytest.raises(ValueError):
+            worker.normalize_parameters(dict(settings, calibration_p2=value))
+    with pytest.raises(ValueError, match="not applicable"):
+        worker.normalize_parameters(_parameters(calibration_p2=1))
+
+
+@pytest.mark.parametrize("accountant", ["pld", "rdp"])
+def test_crossed_sparse_noise_matches_source_and_reports_actual_privacy(tmp_path, monkeypatch, accountant):
+    from scripts.summarize_results import privacy_fields
+    from src.privacy.accounting import sparsegnn_epsilon
+
+    split, task = native_progap_fixture(tmp_path)
+    monkeypatch.setattr(worker, "_load_split", lambda *args: ("fixture", split, task, "fixture"))
+    sigmas = {}
+    for p2, source in ((0.1, 0.1), (1, 1), (1, 0.1), (0.1, 1)):
+        output = tmp_path / f"train-{p2}-noise-{source}"
+        options = dict(method="sparse_sage", epsilon=5, p2=p2, gnn_hidden=8,
+                       degree_bound=3, sparse_accountant=accountant)
+        if p2 != source:
+            options["calibration_p2"] = source
+        assert worker.main(_arguments(output, **options)) == 0
+        with (output / "result.csv").open() as f:
+            row = next(csv.DictReader(f))
+        params = json.loads(row["parameters"])
+        epsilon = float(row["epsilon"])
+        if p2 == source:
+            assert row["target_epsilon"] == "5.0" and "calibration_p2" not in params
+            sigmas[source] = params["sigma"]
+        else:
+            assert params["sigma"] == sigmas[source]
+            assert params["p2"] == p2 and params["calibration_p2"] == source
+            assert row["target_epsilon"] == "" and float(row["calibration_target_epsilon"]) == 5
+            expected = sparsegnn_epsilon(params["p1"], p2, params["r"], params["K_in"],
+                                         sigmas[source], params["steps"], float(row["delta"]),
+                                         K_out=params["K_out"], accountant=accountant)
+            assert epsilon == pytest.approx(expected)
+            assert (epsilon > 5) == (p2 > source)
+            assert float(privacy_fields(row, "fixture")[1]) == epsilon

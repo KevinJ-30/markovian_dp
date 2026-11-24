@@ -8,8 +8,8 @@ rooted subgraphs.  The one-step mechanism is dominated by
 
 Here ``sigma`` is the Opacus noise multiplier; training adds Gaussian noise
 with standard deviation ``sigma*C`` after clipping each contribution at ``C``.
-The analytic pair is handed to Google ``dp_accounting`` for pessimistic
-connect-the-dots discretization, composition, and epsilon(delta).  Training
+PLD calibration uses pessimistic connect-the-dots discretization. Optional
+RDP calibration bounds the continuous pair's moments at the training orders. Training
 orientation is intentionally not validated here; this module always constructs
 the in-expansion shell law.
 """
@@ -159,6 +159,16 @@ def sparsegnn_epsilon_schedule(
         mixture_gaussian_pld(weights, sigma, grid), steps, delta)
 
 
+def _sparsegnn_rdp_epsilon(weights, sigma, steps, delta, p1, p2):
+    from dp_accounting.rdp.rdp_privacy_accountant import compute_epsilon
+    from .mixture_rdp import ORDERS, mixture_gaussian_rdp
+
+    if 0 < p1 < 1 and p2 > 0 and np.any(weights == 0):
+        raise ArithmeticError("SparseGNN mixture tail underflowed before RDP integration")
+    rdp = mixture_gaussian_rdp(weights, sigma)
+    return float(compute_epsilon(ORDERS, steps * rdp, delta)[0])
+
+
 def sparsegnn_epsilon(
     p1: float,
     p2: float,
@@ -169,7 +179,13 @@ def sparsegnn_epsilon(
     delta: float,
     K_out: Optional[int] = None,
     grid: float = 1e-3,
+    accountant: str = "pld",
 ) -> float:
+    if accountant == "rdp":
+        weights = sparsegnn_mixture_weights(p1, p2, r, K_in, K_out)
+        return _sparsegnn_rdp_epsilon(weights, sigma, steps, delta, p1, p2)
+    if accountant != "pld":
+        raise ValueError("SparseGNN accountant must be pld or rdp")
     return sparsegnn_epsilon_schedule(
         p1, p2, r, K_in, sigma, [steps], delta, K_out=K_out,
         grid=grid)[int(steps)]
@@ -211,6 +227,7 @@ def calibrate_sparsegnn_noise(
     sigma_rtol: float = 1e-3,
     sigma_atol: float = 1e-6,
     max_sigma: float = 1e6,
+    accountant: str = "pld",
     progress: Optional[Callable[[dict[str, Any]], None]] = None,
 ) -> SparseGNNNoiseCalibration:
     """Find the smallest known-safe Opacus noise multiplier."""
@@ -226,13 +243,17 @@ def calibrate_sparsegnn_noise(
     max_sigma = _positive_finite("max_sigma", max_sigma)
     if max_sigma < 1:
         raise ValueError("max_sigma must be at least 1")
+    if accountant not in ("pld", "rdp"):
+        raise ValueError("SparseGNN accountant must be pld or rdp")
+    if accountant == "rdp":
+        from .mixture_rdp import ORDERS
+    metadata = {"rdp_orders": ORDERS.tolist()} if accountant == "rdp" else {"grid": grid}
     calibration_started = time.perf_counter()
     if progress is not None:
         progress({
             "event": "calibration_start",
-            "grid": grid,
+            **metadata,
         })
-
 
     weights = sparsegnn_mixture_weights(p1, p2, r, K_in, K_out)
     values = {}
@@ -246,11 +267,14 @@ def calibrate_sparsegnn_noise(
                     "event": "sigma_evaluation_start",
                     "evaluation": evaluation,
                     "sigma": sigma,
-                    "grid": grid,
+                    **metadata,
                 })
-            epsilon = float(
-                mixture_gaussian_pld(weights, sigma, grid)
-                .self_compose(steps).get_epsilon_for_delta(target_delta))
+            if accountant == "rdp":
+                epsilon = _sparsegnn_rdp_epsilon(weights, sigma, steps, target_delta, p1, p2)
+            else:
+                epsilon = float(
+                    mixture_gaussian_pld(weights, sigma, grid)
+                    .self_compose(steps).get_epsilon_for_delta(target_delta))
             if math.isnan(epsilon):
                 raise RuntimeError(f"SparseGNN accountant returned NaN at sigma={sigma}")
             values[sigma] = epsilon
@@ -259,7 +283,7 @@ def calibrate_sparsegnn_noise(
                     "event": "sigma_evaluation_complete",
                     "evaluation": evaluation,
                     "sigma": sigma,
-                    "grid": grid,
+                    **metadata,
                     "epsilon": epsilon,
                     "elapsed_seconds": time.perf_counter() - evaluation_started,
                 })
@@ -299,7 +323,7 @@ def calibrate_sparsegnn_noise(
             "sigma": high,
             "epsilon": high_epsilon,
             "evaluations": len(values),
-            "grid": grid,
+            **metadata,
             "elapsed_seconds": time.perf_counter() - calibration_started,
         })
     return calibration

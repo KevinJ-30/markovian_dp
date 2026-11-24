@@ -1,0 +1,17 @@
+{
+  "source_config": "sgnn_k5p02_k1p1_eps28_tune.json",
+  "results_dir": "../../results/sgnn_k5p02_k1p1_eps28_tune",
+  "output_config": "../../results/sgnn_k5p02_k1p1_eps28_tune/repeats.json",
+  "name": "sgnn_k5p02_k1p1_eps28_seeds6_10",
+  "seeds": [
+    6,
+    7,
+    8,
+    9,
+    10
+  ],
+  "select_over": [
+    "lr",
+    "batch_size"
+  ]
+}

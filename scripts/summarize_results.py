@@ -119,7 +119,12 @@ def privacy_fields(row, location):
     if not flag(row["dp"], f"{location}: dp"):
         return "non-private", "non-private", ""
     epsilon, delta = row["target_epsilon"], row["target_delta"]
-    if finite(epsilon, f"{location}: target_epsilon") <= 0:
+    if populated(row.get("calibration_target_epsilon")):
+        # A crossed SGNN run certifies the training mechanism at its achieved epsilon.
+        epsilon = row["epsilon"]
+        if finite(epsilon, f"{location}: epsilon") < 0:
+            raise SummaryError(f"{location}: achieved epsilon must be nonnegative")
+    elif finite(epsilon, f"{location}: target_epsilon") <= 0:
         raise SummaryError(f"{location}: target_epsilon must be positive")
     if not 0 < finite(delta, f"{location}: target_delta") < 1:
         raise SummaryError(f"{location}: target_delta must be in (0, 1)")

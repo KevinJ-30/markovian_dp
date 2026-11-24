@@ -365,3 +365,61 @@ def test_dpar_calibration_rejects_an_unbracketed_sgd_budget():
         )
 
 
+
+
+def test_mixture_rdp_identity_and_gaussian_shift():
+    from src.privacy.mixture_rdp import ORDERS, mixture_gaussian_rdp
+
+    np.testing.assert_array_equal(ORDERS, [i / 10 for i in range(11, 100)] + list(range(10, 17)))
+    np.testing.assert_array_equal(mixture_gaussian_rdp([1.0], 2), np.zeros(96))
+    np.testing.assert_allclose(mixture_gaussian_rdp([0, 0, 1.0], 3), 8 * ORDERS / 9)
+
+
+def test_mixture_rdp_bounds_full_line_quadrature():
+    from scipy.integrate import quad
+    from src.privacy.mixture_rdp import ORDERS, mixture_gaussian_rdp
+
+    # At high order the tilted integrand peaks far outside the original
+    # mixture's typical samples. Split the reference integral around that peak.
+    sigma = 1.5
+    weights = [0.97, 0, 0, 0.03]
+    bounds = mixture_gaussian_rdp(weights, sigma)
+
+    def log_density(x):
+        return np.logaddexp(math.log(0.97) - x**2 / 2,
+                            math.log(0.03) - (x + 3 / sigma)**2 / 2) - math.log(2 * math.pi) / 2
+
+    for order in (1.1, 2.0, 5.0, 9.9, 16.0):
+        def integrand(x):
+            return math.exp(order * log_density(x) - (order - 1) * log_density(-x))
+
+        cuts = [-np.inf, -order * 3 / sigma, 0, np.inf]
+        moment = sum(quad(integrand, a, b, epsabs=1e-13, epsrel=1e-12)[0]
+                     for a, b in zip(cuts, cuts[1:]))
+        exact = math.log(moment) / (order - 1)
+        bound = bounds[ORDERS == order].item()
+        assert exact - 1e-12 <= bound <= exact * 1.002
+
+
+def test_mixture_rdp_high_noise_retains_small_moments():
+    from src.privacy.mixture_rdp import ORDERS, mixture_gaussian_rdp
+
+    # Leading term for two reflected mixtures with mean difference 0.02.
+    sigma = 1e6
+    expected = ORDERS * (0.02 / sigma)**2 / 2
+    observed = mixture_gaussian_rdp([0.99, 0.01], sigma)
+    np.testing.assert_allclose(observed, expected, atol=0, rtol=0.001)
+
+
+def test_rdp_calibration_composes_actual_steps_and_returns_feasible_sigma():
+    from dp_accounting.rdp.rdp_privacy_accountant import compute_epsilon
+    from src.privacy.mixture_rdp import ORDERS, mixture_gaussian_rdp
+
+    result = calibrate_sparsegnn_noise(accountant="rdp", target_epsilon=3,
+                                       target_delta=1e-5, steps=31, p1=0.1,
+                                       p2=0.25, r=1, K_in=10, K_out=3)
+    weights = sparsegnn_mixture_weights(0.1, 0.25, 1, 10, 3)
+    rdp = mixture_gaussian_rdp(weights, result.noise_multiplier)
+    epsilon, _ = compute_epsilon(ORDERS, 31 * rdp, 1e-5)
+    assert epsilon == result.epsilon
+    assert 2.98 < epsilon <= 3

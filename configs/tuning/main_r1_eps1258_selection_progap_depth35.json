@@ -1,0 +1,17 @@
+{
+  "source_config": "main_r1_eps1258_tune_progap_depth35.json",
+  "results_dir": "../../results/main_r1_eps1258_tune_progap_depth35",
+  "output_config": "../../results/main_r1_eps1258_tune_progap_depth35/repeats.json",
+  "name": "main_r1_eps1258_retuned_repeats_progap_depth35",
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "select_over": [
+    "lr",
+    "batch_size"
+  ]
+}

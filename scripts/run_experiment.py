@@ -57,12 +57,17 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--out-dir", required=True, type=Path, help="new, unoccupied per-run directory")
     cli.add_argument("--epsilon", type=float, help="required for private methods; rejected otherwise")
     cli.add_argument("--p2", type=float, help="required only for SparseGNN")
+    cli.add_argument("--calibration-p2", type=float, default=argparse.SUPPRESS,
+                     help="SparseGNN ablation: calibrate noise at this edge probability, train at --p2, "
+                          "and report epsilon for the trained mechanism (default: same as --p2)")
     cli.add_argument("--gin-pooling", choices=("sum", "mean"), default=None,
                      help="SparseGNN-GIN neighbor pooling (default: sum); root stays separate")
     cli.add_argument("--degree-bound", type=int, default=None,
                      help="positive backend bound: DP-GNN/ProGAP max_degree, DPAR topk "
                           "(not graph degree), GraphSAGE/GIN fanout, or SparseGNN outgoing cap; "
                           "omitting preserves each backend's default")
+    cli.add_argument("--sparse-accountant", choices=("pld", "rdp"),
+                     help="SparseGNN noise calibration (default: pld)")
     cli.add_argument("--sparse-radius", type=int, default=None,
                      help="SparseExpand radius (default: 1; SparseGNN only)")
     cli.add_argument("--sparse-degree-cap", type=int, default=None,
@@ -148,7 +153,7 @@ def normalize_parameters(values: dict) -> dict:
     defaults = {"seed": 0, "dropout": 0.5, "mlp_hidden": 64, "gnn_hidden": 128,
                 "degree_bound": None, "weight_decay": 0.0,
                 "split_root": str(REPO_ROOT / "data" / "inductive_splits"), "domain_split": None}
-    method_fields = {"epsilon", "p2", "gin_pooling", "sparse_radius", "sparse_degree_cap",
+    method_fields = {"calibration_p2", "sparse_accountant", "epsilon", "p2", "gin_pooling", "sparse_radius", "sparse_degree_cap",
                      "dpgnn_radius", "progap_depth", "progap_python"}
     unknown = set(values) - required - set(defaults) - method_fields
     if unknown:
@@ -167,7 +172,7 @@ def normalize_parameters(values: dict) -> dict:
     if method not in NONPRIVATE:
         applicable.add("epsilon")
     if method.startswith("sparse_"):
-        applicable.update(("p2", "sparse_radius", "sparse_degree_cap"))
+        applicable.update(("calibration_p2", "sparse_accountant", "p2", "sparse_radius", "sparse_degree_cap"))
     if method == "sparse_gin":
         applicable.add("gin_pooling")
     if method.startswith("dp_gnn_"):
@@ -177,6 +182,11 @@ def normalize_parameters(values: dict) -> dict:
     invalid = set(values) & (method_fields - applicable)
     if invalid:
         raise ValueError(f"{', '.join(sorted(invalid))} not applicable to method {method}")
+    if "sparse_accountant" in result:
+        if result["sparse_accountant"] not in ("pld", "rdp"):
+            raise ValueError("sparse_accountant must be pld or rdp")
+        if result["sparse_accountant"] == "pld":
+            del result["sparse_accountant"]  # Preserve existing PLD run identities.
     for name in ("batch_size", "epochs", "mlp_hidden", "gnn_hidden"):
         if type(result[name]) is not int or result[name] < 1:
             raise ValueError(f"{name} must be a positive integer")
@@ -202,6 +212,14 @@ def normalize_parameters(values: dict) -> dict:
         result["p2"] = _finite_number(result.get("p2"), "p2")
         if not 0 < result["p2"] <= 1:
             raise ValueError("SparseGNN requires p2 in (0, 1]")
+        if "calibration_p2" in result:
+            source = _finite_number(result["calibration_p2"], "calibration_p2")
+            if not 0 < source <= 1:
+                raise ValueError("calibration_p2 must be in (0, 1]")
+            if source == result["p2"]:
+                del result["calibration_p2"]
+            else:
+                result["calibration_p2"] = source
         result.setdefault("sparse_radius", 1)
         cap = result.get("sparse_degree_cap")
         if cap is None:
@@ -485,7 +503,7 @@ def _sparse_evaluation_graph(split, device):
 def _sparse(args, split, task, batch, delta):
     import torch
     from torch_geometric.data import Data
-    from src.privacy.accounting import calibrate_sparsegnn_noise
+    from src.privacy.accounting import calibrate_sparsegnn_noise, sparsegnn_epsilon
     from src.processing.graphs import max_degrees, preprocess_edges
     from src.processing.sparse_expand import INCOMING_EDGE_CAPS, build_adjacency
     from src.training.sparse_gnn import train_sparse_gnn
@@ -516,11 +534,19 @@ def _sparse(args, split, task, batch, delta):
         edge_index=train_edges, num_nodes=population,
         train_mask=torch.ones(population, dtype=torch.bool, device=args.device),
     )
+    accountant = getattr(args, "sparse_accountant", None) or "pld"
+    calibration_p2 = getattr(args, "calibration_p2", args.p2)
+    accounting = dict(accountant=accountant, p1=p1, r=args.sparse_radius,
+                      K_in=10, K_out=args.sparse_degree_cap, steps=steps, grid=1e-3)
     calibration = calibrate_sparsegnn_noise(
-        target_epsilon=args.epsilon, target_delta=delta, p1=p1, p2=args.p2,
-        r=args.sparse_radius, K_in=10, K_out=args.sparse_degree_cap, steps=steps, clip=1.0,
-        grid=1e-3, sigma_rtol=1e-3, sigma_atol=1e-6,
+        **accounting, target_epsilon=args.epsilon, target_delta=delta, p2=calibration_p2,
+        clip=1.0, sigma_rtol=1e-3, sigma_atol=1e-6,
     )
+    achieved_epsilon = calibration.epsilon
+    if calibration_p2 != args.p2:
+        achieved_epsilon = sparsegnn_epsilon(
+            **accounting, p2=args.p2, sigma=calibration.noise_multiplier, delta=delta)
+
     extra = {} if any(task[name] for name in ("binary", "multilabel", "regression")) else {
         "metric_ignore_label": task["metric_ignore_label"]}
     torch.manual_seed(args.seed)
@@ -539,14 +565,25 @@ def _sparse(args, split, task, batch, delta):
         track_every=0,
     )
     result["calibration"] = calibration.as_dict()
+    accountant_name = "src.privacy.accounting.sparsegnn_mixture_weights"
+    accounting_parameters = {"accounting_grid": 1e-3}
+    privacy_parameters = {"grid": 1e-3}
+    if accountant == "rdp":
+        from src.privacy.mixture_rdp import ORDERS
+        accountant_name = "src.privacy.mixture_rdp.mixture_gaussian_rdp"
+        privacy_parameters = {"rdp_orders": ORDERS.tolist()}
+        accounting_parameters = {"sparse_accountant": "rdp", **privacy_parameters}
+    if calibration_p2 != args.p2:
+        result["calibration"]["p2"] = calibration_p2
+        accounting_parameters.update(calibration_p2=calibration_p2, calibration_target_epsilon=args.epsilon)
     result["privacy"] = {
-        "epsilon": calibration.epsilon, "delta": calibration.delta,
-        "accountant": "src.privacy.accounting.sparsegnn_mixture_weights",
+        "epsilon": achieved_epsilon, "delta": calibration.delta,
+        "accountant": accountant_name,
         "noise_multiplier": calibration.noise_multiplier,
         "sampling_probability": p1, "composition_count": steps,
         "parameters": {"p1": p1, "p2": args.p2, "r": args.sparse_radius,
                        "K_in": 10, "K_out": args.sparse_degree_cap,
-                       "grid": 1e-3,
+                       **privacy_parameters,
                        "qualification": "Gaussian-mixture substitution accounting with incoming expansion."},
     }
     parameters = {
@@ -561,7 +598,7 @@ def _sparse(args, split, task, batch, delta):
             INCOMING_EDGE_CAPS[min(hop, len(INCOMING_EDGE_CAPS) - 1)]
             for hop in range(args.sparse_radius)],
         "K_in_achieved": achieved_degrees[0], "K_out_achieved": achieved_degrees[1],
-        "accounting_grid": 1e-3,
+        **accounting_parameters,
         "calibration_rtol": 1e-3, "calibration_atol": 1e-6,
         "evaluate_every": interval, "max_private_batch_nodes": mechanism.max_private_batch_nodes,
         **_task_options(task),
@@ -656,7 +693,7 @@ def _privacy_pair(result, private, target, delta):
         raise ValueError("private backend omitted its composed accounting result")
     actual_epsilon = float(total["epsilon"])
     actual_delta = float(total["delta"])
-    if not math.isfinite(actual_epsilon) or actual_epsilon < 0 or actual_epsilon > target + 1e-6:
+    if not math.isfinite(actual_epsilon) or actual_epsilon < 0 or (target is not None and actual_epsilon > target + 1e-6):
         raise RuntimeError(f"actual epsilon {actual_epsilon} exceeds or invalidates target {target}")
     if not math.isclose(actual_delta, delta, rel_tol=1e-10, abs_tol=0.0):
         raise RuntimeError(f"backend delta {actual_delta} differs from common delta {delta}")
@@ -716,7 +753,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "data loading; excludes child processes"),
     }
     private = args.method not in NONPRIVATE
-    actual_epsilon, actual_delta = _privacy_pair(native, private, args.epsilon, delta)
+    # A crossed run targets epsilon only for the noise-source mechanism.
+    crossed = args.method.startswith("sparse_") and getattr(args, "calibration_p2", args.p2) != args.p2
+    target = None if crossed else args.epsilon
+    actual_epsilon, actual_delta = _privacy_pair(native, private, target, delta)
     metric = task["primary_metric"]
     test = _metric_value(native, metric)
     if "selection" not in native:
@@ -739,7 +779,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         "gin_mean" if args.method == "sparse_gin" and args.gin_pooling == "mean" else
                         "gin" if args.method.endswith("gin") else
                         "graphsage" if args.method in {"graphsage", "dp_gnn_sage", "sparse_sage"} else args.method,
-        "dp": private, "target_epsilon": args.epsilon, "target_delta": delta if private else None,
+        "dp": private, "target_epsilon": target, "target_delta": delta if private else None,
         "epsilon": actual_epsilon, "delta": actual_delta, "metric": metric,
         "seed": args.seed, "lr": args.lr, "batch_size": batch,
         "requested_batch_size": args.batch_size, "epochs": args.epochs,
@@ -750,6 +790,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "split_file": str(split.path), "domain_split": split.domain_split,
         "domain_split_id": split.domain_split_id, "train_nodes": population,
     }
+    if crossed:
+        identity["calibration_target_epsilon"] = args.epsilon
+        identity["calibration_p2"] = parameters["calibration_p2"]
     identity["weight_decay"] = parameters["weight_decay"]
     config = {**identity, "parameters": parameters, "task": task,
               "requested": {key: str(value) if isinstance(value, Path) else value
